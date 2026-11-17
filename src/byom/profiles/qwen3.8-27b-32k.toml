@@ -1,0 +1,19 @@
+name = "Qwen3.8 27B (32k)"
+description = "Lower-context profile for an A100 without a high-memory requirement."
+opencode_output_limit = 8192
+
+[config]
+model = "philbert440/Qwen3.8-27B-W4A16-AWQ"
+served_model_name = "qwen3.8-27b"
+max_model_len = 32768
+reasoning_effort = "medium"
+gpu = "A100"
+gpu_high_mem = false
+gpu_memory_utilization = 0.92
+kv_cache_dtype = "fp8"
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
