@@ -36,7 +36,8 @@ def test_compatibilidade_com_margem_e_alternativas():
     assert fit.required_gib == 24.0
     assert fit.available_gib == 24.0
 
-    too_big = catalog.check_fit("inkling-2-mini", "q4", "T4", 65536)
+    # A alternativa q2 serve 32768; com 65536 ela também não caberia em T4.
+    too_big = catalog.check_fit("inkling-2-mini", "q4", "T4", 32768)
     assert not too_big.fits
     assert "tam" in too_big.reason or "GiB" in too_big.reason
     assert "inkling-2-mini:q2" in too_big.alternatives
@@ -122,6 +123,11 @@ def test_contexto_documentado_servido_e_motivo():
     for (model_id, variant_id), value in doc.items():
         variant = catalog.variant_by_id(model_id, variant_id)
         assert variant.context_doc == value
+        assert variant.context <= value
+        if (model_id, variant_id) == ("qwen3.8-27b-awq", "q4-awq"):
+            # O perfil 256k serve o contexto máximo documentado; a redução
+            # fica explícita em PROFILE_CONTEXTS, não na variante.
+            continue
         assert variant.context < value
         assert variant.context_reason
 

@@ -36,7 +36,7 @@ def install_fake_runtime(monkeypatch, calls: list[str], *, fail: bool = False) -
             raise RuntimeError("simulated unassign failure")
         calls.append("unassign")
 
-    setattr(colab_module, "runtime", types.SimpleNamespace(unassign=unassign))
+    setattr(colab_module, "runtime", types.SimpleNamespace(unassign=unassign))  # noqa: B010
     monkeypatch.setitem(sys.modules, "google", google)
     monkeypatch.setitem(sys.modules, "google.colab", colab_module)
 
@@ -81,8 +81,8 @@ def test_idle_calls_unassign(watchdog_module, monkeypatch, tmp_path):
         watchdog_module, "time", types.SimpleNamespace(monotonic=time.monotonic, sleep=stop)
     )
 
-    with pytest.raises(StopLoop):
-        watchdog_module.main()
+    # A célula encerra com 0 logo após desalocar; não há novo sleep.
+    assert watchdog_module.main() == 0
     assert calls == ["called"]
 
 

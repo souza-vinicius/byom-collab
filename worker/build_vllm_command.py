@@ -64,7 +64,7 @@ def _resolved(key: str, default: str) -> str:
 
 
 def build_llama_args(cfg: dict) -> list[str]:
-    """Comando llama-server para GGUF, com/mmproj e decodificação DSpark."""
+    """Comando llama-server para GGUF, com/mmproj, Jinja e decodificação DSpark."""
     worker = cfg.get("worker") or {}
     sampling = worker.get("sampling") or {}
     args = [
@@ -80,6 +80,8 @@ def build_llama_args(cfg: dict) -> list[str]:
         "--alias",
         cfg["served_model_name"],
     ]
+    if worker.get("llama_jinja"):
+        args.append("--jinja")
     mmproj = worker.get("mmproj_pattern")
     if mmproj:
         args.extend(["--mmproj", _resolved("mmproj", str(mmproj))])

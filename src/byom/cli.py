@@ -27,7 +27,40 @@ from . import catalog, colab, config, dsh, opencode, remote
 app = typer.Typer(
     add_completion=False,
     help="Run a coding model on a Colab GPU and expose it at 127.0.0.1:4000/v1.",
+    pretty_exceptions_show_locals=False,
+    pretty_exceptions_short=True,
 )
+
+
+@app.callback(invoke_without_command=True)
+def _entrada_interativa(
+    ctx: typer.Context,
+    ativar_tui: Annotated[
+        bool,
+        typer.Option("--tui", help="Abre o menu interativo mesmo sem subcomando."),
+    ] = False,
+    no_tui: Annotated[
+        bool,
+        typer.Option(
+            "--no-tui", help="Força o modo CLI e mostra a ajuda quando não há subcomando."
+        ),
+    ] = False,
+) -> None:
+    """Menu interativo quando não há subcomando e há um terminal real."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import mensagens as M
+    from . import tui
+
+    if no_tui or not ativar_tui and not tui.is_interactive():
+        typer.echo(ctx.get_help(), err=True)
+        raise typer.Exit(2)
+    if not tui.is_interactive():
+        msg, causa, acao = M.ERROS_COMUNS["tty"]
+        typer.echo(M.ERRO.format(falha=msg, causa=causa, acao=acao), err=True)
+        raise typer.Exit(2)
+    tui.mostrar_menu(sys.modules[__name__])
+    raise typer.Exit(0)
 
 #: Path to the worker bundle on the VM. It lives in `/content`, which always
 #: exists: the CLI content API does not create intermediate directories.

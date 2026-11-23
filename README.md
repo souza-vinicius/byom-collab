@@ -116,8 +116,12 @@ union documented by those pages: `none`, `minimal`, `low`, `medium`, `high`,
 `0.9` are accepted by Inkling's template but are intentionally rejected at
 our boundary: no free-form string or number.
 
-Profile notes: Inkling 2 Mini needs the Unsloth llama.cpp build with looped
-layers (`b12588-mix-c0c3de8`); Muse Glimmer uses pinned upstream `b12649`.
+Profile notes: Inkling 2 Mini uses the mainline llama.cpp `b12611` build with
+the `Mainline_Support` GGUFs (the repo's `.gguf_file` extension is renamed to
+`.gguf` on download). Older mainline builds lose the per-expert NVFP4 scales
+on the second and third looped passes and produce wrong output. DSpark is off:
+mainline support is still an open pull request. Muse Glimmer uses pinned
+upstream `b12649`.
 Qwen3.8 keeps the existing AWQ profile for vLLM and adds GGUF options. Gemma 4
 profiles carry an explicit `thinking_policy` key from the catalog: the gateway
 adds `<|think|>` at the start of the system prompt (creating the system message
@@ -173,8 +177,10 @@ Sources consulted 2026-11-23: Unsloth model pages
 `qwen-image-2.1.md`, plus the three "Flash" pages), Hugging Face's
 `blog/inkling2mini` and `thinkingmachines/Inkling-2-Mini/chat_template.jinja`,
 `leejet/stable-diffusion.cpp` `examples/server/api.md`, Google Cloud GPU machine
-types and Colab FAQ, GitHub release asset lists for `unslothai/llama.cpp`
-`b12588-mix-c0c3de8`, `ggml-org/llama.cpp` `b12649` and
+types and Colab FAQ, Hugging Face `unsloth/Inkling-2-Mini-GGUF`
+(`Mainline_Support/README.md`, `HOW_TO_RUN.md` and discussion #8),
+GitHub release asset lists for `ggml-org/llama.cpp` `b12611` and `b12649`,
+llama.cpp PRs #32694 and #32704, and
 `leejet/stable-diffusion.cpp` `master-1106-532d2c1`.
 
 ## Using coding agents

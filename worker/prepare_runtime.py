@@ -51,6 +51,12 @@ def _safe_join(root: Path, relative: str) -> Path:
     return target
 
 
+def _model_path(root: Path, path: str) -> Path:
+    """Use `.gguf` locally even when the repo publishes `.gguf_file`."""
+    local = path[:-5] if path.endswith(".gguf_file") else path
+    return _safe_join(root, local)
+
+
 def extract(archive: Path, dest: Path) -> None:
     """Extraia tar.gz ou zip para dest, recusando caminhos fora de dest."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -138,16 +144,16 @@ def prepare(session_file: Path) -> dict:
         }
         for path in sorted(wanted):
             url = HF_RESOLVE.format(repo=model_repo, path=path)
-            download(url, _safe_join(MODEL_DIR / model_repo, path))
+            download(url, _model_path(MODEL_DIR / model_repo, path))
         manifest = {
             "runtime": runtime,
             "server": str(BYOM_DIR / "llama-server"),
-            "main": str(_safe_join(MODEL_DIR / model_repo, resolved["main_pattern"])),
+            "main": str(_model_path(MODEL_DIR / model_repo, resolved["main_pattern"])),
         }
         for key in ("mmproj", "drafter"):
             pattern_key = key + "_pattern"
             if pattern_key in resolved:
-                manifest[key] = str(_safe_join(MODEL_DIR / model_repo, resolved[pattern_key]))
+                manifest[key] = str(_model_path(MODEL_DIR / model_repo, resolved[pattern_key]))
         MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         return manifest
 

@@ -58,7 +58,10 @@ def test_payload_carrega_runtime_e_worker_settings(tmp_path: Path):
         payload = json.load(archive.extractfile("session.json"))
     assert payload["runtime"] == "llama-cpp"
     assert payload["catalog_model"] == "inkling-2-mini"
-    assert payload["worker"]["dspark"] is True
+    assert payload["worker"].get("dspark", False) is False
+    assert payload["worker"]["llama_jinja"] is True
+    assert "Mainline_Support" in payload["worker"]["main_pattern"]
+    assert payload["worker"]["main_pattern"].endswith(".gguf_file")
     assert payload["worker"]["sampling"]["top_p"] == 1.0
     assert "binary_sha256" in payload["worker"]
 
@@ -76,7 +79,13 @@ def _command(cfg: dict) -> list[str]:
 
 
 def test_comando_por_runtime():
-    base = {"model": "m", "served_model_name": "m", "vllm_port": 8000, "max_model_len": 32768}
+    base = {
+        "model": "m",
+        "served_model_name": "m",
+        "vllm_port": 8000,
+        "max_model_len": 32768,
+        "gpu_memory_utilization": 0.92,
+    }
     assert _command({**base, "runtime": "vllm"})[0].endswith("/vllm")
 
     llama = _command(
@@ -86,11 +95,13 @@ def test_comando_por_runtime():
             "worker": {
                 "main_pattern": "model.gguf",
                 "mmproj_pattern": "mmproj.gguf",
+                "llama_jinja": True,
                 "sampling": {"temperature": 1.0, "top_k": 64},
             },
         }
     )
     assert llama[0].endswith("llama-server")
+    assert "--jinja" in llama
     assert "--mmproj" in llama
     assert llama[llama.index("--top-k") + 1] == "64"
 
@@ -98,6 +109,21 @@ def test_comando_por_runtime():
     assert image[0].endswith("sd-server")
     assert "--listen-port" in image
     assert image[image.index("--listen-port") + 1] == "8000"
+
+
+def test_mainline_gguf_file_renamed_to_gguf():
+    import importlib.util
+
+    script = Path(cli._worker_dir()) / "prepare_runtime.py"
+    spec = importlib.util.spec_from_file_location("byom_prepare_runtime", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = Path("/content/byom/models/repo")
+    assert module._model_path(root, "Mainline_Support/x.gguf_file") == (
+        root / "Mainline_Support/x.gguf"
+    )
+    assert module._model_path(root, "mmproj-F16.gguf") == root / "mmproj-F16.gguf"
 
 
 def test_gateway_rejeita_runtime_invalido(gateway_module):

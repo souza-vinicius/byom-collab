@@ -1,5 +1,5 @@
 name = "Inkling 2 Mini (4 bit, GGUF)"
-description = "Quant recomendado UD-Q4_K_XL com visão e DSpark; cabe em L4."
+description = "Quant recomendado UD-Q4_K_XL com visão; cabe em L4."
 opencode_output_limit = 8192
 runtime = "llama-cpp"
 catalog_model = "inkling-2-mini"
@@ -21,12 +21,11 @@ tool_call_parser = "qwen3_coder"
 reasoning_parser = "qwen3"
 
 [worker]
-binary_url = "https://github.com/unslothai/llama.cpp/releases/download/b12588-mix-c0c3de8/app-b12588-mix-c0c3de8-linux-x64-cuda12-portable.tar.gz"
-binary_sha256 = "4c30d5e3b3d7242cf3f214977c09a0d06102c71a713c256749909dcafa9f5980"
+binary_url = "https://github.com/ggml-org/llama.cpp/releases/download/b12611/llama-b12611-bin-ubuntu-cuda-12.8-x64.tar.gz"
+binary_sha256 = "7f45fec1288a3332d78c48f77ef1a8a08008e0681ff95eae2285432b90dc956d"
 binary_dir = "llama.cpp"
 model_repo = "unsloth/Inkling-2-Mini-GGUF"
-model_patterns = ["*UD-Q4_K_XL*", "*mmproj-F16*", "*dspark*"]
-main_pattern = "Inkling-2-Mini-UD-Q4_K_XL.gguf"
+model_patterns = ["Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file", "*mmproj-F16*"]
+main_pattern = "Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file"
 mmproj_pattern = "mmproj-F16.gguf"
-drafter_pattern = "dspark-Inkling-2-Mini-Q8_0.gguf"
-dspark = true
+llama_jinja = true

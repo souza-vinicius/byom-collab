@@ -231,6 +231,7 @@ WORKER_FIELDS = frozenset(
         "mmproj_pattern",
         "drafter_pattern",
         "dspark",
+        "llama_jinja",
         "chat_template_kwargs",
         "sampling",
     }
@@ -502,9 +503,8 @@ def update_state(**changes: Any) -> State:
 
 
 def clear_state() -> None:
-    with state_lock():
-        with contextlib.suppress(FileNotFoundError):
-            state_path().unlink()
+    with state_lock(), contextlib.suppress(FileNotFoundError):
+        state_path().unlink()
 
 
 def nonce_matches(payload: Any, state: State) -> bool:

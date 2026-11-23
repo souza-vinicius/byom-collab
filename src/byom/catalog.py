@@ -15,6 +15,7 @@ explicitamente registrada em `PROFILE_CONTEXTS`.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 
 RUNTIMES = ("vllm", "llama-cpp", "image")
@@ -188,8 +189,8 @@ MODELS: tuple[ModelEntry, ...] = (
         INKLING_SOURCE,
         notes=(
             "26,4B MoE (5,4B ativos), visão, 1M de contexto.",
-            "Requer llama.cpp com camadas loopadas; build Unsloth b12588-mix-c0c3de8 "
-            "ou arquivos Mainline_Support.",
+            "Requer llama.cpp mainline b12611+ com os arquivos Mainline_Support; "
+            "builds anteriores perdem os scales NVFP4 nas passadas 2 e 3 do loop.",
             "Sampling: temperature 1.0, top_p 1.0, top_k 0, min_p 0.",
         ),
         sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0},
@@ -579,10 +580,8 @@ def parse_gpu_choice(choice: str) -> Gpu:
     # `resolve_gpu` traduz nomes do Colab, onde "A100" é ambíguo (40 ou 80).
     # Reutilizamos essa tradução para reconhecer aliases, mas nunca a usamos
     # para escolher uma GPU automaticamente: só IDs exatos são aceitos.
-    try:
+    with contextlib.suppress(ValueError):
         resolve_gpu(raw)
-    except ValueError:
-        pass
     raise ValueError(_invalid_gpu_message(choice))
 
 
