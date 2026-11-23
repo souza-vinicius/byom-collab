@@ -1,407 +1,426 @@
 # byom-collab
 
-Run a coding model on a Google Colab GPU and use it with local coding agents
-through an OpenAI-compatible API at `http://127.0.0.1:4000/v1`. The VM shuts
-down automatically when idle to avoid wasting compute units.
+Execute um modelo de código em uma GPU do Google Colab e use-o com agentes de
+codificação locais por meio de uma API compatível com OpenAI em
+`http://127.0.0.1:4000/v1`. A máquina virtual é desligada automaticamente quando
+fica ociosa para evitar desperdício de unidades de computação.
 
-> **Status:** Experimental MVP. The tunnel, supervision, and automatic
-> shutdown have been validated on Colab; inference with the Qwen 32k/256k
-> profiles is still being validated.
+> **Status:** MVP experimental. O túnel, a supervisão e o desligamento
+> automático já foram validados no Colab; a inferência com os perfis Qwen
+> 32k/256k ainda está em validação.
 
-## Requirements
+## Requisitos
 
-* macOS or Linux with `ssh` and [`uv`](https://docs.astral.sh/uv/).
-* The [Colab CLI](https://github.com/googlecolab/google-colab-cli), installed
-  and authenticated (`byom` does not provide its own login):
+* macOS ou Linux com `ssh` e [`uv`](https://docs.astral.sh/uv/).
+* A [Colab CLI](https://github.com/googlecolab/google-colab-cli), instalada e
+  autenticada (o `byom` não possui fluxo próprio de login):
 
   ```bash
   uv tool install google-colab-cli
-  colab sessions    # completes the login flow
+  colab sessions    # conclui o fluxo de login
   ```
 
-* A Colab account with available compute units and access to the GPU required
-  by the selected profile (A100 for the Qwen profiles; high-memory runtime for
-  the 256k profile).
+* Uma conta no Colab com unidades de computação disponíveis e acesso à GPU
+  exigida pelo perfil selecionado (A100 para os perfis Qwen; runtime de memória
+  estendida para o perfil 256k).
 
-## Quick start
+## Início rápido
 
 ```bash
 uv sync
-uv run byom init                                  # checks dependencies, creates an SSH key and config
-uv run byom gpus                                  # static GPU catalog and profiles that fit
-uv run byom models                                # asks for a GPU, then lists compatible models
-uv run byom models --gpu L4                       # lists models compatible with L4, no prompt
-uv run byom configure --profile qwen3.8-27b-32k   # selects a model profile
-uv run byom up                                    # allocates a GPU and starts the endpoint
-uv run byom status                                # shows session, worker, tunnel, and account usage
-uv run byom down                                  # stops the session
+uv run byom                                        # abre a interface interativa (TUI) em um terminal real
+uv run byom init                                   # verifica dependências, cria a chave SSH e a config
+uv run byom gpus                                   # catálogo estático de GPUs e perfis compatíveis
+uv run byom models                                 # solicita uma GPU e lista os modelos compatíveis
+uv run byom models --gpu L4                        # lista modelos compatíveis com L4, sem prompt
+uv run byom configure --profile qwen3.8-27b-32k    # seleciona um perfil de modelo
+uv run byom up                                     # aloca a GPU e inicia o endpoint local
+uv run byom status                                 # mostra sessão, worker, túnel e uso da conta
+uv run byom down                                   # encerra a sessão
 ```
 
-* `byom profiles` lists all profiles; `byom gpus` shows the static GPU catalog.
-  Stop the session before switching profiles.
-* `byom models --gpu L4` lists only the catalog variants whose served context
-  fits that GPU, with no prompt. Without `--gpu`, `byom models` prints the
-  numbered GPU list, asks for one number or ID (case-insensitive), and then
-  prints only the compatible variants. An invalid entry stops with the
-  accepted IDs; no GPU is chosen automatically.
-* The GPU list is static and its VRAM values are approximate, from the Google
-  Cloud source recorded in `src/byom/catalog.py` — not from the Colab account.
-  Selecting a GPU for `byom models` only filters the listing: it does not query
-  the account, Colab or Hugging Face, allocate a VM, download a model, or write
-  `config.toml`, `state.json` or any other configuration file. Use
-  `byom configure --profile ...` when you actually want to persist a choice.
-* `byom gpus` does **not** query the account. Pick the GPU in `config.toml`;
-  `byom up` refuses to start if the declared GPU cannot fit the selected
-  variant (it never allocates a different GPU).
-* `byom up --force` stops the previous session before creating a new one (the
-  model is loaded from scratch).
+* `byom` sem subcomandos em um terminal interativo (TTY) abre o menu em PT-BR
+  (use `--no-tui` para forçar a ajuda da CLI ou `--tui` para exigir o menu). Na
+  TUI, a opção **Configurar harness (OpenCode / dsh)** permite escolher o
+  cliente, consultar as instruções passo a passo para configuração manual e,
+  opcionalmente, aplicar a conexão automaticamente (sem alterar arquivos de
+  harness durante o `Iniciar sessão no Colab`).
+* `byom profiles` lista todos os perfis; `byom gpus` exibe o catálogo estático
+  de GPUs. Encerre a sessão antes de trocar de perfil.
+* `byom models --gpu L4` lista apenas as variantes do catálogo cujo contexto
+  servido cabe nessa GPU, sem solicitar entrada. Sem `--gpu`, `byom models`
+  imprime a lista numerada de GPUs, solicita um número ou ID (sem diferenciar
+  maiúsculas/minúsculas) e exibe somente as variantes compatíveis. Uma entrada
+  inválida interrompe com os IDs aceitos; nenhuma GPU é escolhida
+  automaticamente.
+* A lista de GPUs é estática e seus valores de VRAM são aproximados, obtidos da
+  fonte do Google Cloud registrada em `src/byom/catalog.py` — não da sua conta
+  do Colab. Selecionar uma GPU em `byom models` apenas filtra a listagem: não
+  consulta a conta, Colab ou Hugging Face, não aloca VM, não baixa modelo e não
+  grava `config.toml`, `state.json` nem qualquer outro arquivo de configuração.
+  Use `byom configure --profile ...` quando quiser persistir uma escolha.
+* `byom gpus` **não** consulta a conta. Escolha a GPU em `config.toml`;
+  `byom up` recusa iniciar se a GPU declarada não comportar a variante
+  selecionada (ele nunca aloca uma GPU diferente).
+* `byom up --force` encerra a sessão anterior antes de criar uma nova (o modelo
+  é carregado do zero).
 
-## GPU and model catalogs
+## Catálogos de GPUs e modelos
 
-`src/byom/catalog.py` is the single source of GPU/VRAM and model/quantization
-numbers; the commands render it. `byom up` checks
-`weights + 2 GiB runtime + 2 GiB per 32K of context` against the GPU declared
-in `config.toml`. Image models do not reserve autoregressive KV cache.
+`src/byom/catalog.py` é a fonte única de números de GPU/VRAM e
+modelo/quantização; os comandos apenas os renderizam. `byom up` verifica
+`pesos + 2 GiB de runtime + 2 GiB por 32K de contexto` contra a GPU declarada em
+`config.toml`. Modelos de imagem não reservam cache KV autorregressivo.
 
-GPUs (VRAM is **approximate for Colab**: Google's Colab FAQ states GPU types
-vary over time and publishes no VRAM table; the numbers below are from
-`docs.cloud.google.com/compute/docs/gpus`, "General comparison chart", checked
-2026-11-23):
+GPUs (a VRAM é **aproximada para o Colab**: a FAQ oficial do Colab afirma que os
+tipos de GPU variam ao longo do tempo e não publica uma tabela de VRAM; os
+números abaixo vêm de `docs.cloud.google.com/compute/docs/gpus`, "General
+comparison chart", consultado em 2026-11-23):
 
-| GPU (catalog ID) | VRAM | bf16 | Colab CLI value |
+| GPU (ID no catálogo) | VRAM | bf16 | Valor na Colab CLI |
 | :--- | ---: | :--- | :--- |
-| T4 | 16 GiB | no | `T4` |
-| L4 | 24 GiB | yes | `L4` |
-| A100 40 GB | 40 GiB | yes | `A100`, `gpu_high_mem=false` |
-| A100 80 GB | 80 GiB | yes | `A100`, `gpu_high_mem=true` |
-| H100 80 GB | 80 GiB | yes | `H100` |
+| T4 | 16 GiB | não | `T4` |
+| L4 | 24 GiB | sim | `L4` |
+| A100 40 GB | 40 GiB | sim | `A100`, `gpu_high_mem=false` |
+| A100 80 GB | 80 GiB | sim | `A100`, `gpu_high_mem=true` |
+| H100 80 GB | 80 GiB | sim | `H100` |
 
-First batch (docs checked 2026-11-23). "Context" below is the maximum in the
-official page; the served context is smaller on most profiles to fit the GPU
-declared in `config.toml` (`byom models` prints both). `byom models --gpu <ID>`
-uses the same served-context budget as `byom up` to filter the listing; it does
-not change the declared GPU:
+Primeiro lote (documentação consultada em 2026-11-23). "Contexto doc" abaixo é o
+máximo na página oficial; o contexto servido é menor na maioria dos perfis para
+caber na GPU declarada em `config.toml` (`byom models` exibe ambos).
+`byom models --gpu <ID>` usa o mesmo orçamento de contexto servido de `byom up`
+para filtrar a listagem; ele não altera a GPU declarada:
 
-| Model | Runtime | Variant | Memory | Context doc | Context served | Minimum GPU |
+| Modelo | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| Inkling 2 Mini | llama.cpp | 2 bit / 4 bit (17.6 GB) / 8 bit | 11 / 18 / 24 GiB | 1,000,000 | 32,768 / 65,536 / 131,072 | T4 / L4 / A100 |
-| Qwen3.8 27B | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262,144 | 32,768 or 262,144 | L4 (A100 for 256K) |
-| Qwen3.8 27B | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262,144 | 32,768 | T4 / L4 |
-| Gemma 4 | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131,072 (E2B/E4B), 262,144 (others) | 65,536 / 32,768 / 32,768 / 131,072 | T4 to A100 |
-| Muse Glimmer 30B | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131,072 (up to 262,144) | 32,768 / 65,536 / 131,072 | T4 to A100 |
+| Inkling 2 Mini | llama.cpp | 2 bit / 4 bit (17,6 GB) / 8 bit | 11 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | T4 / L4 / A100 |
+| Qwen3.8 27B | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | L4 (A100 para 256K) |
+| Qwen3.8 27B | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | T4 / L4 |
+| Gemma 4 | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 a A100 |
+| Muse Glimmer 30B | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | T4 a A100 |
 | Qwen-Image-2.1 | image | INT8-ConvRot / GGUF Q4_K_M | 20 / 12 GiB | n/a | n/a | L4 / T4 |
 
-The reduction is data, not prose: `src/byom/catalog.py` holds
-`Variant.context_doc`, `Variant.context` and `PROFILE_CONTEXTS`, one entry per
-profile with the GPU and the reason (KV cache grows with context; 2 GiB per
-32K in the budget). `byom models` shows both numbers; `byom profiles` and
-`byom configure` print the doc/served pair with the reason. Compatibility
-checks keep using the SERVED context — the documented maximum is never used
-to allocate a GPU that cannot hold the KV cache.
+A redução é dado estruturado, não texto solto: `src/byom/catalog.py` mantém
+`Variant.context_doc`, `Variant.context` e `PROFILE_CONTEXTS`, uma entrada por
+perfil com a GPU e o motivo (o cache KV cresce com o contexto; 2 GiB por 32K no
+orçamento). `byom models` mostra ambos os números; `byom profiles` e
+`byom configure` exibem o par documentado/servido com a justificativa. As
+checagens de compatibilidade continuam usando o contexto SERVIDO — o máximo
+documentado nunca é usado para alocar uma GPU incapaz de comportar o cache KV.
 
-`reasoning_effort` is also a model property in the catalog, with the source
-recorded in `ModelEntry.reasoning_source` (all checked 2026-11-23):
+`reasoning_effort` também é uma propriedade do modelo no catálogo, com a fonte
+registrada em `ModelEntry.reasoning_source` (todas conferidas em 2026-11-23):
 
-| Model | Documented default | Source |
+| Modelo | Padrão documentado | Fonte |
 | :--- | :--- | :--- |
-| Inkling 2 Mini | `high` | huggingface.co/blog/inkling2mini and `thinkingmachines/Inkling-2-Mini/chat_template.jinja` — template default 0.9; scale none/minimal/low/medium/high/xhigh/max. The briefing also mentions `xhigh` in Thinking Machines' evaluation, but that exact line was **not** located on the consulted pages. |
-| Qwen3.8 27B | `xhigh` | unsloth.ai/docs/models/qwen3.8.md — "xhigh (default)" and "xhigh reasoning" in the benchmark settings |
-| Muse Glimmer 30B | `high` | unsloth.ai/docs/models/muse-glimmer.md — "Thinking Settings" lists low/medium/high/xhigh and the benchmark table says "High Reasoning" |
-| Gemma 4 | none | unsloth.ai/docs/models/gemma-4.md — the page does **not** define `reasoning_effort`; it defines `<|think|>` and `enable_thinking`. No value was invented. |
-| Qwen-Image-2.1 | none | diffusion model; no chat reasoning field |
+| Inkling 2 Mini | `high` | huggingface.co/blog/inkling2mini e `thinkingmachines/Inkling-2-Mini/chat_template.jinja` — padrão do template 0.9; escala none/minimal/low/medium/high/xhigh/max. O briefing também cita `xhigh` na avaliação da Thinking Machines, mas essa linha exata **não** foi localizada nas páginas consultadas. |
+| Qwen3.8 27B | `xhigh` | unsloth.ai/docs/models/qwen3.8.md — "xhigh (default)" e "xhigh reasoning" nas configurações de benchmark |
+| Muse Glimmer 30B | `high` | unsloth.ai/docs/models/muse-glimmer.md — "Thinking Settings" lista low/medium/high/xhigh e a tabela de benchmark diz "High Reasoning" |
+| Gemma 4 | nenhum | unsloth.ai/docs/models/gemma-4.md — a página **não** define `reasoning_effort`; define `<|think|>` e `enable_thinking`. Nenhum valor foi inventado. |
+| Qwen-Image-2.1 | nenhum | modelo de difusão; sem campo de raciocínio de chat |
 
-The whitelist in `config.toml`, `session.json` and the gateway is exactly the
-union documented by those pages: `none`, `minimal`, `low`, `medium`, `high`,
-`xhigh`, `max` (plus `null`/absence for Gemma and image). Numbers such as
-`0.9` are accepted by Inkling's template but are intentionally rejected at
-our boundary: no free-form string or number.
+A lista de valores aceitos em `config.toml`, `session.json` e no gateway é
+exatamente a união documentada por essas páginas: `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max` (além de `null`/ausência para Gemma e imagem).
+Números como `0.9` são aceitos pelo template do Inkling, mas são rejeitados
+propositalmente na nossa fronteira: nenhuma string livre ou número é aceita.
 
-Profile notes: Inkling 2 Mini uses the mainline llama.cpp `b12611` build with
-the `Mainline_Support` GGUFs (the repo's `.gguf_file` extension is renamed to
-`.gguf` on download). Older mainline builds lose the per-expert NVFP4 scales
-on the second and third looped passes and produce wrong output. DSpark is off:
-mainline support is still an open pull request. Muse Glimmer uses pinned
-upstream `b12649`.
-Qwen3.8 keeps the existing AWQ profile for vLLM and adds GGUF options. Gemma 4
-profiles carry an explicit `thinking_policy` key from the catalog: the gateway
-adds `<|think|>` at the start of the system prompt (creating the system message
-when absent) and removes `<|channel>thought … <channel|>` blocks from prior
-assistant turns before forwarding. A client that already placed the token,
-cleaned the history, or sent `enable_thinking: false` keeps its intent.
-All binaries are
-downloaded from pinned URLs with SHA-256 from the release assets; model repo,
-quantization and revision pattern are fixed in the profile — no `@latest`.
+Notas dos perfis: Inkling 2 Mini usa o build mainline `b12611` do llama.cpp com
+os GGUFs de `Mainline_Support` (a extensão `.gguf_file` do repositório é
+renomeada para `.gguf` no download). Builds mainline anteriores perdem os scales
+NVFP4 por especialista na segunda e terceira passadas em loop e produzem saída
+incorreta. DSpark fica desativado: o suporte mainline ainda é um pull request
+aberto. Muse Glimmer usa o release fixado `b12649` do upstream.
+Qwen3.8 mantém o perfil AWQ existente para vLLM e adiciona opções GGUF. Os
+perfis do Gemma 4 carregam uma chave explícita `thinking_policy` vinda do
+catálogo: o gateway adiciona `<|think|>` no início do system prompt (criando a
+mensagem de sistema quando ausente) e remove blocos `<|channel>thought … <channel|>`
+de turnos anteriores do assistente antes de encaminhar. Um cliente que já
+incluiu o token, limpou o histórico ou enviou `enable_thinking: false` mantém
+sua intenção. Todos os binários são baixados de URLs fixadas com SHA-256 dos
+assets de release; repositório do modelo, quantização e padrão de revisão são
+fixos no perfil — sem `@latest`.
 
-Out of scope (no executable profile): MiniMax-M3.1-Flash (1 bit 129.4 GB,
-2 bit 143.9 GB, 4 bit 249.4 GB / 256 GB+ budget), GLM-5.3-Flash (1 bit 93.09 GB,
-3 bit 120.37–147.54 GB, 4 bit 199.71 GB) and DeepSeek-V4.1-Flash (1 bit
-128–145 GB, 4 bit download 500.7 GB, table 305 GB + Engram on SSD). None fits a
-single Colab GPU.
+Fora de escopo (sem perfil executável): MiniMax-M3.1-Flash (1 bit 129,4 GB,
+2 bit 143,9 GB, 4 bit 249,4 GB / orçamento de 256 GB+), GLM-5.3-Flash (1 bit
+93,09 GB, 3 bit 120,37–147,54 GB, 4 bit 199,71 GB) e DeepSeek-V4.1-Flash (1 bit
+128–145 GB, download 4 bit 500,7 GB, tabela 305 GB + Engram em SSD). Nenhum
+deles cabe em uma única GPU do Colab.
 
-### Runtimes and endpoints
+### Runtimes e endpoints
 
-* `vllm` and `llama-cpp` serve `POST /v1/chat/completions` and `GET /v1/models`
-  through the same proxy and gateway. `llama-server` is started with the pinned
-  GGUF, the `mmproj` vision projector when present, and DSpark draft when the
-  profile requests it.
-* `image` serves `POST /v1/images/generations` and `POST /v1/images/edits` via
-  `sd-server`'s OpenAI-compatible image API, plus `GET /v1/models` for model
-  metadata. It is a diffusion model, **not** a chat model:
-  `POST /v1/chat/completions` returns HTTP 501 for this runtime. Requests take
-  `prompt` and image options, not `messages`; responses contain image data
-  `data[].b64_json`), not tokens or finish reasons. The Unsloth page documents
-  defaults of **25 steps and guidance 1** (checked 2026-11-23); both live only
-  in `ModelEntry.generation_defaults`. sd-server does **not** accept a
-  top-level `guidance` field: the gateway maps the pair into the documented
-  native extension inside `prompt` —
+* `vllm` e `llama-cpp` atendem `POST /v1/chat/completions` e `GET /v1/models`
+  pelo mesmo proxy e gateway. O `llama-server` é iniciado com o GGUF fixado, o
+  projetor de visão `mmproj` quando presente e o rascunho DSpark quando
+  solicitado pelo perfil.
+* `image` atende `POST /v1/images/generations` e `POST /v1/images/edits` pela
+  API de imagens compatível com OpenAI do `sd-server`, além de `GET /v1/models`
+  para metadados do modelo. Trata-se de um modelo de difusão, e **não** de um
+  modelo de chat: `POST /v1/chat/completions` retorna HTTP 501 neste runtime. As
+  requisições recebem `prompt` e opções de imagem, não `messages`; as respostas
+  contêm dados de imagem (`data[].b64_json`), não tokens ou motivos de parada.
+  A página da Unsloth documenta padrões de **25 steps e guidance 1** (conferido
+  em 2026-11-23); ambos vivem apenas em `ModelEntry.generation_defaults`. O
+  sd-server **não** aceita um campo `guidance` no nível raiz: o gateway mapeia o
+  par para a extensão nativa documentada dentro de `prompt` —
   `<sd_cpp_extra_args>{"sample_params":{"sample_steps":25,"guidance":{"txt_cfg":1.0}}}</sd_cpp_extra_args>`
-  (`examples/server/api.md`, checked 2026-11-23). A client can override
-  `steps`/`guidance` in the body or supply its own `sd_cpp_extra_args` block.
-  Divergence recorded: the same Unsloth page suggests `--steps 20 --cfg-scale
-  6.0` for the sd-cli workflow; this project uses the documented API defaults
-  (25/1) from the briefing, not a value invented for sd.cpp.
-  `POST /v1/images/edits` is multipart and keeps the server's defaults. On a 15 GB
-  Colab T4, one 1024x1024 image at 25 steps takes about 120 s in fp16; up to
-  ~14 GB of GPU memory and 24 GB of system RAM are used. T4 has no bf16, so
-  training is refused by Unsloth; bf16 training needs Ampere or newer. The
-  pinned Linux asset's name does not state its backend; verify GPU use on the
-  first real run. If it is a CPU build, build from the pinned tag with
-  `-DSD_CUDA=ON` and point `BYOM_SD_SERVER` at the resulting `sd-server`.
-* Hugging Face repositories and the Colab CLI are **verified only on the first
-  real run**: this repository does not call them during local tests. Check the
-  model files resolved from the pinned patterns and the GPU actually assigned
-  by `colab new` before relying on a profile.
+  (`examples/server/api.md`, conferido em 2026-11-23). O cliente pode
+  sobrescrever `steps`/`guidance` no corpo da requisição ou enviar seu próprio
+  bloco `sd_cpp_extra_args`. Divergência registrada: a mesma página da Unsloth
+  sugere `--steps 20 --cfg-scale 6.0` para o fluxo via sd-cli; este projeto
+  adota os padrões documentados da API (25/1) conforme o briefing, não um valor
+  inventado para o sd.cpp. `POST /v1/images/edits` usa multipart e mantém os
+  padrões do servidor. Em uma Colab T4 de 15 GB, uma imagem 1024x1024 em 25
+  passos leva cerca de 120 s em fp16; são usados até ~14 GB de memória de GPU e
+  24 GB de RAM do sistema. A T4 não possui bf16, portanto o treino é recusado
+  pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior. O nome do
+  asset Linux fixado não declara seu backend; verifique o uso de GPU na primeira
+  execução real. Se for um build de CPU, compile a partir da tag fixada com
+  `-DSD_CUDA=ON` e aponte `BYOM_SD_SERVER` para o `sd-server` gerado.
+* Repositórios no Hugging Face e a CLI do Colab são **verificados apenas na
+  primeira execução real**: este repositório não os aciona durante os testes
+  locais. Confira os arquivos de modelo resolvidos pelos padrões fixados e a GPU
+  efetivamente alocada por `colab new` antes de depender de um perfil.
 
-Sources consulted 2026-11-23: Unsloth model pages
+Fontes consultadas em 2026-11-23: páginas de modelos da Unsloth
 (`inkling-2-mini.md`, `qwen3.8.md`, `gemma-4.md`, `muse-glimmer.md`,
-`qwen-image-2.1.md`, plus the three "Flash" pages), Hugging Face's
-`blog/inkling2mini` and `thinkingmachines/Inkling-2-Mini/chat_template.jinja`,
-`leejet/stable-diffusion.cpp` `examples/server/api.md`, Google Cloud GPU machine
-types and Colab FAQ, Hugging Face `unsloth/Inkling-2-Mini-GGUF`
-(`Mainline_Support/README.md`, `HOW_TO_RUN.md` and discussion #8),
-GitHub release asset lists for `ggml-org/llama.cpp` `b12611` and `b12649`,
-llama.cpp PRs #32694 and #32704, and
-`leejet/stable-diffusion.cpp` `master-1106-532d2c1`.
+`qwen-image-2.1.md`, além das três páginas "Flash"), `blog/inkling2mini` e
+`thinkingmachines/Inkling-2-Mini/chat_template.jinja` no Hugging Face,
+`examples/server/api.md` de `leejet/stable-diffusion.cpp`, tipos de máquina com
+GPU do Google Cloud e FAQ do Colab, `unsloth/Inkling-2-Mini-GGUF` no Hugging
+Face (`Mainline_Support/README.md`, `HOW_TO_RUN.md` e discussão #8), listas de
+assets de release de `ggml-org/llama.cpp` `b12611` e `b12649`, PRs #32694 e
+#32704 do llama.cpp e `leejet/stable-diffusion.cpp` `master-1106-532d2c1`.
 
-## Using coding agents
+## Uso com agentes de codificação
 
-| Agent | Configuration |
+| Agente | Configuração |
 | :--- | :--- |
-| OpenCode | Automatic: `byom up` adds the provider and sets the default model |
-| dsh (DeepSeek harness) | Automatic: `byom up` adds the `byom` provider and sets the default model |
-| Aider | `OPENAI_API_BASE=http://127.0.0.1:4000/v1` and `OPENAI_API_KEY=dummy` |
-| Cline | OpenAI-compatible provider with base URL `http://127.0.0.1:4000/v1` |
+| OpenCode | Automática: `byom up` adiciona o provedor e define o modelo padrão |
+| dsh (DeepSeek harness) | Automática: `byom up` adiciona o provedor `byom` e define o modelo padrão |
+| Aider | `OPENAI_API_BASE=http://127.0.0.1:4000/v1` e `OPENAI_API_KEY=dummy` |
+| Cline | Provedor compatível com OpenAI usando URL base `http://127.0.0.1:4000/v1` |
 
-**OpenCode:** `byom up` merges the provider, discovery plugin, and 32k/256k
-aliases into the global config (`$XDG_CONFIG_HOME/opencode` or
-`~/.config/opencode`) while preserving the rest. Use
-`--opencode-config <file>` to specify another path, and restart OpenCode after
-changes. JSONC files (with comments or trailing commas) are not rewritten, so
-`up` aborts before allocating a GPU.
+**OpenCode:** `byom up` mescla o provedor, o plugin de descoberta e os aliases
+32k/256k na configuração global (`$XDG_CONFIG_HOME/opencode` ou
+`~/.config/opencode`), preservando o restante. Use `--opencode-config <arquivo>`
+para indicar outro caminho e reinicie o OpenCode após as alterações. Arquivos
+JSONC (com comentários ou vírgulas finais) não são reescritos, fazendo o `up`
+abortar antes de alocar uma GPU.
 
-**dsh:** if `~/.dsh/profiles/desktop/cordis.patch.yml` exists (or
-`--dsh-config <file>` is given), `byom up` adds `providers.byom` to the
-`llm-pi-ai` entry (OpenAI-compatible, `baseURL` pointing at the local proxy, and
-the model with the active profile's `contextWindow`, and
-`apiKeyEnv: BYOM_API_KEY` unless you already set one) and sets
-`agent-default-model` to `byom`. Nothing else is changed or removed: other
-providers, models, API key variables, entries and comments stay as they were.
-Export any value, e.g. `export BYOM_API_KEY=dummy` (the proxy does not check it)
-before starting dsh. The file is edited as text; a non-list, tab-indented, or
-non-standard `byom` block file aborts `up` before allocating a GPU (the file is
-left untouched). Restart dsh after changes.
+**dsh:** se `~/.dsh/profiles/desktop/cordis.patch.yml` existir (ou
+`--dsh-config <arquivo>` for informado), `byom up` adiciona `providers.byom` à
+entrada `llm-pi-ai` (compatível com OpenAI, `baseURL` apontando para o proxy
+local, o modelo com o `contextWindow` do perfil ativo e `apiKeyEnv: BYOM_API_KEY`
+caso ainda não haja uma chave definida) e define `agent-default-model` como
+`byom`. Nada mais é alterado ou removido: outros provedores, modelos, variáveis
+de chave de API, entradas e comentários permanecem intactos. Exporte qualquer
+valor, por exemplo `export BYOM_API_KEY=dummy` (o proxy não valida a chave),
+antes de iniciar o dsh. O arquivo é editado como texto; arquivos inválidos (não
+lista, indentados com tab ou com bloco `byom` fora do padrão) abortam o `up`
+antes de alocar uma GPU (mantendo o arquivo intocado). Reinicie o dsh após as
+alterações.
 
-**Not supported:** Cursor (requests are sent from Cursor's backend and cannot
-reach your localhost) and Claude Code (it uses the Anthropic Messages API at
+**Não suportados:** Cursor (as requisições partem do backend do Cursor e não
+alcançam seu `localhost`) e Claude Code (usa a API Messages da Anthropic em
 `/v1/messages`).
 
-**Reasoning:** each model carries its documented default in the catalog; the
-profile inherits it and the client can override it per request. If the client
-omits `chat_template_kwargs.reasoning_effort`, the gateway injects that value —
-`high` for Inkling 2 Mini, `xhigh` for Qwen3.8, `high` for Muse Glimmer. For
-Gemma 4 the catalog value is `null` (the page does not define the field) and
-**nothing is injected**. Valid values are exactly `none`, `minimal`, `low`,
-`medium`, `high`, `xhigh`, `max`, validated in `config.toml`, `session.json`
-and at the gateway boundary; an invalid value aborts startup. A client that
-sends a non-object `chat_template_kwargs` keeps its original payload. Sources
-and the 2026-11-23 check date are in the table above and in
+**Raciocínio (Reasoning):** cada modelo traz seu padrão documentado no catálogo;
+o perfil o herda e o cliente pode sobrescrevê-lo por requisição. Se o cliente
+omitir `chat_template_kwargs.reasoning_effort`, o gateway injeta esse valor —
+`high` para Inkling 2 Mini, `xhigh` para Qwen3.8, `high` para Muse Glimmer. Para
+Gemma 4 o valor no catálogo é `null` (a página não define o campo) e **nada é
+injetado**. Os valores válidos são exatamente `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`, validados em `config.toml`, `session.json` e na
+fronteira do gateway; um valor inválido aborta a inicialização. Um cliente que
+envie um `chat_template_kwargs` que não seja objeto mantém o payload original.
+As fontes e a data de conferência (2026-11-23) estão na tabela acima e em
 `ModelEntry.reasoning_source`.
 
-## How it works
+## Como funciona
 
 ```text
-Agent --HTTP/SSE--> Proxy :4000 --> Tunnel :4001 ==SSH (via colab ssh)==> Colab VM
-                                                                        Gateway :8001 --> runtime :8000
-                                                                          (vLLM | llama-server | sd-server)
-                                                                           ^
-                                                   Watchdog (cell) --------+--> runtime.unassign()
+Agente --HTTP/SSE--> Proxy :4000 --> Túnel :4001 ==SSH (via colab ssh)==> VM Colab
+                                                                           Gateway :8001 --> runtime :8000
+                                                                             (vLLM | llama-server | sd-server)
+                                                                              ^
+                                                       Watchdog (célula) -----+--> runtime.unassign()
 ```
 
-* **Gateway:** All inference requests pass through it, making it the source of
-  truth for activity (`/health` and `/v1/models` do not count as work).
-* **Watchdog:** A long-running kernel cell that checks the gateway every 10
-  seconds and calls `unassign()` after the idle timeout. The local daemon
-  restarts it if the connection drops.
-* **Safe shutdown:** The VM shuts down only after the gateway confirms there
-  is no active work. If the watchdog misses heartbeats for more than 60
-  seconds, the gateway stops vLLM.
-* **SSH:** A single OpenSSH master connection (`ControlMaster`, with
-  `colab ssh` as the `ProxyCommand`) carries the tunnel and remote commands.
+* **Gateway:** todas as requisições de inferência passam por ele, tornando-o a
+  fonte de verdade de atividade (`/health` e `/v1/models` não contam como
+  trabalho ativo).
+* **Watchdog:** célula de longa duração no kernel que verifica o gateway a cada
+  10 segundos e chama `unassign()` após o tempo limite de ociosidade. O daemon
+  local a reinicia se a conexão cair.
+* **Desligamento seguro:** a VM só é encerrada após o gateway confirmar que não
+  há trabalho em andamento. Se o watchdog ficar sem enviar heartbeats por mais
+  de 60 segundos, o gateway interrompe o vLLM.
+* **SSH:** uma única conexão mestre do OpenSSH (`ControlMaster`, usando
+  `colab ssh` como `ProxyCommand`) transporta o túnel e os comandos remotos.
 
-## Configuration
+## Configuração
 
-Configuration file: `~/.config/byom/config.toml` (created by `init`; profiles
-set the model-related fields):
+Arquivo de configuração: `~/.config/byom/config.toml` (criado por `init`; os
+perfis definem os campos ligados ao modelo):
 
-| Key | Default | Description |
+| Chave | Padrão | Descrição |
 | :--- | :--- | :--- |
-| `profile` | empty | Active profile |
-| `runtime` | `vllm` | Runtime selected by the profile: `vllm`, `llama-cpp` or `image` |
-| `model` | `philbert440/Qwen3.8-27B-W4A16-AWQ` | Checkpoint served by vLLM |
-| `served_model_name` | `qwen3.8-27b` | Model ID exposed by the API |
-| `max_model_len` | `16384` | Maximum context length |
-| `reasoning_effort` | inherited | Documented model default from the catalog (Qwen3.8 `xhigh`, Inkling `high`, Muse `high`; Gemma/image omitted). A profile or the client can override it. |
-| `gpu` | `L4` | Requested accelerator |
-| `gpu_high_mem` | `false` | Requests a high-memory runtime (A100; eligible plan required) |
-| `idle_timeout_min` | `20` | Idle time before shutdown |
-| `max_job_min` | `40` | Timeout for a stuck job |
-| `bootstrap_timeout_min` | `30` | Time allowed for the worker to become ready |
-| `watchdog_timeout_s` | `60` | Watchdog timeout that stops vLLM |
-| `proxy_port` / `tunnel_port` | `4000` / `4001` | Local ports |
-| `gateway_port` / `vllm_port` | `8001` / `8000` | VM ports |
-| `gpu_memory_utilization` | `0.92` | Fraction of GPU memory used by vLLM (must be in `(0, 1]`) |
-| `kv_cache_dtype` | `fp8` | KV cache data type |
-| `vllm_spec` | `vllm` | vLLM package to install (version not pinned) |
-| `vllm_enforce_eager` | `false` | Disables CUDA graphs if memory is insufficient |
-| `vllm_language_model_only` | `true` | Does not reserve memory for the vision tower |
-| `ssh_key` | `~/.ssh/byom_ed25519` | Tunnel key |
+| `profile` | vazio | Perfil ativo |
+| `runtime` | `vllm` | Runtime selecionado pelo perfil: `vllm`, `llama-cpp` ou `image` |
+| `model` | `philbert440/Qwen3.8-27B-W4A16-AWQ` | Checkpoint servido pelo vLLM |
+| `served_model_name` | `qwen3.8-27b` | ID do modelo exposto pela API |
+| `max_model_len` | `16384` | Tamanho máximo de contexto |
+| `reasoning_effort` | herdado | Padrão documentado do modelo no catálogo (Qwen3.8 `xhigh`, Inkling `high`, Muse `high`; Gemma/imagem omitido). Um perfil ou o cliente pode sobrescrevê-lo. |
+| `gpu` | `L4` | Aceleradora solicitada |
+| `gpu_high_mem` | `false` | Solicita runtime de memória estendida (A100; exige plano elegível) |
+| `idle_timeout_min` | `20` | Tempo de ociosidade antes do desligamento |
+| `max_job_min` | `40` | Tempo limite para job travado |
+| `bootstrap_timeout_min` | `30` | Tempo máximo permitido para o worker ficar pronto |
+| `watchdog_timeout_s` | `60` | Timeout do watchdog que interrompe o vLLM |
+| `proxy_port` / `tunnel_port` | `4000` / `4001` | Portas locais |
+| `gateway_port` / `vllm_port` | `8001` / `8000` | Portas na VM |
+| `gpu_memory_utilization` | `0.92` | Fração de memória da GPU usada pelo vLLM (deve estar em `(0, 1]`) |
+| `kv_cache_dtype` | `fp8` | Tipo de dado do cache KV |
+| `vllm_spec` | `vllm` | Pacote vLLM a instalar (versão não fixada) |
+| `vllm_enforce_eager` | `false` | Desativa CUDA graphs se houver falta de memória |
+| `vllm_language_model_only` | `true` | Não reserva memória para a torre de visão |
+| `ssh_key` | `~/.ssh/byom_ed25519` | Chave do túnel |
 
-Session state is stored in `~/.config/byom/state.json` (written with mode 0600,
-serialized by a lock file, and containing the worker's identity nonce: it is not
-a user credential, but it should not be shared). `byom` sessions use a separate
-store (`~/.config/byom/colab-sessions.json`) from your other Colab sessions.
-`session.json` additionally carries `thinking_policy` (explicit Gemma 4 key
-from the catalog) and `generation_defaults` (`steps`/`guidance` for Qwen-Image),
-both validated by the gateway at startup.
+O estado da sessão é salvo em `~/.config/byom/state.json` (gravado com permissão
+0600, serializado por arquivo de trava e contendo o nonce de identidade do
+worker: não é uma credencial do usuário, mas não deve ser compartilhado). As
+sessões do `byom` usam um arquivo isolado
+(`~/.config/byom/colab-sessions.json`), separado das suas outras sessões do
+Colab. `session.json` também carrega `thinking_policy` (chave explícita do
+Gemma 4 vinda do catálogo) e `generation_defaults` (`steps`/`guidance` para o
+Qwen-Image), ambos validados pelo gateway na inicialização.
 
-## Known issues
+## Problemas conhecidos
 
-**One SSH connection per session.** The runtime accepts only one `colab ssh`
-connection at a time. Running another `colab ssh` disconnects `byom` (HTTP
-429). Use `byom status` to inspect the worker.
+**Uma conexão SSH por sessão.** O runtime aceita apenas uma conexão `colab ssh`
+por vez. Executar outro `colab ssh` desconecta o `byom` (HTTP 429). Use
+`byom status` para inspecionar o worker.
 
-**Orphaned sessions.** If the Colab CLI allocates a VM but fails to save its
-local state, the session appears as `[?]` in `colab sessions`, continues
-consuming compute units, and cannot be stopped with `colab stop`. `byom status`
-and `byom up` warn when this happens. Stop the session from the Colab website
-or run:
+**Sessões órfãs.** Se a CLI do Colab alocar uma VM mas falhar ao gravar o estado
+local, a sessão aparece como `[?]` em `colab sessions`, continua consumindo
+unidades de computação e não pode ser encerrada com `colab stop`. `byom status`
+e `byom up` emitem um aviso quando isso ocorre. Encerre a sessão pelo site do
+Colab ou execute:
 
 ```bash
 ~/.local/share/uv/tools/google-colab-cli/bin/python -c \
   "from colab_cli.common import state; state.client.unassign('<endpoint>')"
 ```
 
-where `<endpoint>` is the second field in the `colab sessions` output.
+onde `<endpoint>` é o segundo campo na saída de `colab sessions`.
 
-## Design decisions and unverified external behavior
+## Decisões de design e comportamento externo não verificado
 
-Recorded on 2026-11-23 against the local clone at commit `cba79b8`.
+Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
 
-* **Documented values are catalog data.** `reasoning_effort`, the Gemma 4
-  `thinking_policy`, Qwen-Image `generation_defaults`, and both context numbers
-  live in `src/byom/catalog.py`; profiles inherit them and the gateway receives
-  them in `session.json`. Sources and dates for every value are recorded in
-  the catalog and in the tables above. No profile repeats `medium`, `25` or a
-  documented context maximum.
-* **Context is not silently reduced.** `PROFILE_CONTEXTS` lists all 15 profiles
-  with doc context, served context, GPU and reason. `byom models` prints both;
-  `check_fit` still uses the served value from `config.toml`. Raising a profile
-  to the documented maximum without a larger GPU is explicitly out of scope.
-* **Thinking is keyed by behavior, not model name.** Only a model with
-  `ModelEntry.thinking` gets the Gemma 4 prompt transformation. The client's
-  own token, clean history, or `enable_thinking: false` wins.
-* **Image defaults use the server's names.** Unsloth says "steps/guidance";
-  sd-server documents `sample_params.sample_steps` and
-  `sample_params.guidance.txt_cfg` via `sd_cpp_extra_args`. The equivalence is
-  recorded in `ModelEntry.generation_source`; no top-level `guidance` is sent.
+* **Valores documentados são dados do catálogo.** `reasoning_effort`,
+  `thinking_policy` do Gemma 4, `generation_defaults` do Qwen-Image e ambos os
+  números de contexto ficam em `src/byom/catalog.py`; os perfis os herdam e o
+  gateway os recebe em `session.json`. Fontes e datas de cada valor estão
+  registradas no catálogo e nas tabelas acima. Nenhum perfil repete `medium`,
+  `25` ou um máximo de contexto documentado.
+* **O contexto não é reduzido silenciosamente.** `PROFILE_CONTEXTS` lista todos
+  os 15 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
+  imprime ambos; `check_fit` continua usando o valor servido de `config.toml`.
+  Elevar um perfil ao máximo documentado sem uma GPU maior está explicitamente
+  fora de escopo.
+* **Thinking é guiado por comportamento, não pelo nome do modelo.** Apenas um
+  modelo com `ModelEntry.thinking` recebe a transformação de prompt do Gemma 4.
+  O token do próprio cliente, histórico já limpo ou `enable_thinking: false`
+  prevalecem.
+* **Padrões de imagem usam os nomes do servidor.** A Unsloth fala em
+  "steps/guidance"; o sd-server documenta `sample_params.sample_steps` e
+  `sample_params.guidance.txt_cfg` via `sd_cpp_extra_args`. A equivalência está
+  registrada em `ModelEntry.generation_source`; nenhum `guidance` no nível raiz
+  é enviado.
+* **`state.json` corrompido bloqueia `up`.** Arquivo ausente significa "sem
+  sessão"; arquivo ilegível ou inválido é erro. `up` também verifica
+  `orphan_assignments()` tanto no caminho normal quanto com `--force` e
+  **bloqueia** (sem alocar) enquanto houver sessões órfãs. Motivo: uma órfã
+  continua consumindo unidades de computação e não pode ser encerrada por
+  `colab stop`; pedir confirmação deixaria a decisão para quem pode não estar
+  vendo o estado do backend. Corrija no Colab e tente novamente.
+* **Desalocação de fallback no gateway.** A célula de watchdog continua sendo a
+  chamadora principal de `runtime.unassign()`. Se ela (ou seu supervisor local)
+  falhar, o gateway agenda um fallback pelo mesmo módulo `google.colab.runtime`,
+  30 segundos após um desligamento por ociosidade aceito ou após a parada do
+  vLLM. Ele ignora a desalocação enquanto `active_jobs > 0` e nunca chama
+  endpoints externos.
+* **Limite de jobs.** O gateway aceita no máximo `BYOM_MAX_CONCURRENT_JOBS`
+  jobs concorrentes (padrão `4`; valores inválidos voltam para `4`); requisições
+  excedentes recebem HTTP 503. Defina a variável de ambiente no ambiente da VM
+  para alterá-la; ela não faz parte de `session.json`.
+* **Endpoints internos.** `/internal/state` e `/internal/begin-shutdown` aceitam
+  apenas clientes loopback (HTTP 403 caso contrário). Nenhuma autenticação de
+  cliente foi adicionada porque o gateway escuta em `127.0.0.1` e o proxy local
+  não expõe esses caminhos.
+* **SSH.** `init` define a chave privada com permissão `0600` após a geração.
+  `StrictHostKeyChecking=no` com `UserKnownHostsFile=/dev/null` é intencional: o
+  canal é um túnel efêmero `colab ssh --proxy-mode` com uma nova chave de host
+  a cada VM, e a CLI do Colab não expõe opção de `known_hosts`. Verificar chaves
+  de host exigiria mudança na CLI; reavalie se essa opção passar a existir.
+* **OpenCode V1/V2.** A configuração gerada permanece no formato V1 (`plugin`,
+  `provider`, `npm`, `options`, `tool_call`), que o guia de migração V2 indica
+  ser normalizado em memória. O plugin de descoberta é fixado em
+  `opencode-models-discovery@2.2.1` (`latest` no npm em 2026-11-23) em vez de
+  `@latest`. O README do próprio plugin descreve um adaptador V1 separado, mas
+  a execução do plugin V1 sob V2 **não foi verificada** neste ambiente.
+  Revalide com a versão instalada do OpenCode antes de depender da descoberta
+  automática de modelos.
+* **Divergência da Colab CLI.** O README upstream documenta comandos pontuais
+  como `colab ssh -s NOME -- CMD`; `src/byom/remote.py` registra que a CLI
+  0.7.5 não aceita essa forma e utiliza um master multiplexado
+  `colab ssh --proxy-mode` em vez disso. O comando **não foi alterado** e o
+  comportamento/versão real da CLI **não foi verificado** aqui. Revalide contra
+  `colab version` e o README upstream correspondente antes de portar esse
+  comando.
 
-* **Corrupted `state.json` blocks `up`.** An absent file means "no session"; an
-  unreadable or invalid file is an error. `up` also checks `orphan_assignments()`
-  on both the normal and `--force` paths and **blocks** (without allocating)
-  while orphans exist. Rationale: an orphan keeps consuming compute units and
-  cannot be stopped by `colab stop`; asking for confirmation would leave the
-  decision to a user who may not see the backend state. Fix it in Colab, then
-  retry.
-* **Gateway fallback deallocation.** The watchdog cell remains the primary
-  caller of `runtime.unassign()`. If it (or its local supervisor) fails, the
-  gateway schedules one fallback via the same `google.colab.runtime` module,
-  30 seconds after an accepted idle shutdown or after vLLM is stopped. It skips
-  deallocation while `active_jobs > 0` and never calls external endpoints.
-* **Job ceiling.** The gateway accepts at most
-  `BYOM_MAX_CONCURRENT_JOBS` concurrent jobs (default `4`, invalid values fall
-  back to `4`); excess requests get HTTP 503. Set the environment variable in
-  the VM environment to change it; it is not part of `session.json`.
-* **Internal endpoints.** `/internal/state` and `/internal/begin-shutdown`
-  accept loopback clients only (403 otherwise). No client authentication was
-  added because the gateway binds `127.0.0.1` and the local proxy does not
-  expose those paths.
-* **SSH.** `init` sets the private key to mode 0600 after generation.
-  `StrictHostKeyChecking=no` plus `UserKnownHostsFile=/dev/null` is deliberate:
-  the channel is an ephemeral `colab ssh --proxy-mode` tunnel with a new host
-  key per VM, and the Colab CLI exposes no known_hosts option. Verifying host
-  keys would require a CLI change; re-evaluate if that option appears.
-* **OpenCode V1/V2.** The generated config stays in V1 form (`plugin`,
-  `provider`, `npm`, `options`, `tool_call`), which the V2 migration guide says
-  is normalized in memory. The discovery plugin is pinned to
-  `opencode-models-discovery@2.2.1` (npm `latest` on 2026-11-23) instead of
-  `@latest`. The plugin's own README describes a separate V1 adapter, but
-  V1 plugin execution under V2 was **not verified** in this environment.
-  Revalidate with the installed OpenCode version before relying on automatic
-  model discovery.
-* **Colab CLI divergence.** The upstream README documents one-shot commands as
-  `colab ssh -s NAME -- CMD`; `src/byom/remote.py` states that CLI 0.7.5 does
-  not accept that form and uses a multiplexed `colab ssh --proxy-mode` master
-  instead. The command was **not changed** and the real CLI version/behavior
-  was **not verified** here. Revalidate against `colab version` and the
-  matching upstream README before porting this command.
-
-## Development
+## Desenvolvimento
 
 ```bash
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-Tests do not access Colab: they use a fake vLLM server and a stub Colab CLI.
+Os testes não acessam o Colab: utilizam um servidor vLLM simulado e um stub da
+Colab CLI.
 
-To validate against real Colab (the script creates and stops its own sessions;
-use `--keep` to retain them for inspection):
+Para validar contra o Colab real (o script cria e encerra suas próprias sessões;
+use `--keep` para mantê-las para inspeção):
 
 ```bash
-uv run python scripts/spike.py --phase cheap   # CPU: tunnel, tmux, watchdog, unassign()
-uv run python scripts/spike.py --phase model   # GPU (T4 by default; --gpu selects another): vLLM, decode, tool calling
+uv run python scripts/spike.py --phase cheap   # CPU: túnel, tmux, watchdog, unassign()
+uv run python scripts/spike.py --phase model   # GPU (T4 por padrão; --gpu escolhe outra): vLLM, decode, tool calling
 ```
 
-The `model` phase downloads about 20 GB of model weights and uses compute
-units. Use `--enforce-eager` if you run out of memory.
+A fase `model` baixa cerca de 20 GB de pesos de modelo e consome unidades de
+computação. Use `--enforce-eager` se faltar memória.
 
-### Project structure
+### Estrutura do projeto
 
 ```text
 src/byom/
   cli.py                  init, profiles, gpus, models, configure, up, status, down
-  catalog.py              validated GPU/model catalog and compatibility check
-  profiles/               runtime profiles (vLLM, GGUF, image) and OpenCode aliases
-  opencode.py             merges OpenCode configuration
-  dsh.py                  merges dsh (DeepSeek harness) configuration
-  colab.py                Colab CLI calls and kernel cells
-  tunnel.py, remote.py    SSH master connection, tunnel, and VM commands
-  daemon.py, proxy.py     local proxy process and tunnel supervision
-  watchdog_supervisor.py  keeps the Colab watchdog cell alive
-worker/                   files uploaded to the VM
-  bootstrap.sh            installs dependencies and starts vLLM and gateway in tmux
-  build_vllm_command.py   builds vLLM arguments from the active profile
-  gateway.py              inference proxy, activity tracking, and shutdown coordination
-  watchdog.py             heartbeat and unassign()
-scripts/spike.py          manual validation against real Colab
+  tui.py                  interface interativa (TUI) com Rich e questionary
+  mensagens.py            textos, traduções, glossário e formatadores PT-BR da TUI
+  catalog.py              catálogo validado de GPUs/modelos e checagem de compatibilidade
+  profiles/               perfis de runtime (vLLM, GGUF, imagem) e aliases do OpenCode
+  opencode.py             mescla a configuração do OpenCode
+  dsh.py                  mescla a configuração do dsh (DeepSeek harness)
+  colab.py                chamadas da Colab CLI e células de kernel
+  tunnel.py, remote.py    conexão mestre SSH, túnel e comandos na VM
+  daemon.py, proxy.py     processo de proxy local e supervisão do túnel
+  watchdog_supervisor.py  mantém ativa a célula de watchdog no Colab
+worker/                   arquivos enviados para a VM
+  bootstrap.sh            instala dependências e inicia vLLM e gateway no tmux
+  build_vllm_command.py   monta os argumentos do vLLM a partir do perfil ativo
+  gateway.py              proxy de inferência, rastreamento de atividade e coordenação de desligamento
+  watchdog.py             heartbeat e unassign()
+scripts/spike.py          validação manual contra o Colab real
 ```

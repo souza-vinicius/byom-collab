@@ -30,8 +30,10 @@ def gateway_module():
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    """No test touches the real ~/.deepseek."""
+    """No test touches the real ~/.deepseek, ~/.ssh or XDG_CONFIG_HOME."""
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     home = tmp_path / "home"
     home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     return home
