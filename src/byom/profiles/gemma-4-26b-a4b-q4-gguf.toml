@@ -1,0 +1,31 @@
+name = "Gemma 4 26b-a4b-q4"
+description = "Gemma 4 26B-A4B 4 bit com mmproj de visão."
+opencode_output_limit = 8192
+runtime = "llama-cpp"
+catalog_model = "gemma-4"
+catalog_variant = "26b-a4b-q4"
+
+[config]
+model = "gemma-4"
+served_model_name = "gemma-4-26b-a4b-q4"
+max_model_len = 32768
+gpu = "L4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+kv_cache_dtype = "fp8"
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[worker]
+binary_url = "https://github.com/ggml-org/llama.cpp/releases/download/b12649/llama-b12649-bin-ubuntu-cuda-12.8-x64.tar.gz"
+binary_sha256 = "110c23ca68ff1967806e248bcc3a726368ad74d261470ad165a0edcec339d0fa"
+binary_dir = "llama.cpp"
+model_repo = "unsloth/gemma-4-26B-A4B-it-GGUF"
+model_patterns = ["*UD-Q4_K_XL*", "*mmproj*"]
+main_pattern = "*UD-Q4_K_XL*"
+mmproj_pattern = "*mmproj*"
+chat_template_kwargs = "{\"enable_thinking\": true}"

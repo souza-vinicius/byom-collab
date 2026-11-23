@@ -46,24 +46,39 @@ fi
 
 # 3. dependencies ---------------------------------------------------------
 VLLM_SPEC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["vllm_spec"])' "$SESSION_FILE")"
-log "Installing $VLLM_SPEC and gateway dependencies"
-uv pip install --python "$VENV/bin/python" "$VLLM_SPEC"
+RUNTIME="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runtime","vllm"))' "$SESSION_FILE")"
+log "Runtime: $RUNTIME"
+if [ "$RUNTIME" = "vllm" ]; then
+  log "Installing $VLLM_SPEC and gateway dependencies"
+  uv pip install --python "$VENV/bin/python" "$VLLM_SPEC"
+fi
 uv pip install --python "$VENV/bin/python" -r "$BYOM_DIR/requirements.txt"
 
-# 4. vLLM command ---------------------------------------------------------
-python3 "$BYOM_DIR/build_vllm_command.py" "$SESSION_FILE" > "$BYOM_DIR/vllm.cmd"
-log "Wrote vLLM command to $BYOM_DIR/vllm.cmd"
+# 4. runtime-specific binaries and weights --------------------------------
+python3 "$BYOM_DIR/prepare_runtime.py" "$SESSION_FILE"
 
-# 5. tmux processes -------------------------------------------------------
+# 5. server command -------------------------------------------------------
+python3 "$BYOM_DIR/build_vllm_command.py" "$SESSION_FILE" > "$BYOM_DIR/runtime.cmd"
+log "Wrote server command to $BYOM_DIR/runtime.cmd"
+
+# 6. tmux processes -------------------------------------------------------
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   log "Stopping previous tmux session"
   tmux kill-session -t "$TMUX_SESSION"
 fi
 
-tmux new-session -d -s "$TMUX_SESSION" -n vllm \
-  "bash $BYOM_DIR/run_vllm.sh > $LOGS/vllm.log 2>&1"
+if [ "$RUNTIME" = "vllm" ]; then
+  RUN_SERVER="$BYOM_DIR/run_vllm.sh"
+  LOG_NAME=vllm
+else
+  RUN_SERVER="$BYOM_DIR/run_runtime.sh"
+  LOG_NAME="$RUNTIME"
+fi
+
+tmux new-session -d -s "$TMUX_SESSION" -n "$LOG_NAME" \
+  "bash $RUN_SERVER > $LOGS/$LOG_NAME.log 2>&1"
 tmux new-window -t "$TMUX_SESSION" -n gateway \
   "bash $BYOM_DIR/run_gateway.sh > $LOGS/gateway.log 2>&1"
 
-log "vLLM and gateway started; logs are in $LOGS"
+log "$RUNTIME and gateway started; logs are in $LOGS"
 log "ready"

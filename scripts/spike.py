@@ -569,7 +569,7 @@ def main() -> int:
     cfg.gpu = args.gpu
     cfg.ssh_key_path.parent.mkdir(parents=True, exist_ok=True)
     if not cfg.ssh_key_path.exists():
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", "byom", "-f", str(cfg.ssh_key_path)],
             check=True,
         )

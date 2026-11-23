@@ -169,6 +169,23 @@ def test_long_error_is_truncated_at_the_end():
     assert colab.tail("short", limit=100) == "short"
 
 
+def test_status_line_exige_nome_correspondente(monkeypatch):
+    text = (
+        "[outra-sessao] /tun/m/outra | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+        "[byom-1a2b3c4d] /tun/m/propria | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+    )
+
+    class FakeProc:
+        stdout = text.encode()
+
+    monkeypatch.setattr(colab, "run", lambda args, **kwargs: FakeProc())
+
+    line = colab.status_line("byom-1a2b3c4d")
+    assert line is not None
+    assert line.endpoint == "/tun/m/propria"
+    assert colab.status_line("sessao-ausente") is None
+
+
 def test_exec_popen_isolates_process_and_closes_log_in_parent(monkeypatch, tmp_path):
     captured = {}
 

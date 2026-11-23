@@ -75,12 +75,19 @@ async def run() -> int:
 
 
 async def _load_registered_state(timeout_s: float = 5.0) -> config.State | None:
-    """Wait for `byom up` to persist this daemon's PID before writing state."""
+    """Wait for state, accepting the PID published by the child before exec."""
+    expected = os.environ.get("BYOM_DAEMON_EXPECTED_PID", "")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        state = config.load_state()
+        try:
+            state = config.load_state()
+        except config.StateFileError as exc:
+            log.error("Cannot read state.json: %s", exc)
+            return None
         if state is None:
             return None
+        if expected.isdigit() and int(expected) == os.getpid():
+            return state
         if state.daemon_pid == os.getpid():
             return state
         await asyncio.sleep(0.05)

@@ -10,12 +10,8 @@ secrets and unrelated entries survive. Only two things are written:
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 import re
-import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -283,22 +279,7 @@ def _set_default_model(lines: list[str], model_id: str) -> None:
 
 def _atomic_write(path: Path, contents: str) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        target = path.resolve()
-        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
-        fd, temporary = tempfile.mkstemp(
-            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as output:
-                os.fchmod(output.fileno(), mode)
-                output.write(contents)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, target)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary)
-            raise
+        # `newline=""` keeps CRLF files unchanged.
+        config.atomic_write_text(path, contents, newline="")
     except OSError as exc:
         raise DshConfigError(f"Could not write {path}: {exc}") from exc

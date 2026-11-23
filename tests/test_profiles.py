@@ -7,11 +7,28 @@ import sys
 import tarfile
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
-from byom import cli, config, opencode
+from byom import catalog, cli, config, opencode
 
-PROFILE_IDS = {"qwen3.8-27b-32k", "qwen3.8-27b-256k"}
+PROFILE_IDS = {
+    "qwen3.8-27b-32k",
+    "qwen3.8-27b-256k",
+    "inkling-2-mini-iq2-gguf",
+    "inkling-2-mini-q4-gguf",
+    "inkling-2-mini-q8-gguf",
+    "qwen3.8-27b-q3-gguf",
+    "qwen3.8-27b-q4-gguf",
+    "gemma-4-e4b-q4-gguf",
+    "gemma-4-12b-q4-gguf",
+    "gemma-4-26b-a4b-q4-gguf",
+    "gemma-4-31b-q4-gguf",
+    "muse-glimmer-30b-q2-gguf",
+    "muse-glimmer-30b-q4-gguf",
+    "qwen-image-2.1-q4km",
+    "qwen-image-2.1-fp8",
+}
 
 
 def test_templates_definem_os_dois_contextos_e_aliases_opencode():
@@ -19,7 +36,9 @@ def test_templates_definem_os_dois_contextos_e_aliases_opencode():
     assert set(profiles) == PROFILE_IDS
     assert profiles["qwen3.8-27b-32k"].settings["max_model_len"] == 32768
     assert profiles["qwen3.8-27b-256k"].settings["max_model_len"] == 262144
-    assert all(profile.settings["gpu"] == "A100" for profile in profiles.values())
+    assert all(
+        profiles[p].settings["gpu"] == "A100" for p in ("qwen3.8-27b-32k", "qwen3.8-27b-256k")
+    )
     assert profiles["qwen3.8-27b-32k"].settings["gpu_high_mem"] is False
     assert profiles["qwen3.8-27b-256k"].settings["gpu_high_mem"] is True
 
@@ -93,3 +112,47 @@ def test_worker_payload_and_command_use_profile_values(tmp_path: Path):
     assert args[args.index("--max-model-len") + 1] == "32768"
     assert args[args.index("--served-model-name") + 1] == "qwen3.8-27b"
     assert "--tool-call-parser" in args
+
+
+def test_perfis_nao_repetem_reasoning_nem_steps():
+    for profile in config.available_profiles():
+        assert "reasoning_effort" not in profile.settings, profile.id
+        assert "steps" not in (profile.worker or {}), profile.id
+        assert catalog.profile_context(profile.id).context_served == (
+            profile.settings["max_model_len"]
+        ) or profile.catalog_model in {"qwen3.8-27b-awq"}
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "effort", "has_thinking", "has_generation"),
+    [
+        ("inkling-2-mini-q4-gguf", "high", False, False),
+        ("qwen3.8-27b-32k", "xhigh", False, False),
+        ("gemma-4-12b-q4-gguf", None, True, False),
+        ("muse-glimmer-30b-q4-gguf", "high", False, False),
+        ("qwen-image-2.1-q4km", None, False, True),
+    ],
+)
+def test_payload_da_sessao_propagas_propriedades_do_modelo(
+    tmp_path: Path, profile_id: str, effort, has_thinking: bool, has_generation: bool
+):
+    cfg = config.Config()
+    config.apply_profile(cfg, profile_id)
+    tar_path = tmp_path / "worker.tar.gz"
+    state = config.State(session="s", endpoint="", nonce="test", created_at="now")
+
+    cli._build_worker_tar(cfg, state, tar_path)
+
+    with tarfile.open(tar_path, "r:gz") as archive:
+        payload = json.load(archive.extractfile("session.json"))
+    assert payload["reasoning_effort"] == effort
+    assert (payload["thinking_policy"] is not None) is has_thinking
+    assert (payload["generation_defaults"] is not None) is has_generation
+    if has_thinking:
+        assert payload["thinking_policy"]["system_token"] == "<|think|>"
+        assert payload["thinking_policy"]["strip_history_thought"] is True
+    if has_generation:
+        assert payload["generation_defaults"] == catalog.model_by_id(
+            "qwen-image-2.1"
+        ).generation_defaults
+        assert "steps" not in (payload["worker"] or {})

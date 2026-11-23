@@ -1,0 +1,31 @@
+name = "Inkling 2 Mini (8 bit, GGUF)"
+description = "8 bit sem perdas; build mainline b12611 com arquivos Mainline_Support; requer A100 de 40 GB ou mais."
+opencode_output_limit = 8192
+runtime = "llama-cpp"
+catalog_model = "inkling-2-mini"
+catalog_variant = "q8"
+
+[config]
+model = "inkling-2-mini"
+served_model_name = "inkling-2-mini"
+max_model_len = 131072
+gpu = "A100"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+kv_cache_dtype = "fp8"
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[worker]
+binary_url = "https://github.com/ggml-org/llama.cpp/releases/download/b12611/llama-b12611-bin-ubuntu-cuda-12.8-x64.tar.gz"
+binary_sha256 = "7f45fec1288a3332d78c48f77ef1a8a08008e0681ff95eae2285432b90dc956d"
+binary_dir = "llama.cpp"
+model_repo = "unsloth/Inkling-2-Mini-GGUF"
+model_patterns = ["Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file", "*mmproj-F16*"]
+main_pattern = "Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file"
+mmproj_pattern = "mmproj-F16.gguf"
+llama_jinja = true

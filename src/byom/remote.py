@@ -18,6 +18,7 @@ master owns that slot. A stray `colab ssh` kills the master.
 from __future__ import annotations
 
 import contextlib
+import logging
 import shlex
 import subprocess
 import time
@@ -26,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import colab, config
+
+log = logging.getLogger("byom.remote")
 
 #: The VM's sshd refuses the handshake right after another connection ends
 #: (`Connection timed out during banner exchange`), and the runtime answers
@@ -126,6 +129,9 @@ class Remote:
             f"ProxyCommand={self.proxy_command()}",
             "-o",
             "ExitOnForwardFailure=yes",
+            # The SSH channel is an ephemeral `colab ssh --proxy-mode` tunnel:
+            # the host key changes with every VM, and the Colab CLI offers no
+            # way to pass a known_hosts entry through. Documented in README.
             "-o",
             "StrictHostKeyChecking=no",
             "-o",
@@ -205,7 +211,7 @@ class Remote:
                 # No pipes: the master detached by `-f` keeps the inherited
                 # descriptors open, and `capture_output` would wait for an EOF
                 # that never arrives. The failure reason comes from the `-E` log.
-                proc = subprocess.run(  # noqa: S603
+                proc = subprocess.run(
                     self.master_command(forwards),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -232,7 +238,7 @@ class Remote:
         if not self.socket.exists():
             return False
         try:
-            proc = subprocess.run(  # noqa: S603
+            proc = subprocess.run(
                 self.control_command("check"),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -240,7 +246,8 @@ class Remote:
                 timeout=CHECK_TIMEOUT_S,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log.debug("SSH master check failed for %s: %s", self.session, exc)
             return False
         return proc.returncode == 0
 
@@ -248,7 +255,7 @@ class Remote:
         """Stop the master and remove the socket. Idempotent."""
         if self.socket.exists():
             with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                subprocess.run(  # noqa: S603
+                subprocess.run(
                     self.control_command("exit"),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -284,7 +291,7 @@ class Remote:
             kwargs["input"] = input_bytes
 
         try:
-            proc = subprocess.run(  # noqa: S603
+            proc = subprocess.run(
                 self.client_command(command),
                 capture_output=True,
                 timeout=timeout,

@@ -15,7 +15,6 @@ when the name is not in the local store. That is why the supervisor checks
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -102,14 +101,17 @@ class TunnelSupervisor:
         try:
             async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
                 response = await client.get(f"{self.local_base_url}/health")
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            log.debug("Gateway health probe failed: %s", exc)
             return None
         self.status.latency_ms = round((time.monotonic() - started) * 1000, 1)
         if response.status_code != 200:
+            log.debug("Gateway health probe returned HTTP %s", response.status_code)
             return None
         try:
             return response.json()
-        except ValueError:
+        except ValueError as exc:
+            log.warning("Gateway health probe returned invalid JSON: %s", exc)
             return None
 
     # -- lifecycle --------------------------------------------------------
@@ -121,7 +123,7 @@ class TunnelSupervisor:
                 self.status.state = "stopped"
                 self.status.last_error = "Session is no longer allocated by the backend"
                 self.status.since = time.monotonic()
-                await _sleep_or_stop(stop, ENDPOINT_RECHECK_S)
+                await config.sleep_or_stop(stop, ENDPOINT_RECHECK_S)
                 continue
 
             self.status.state = "connecting" if self.status.reconnects == 0 else "reconnecting"
@@ -153,7 +155,7 @@ class TunnelSupervisor:
             self.status.reconnects += 1
             self.status.state = "reconnecting"
             self.status.since = time.monotonic()
-            await _sleep_or_stop(stop, backoff)
+            await config.sleep_or_stop(stop, backoff)
             backoff = min(BACKOFF_MAX_S, backoff * 2)
 
         await asyncio.to_thread(self.remote.stop)
@@ -166,7 +168,7 @@ class TunnelSupervisor:
                 return False
             if await self.probe_health() is not None:
                 return True
-            await _sleep_or_stop(stop, 0.5)
+            await config.sleep_or_stop(stop, 0.5)
         return False
 
     async def _monitor(self, stop: asyncio.Event) -> None:
@@ -175,7 +177,7 @@ class TunnelSupervisor:
             if not await asyncio.to_thread(self.remote.alive):
                 self.status.last_error = "SSH connection dropped"
                 return
-            await _sleep_or_stop(stop, MONITOR_INTERVAL_S)
+            await config.sleep_or_stop(stop, MONITOR_INTERVAL_S)
             if stop.is_set():
                 return
             if not await asyncio.to_thread(self.remote.alive):
@@ -184,8 +186,3 @@ class TunnelSupervisor:
             if await self.probe_health() is None:
                 self.status.last_error = "Gateway did not respond through the tunnel"
                 self.status.state = "reconnecting"
-
-
-async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(stop.wait(), timeout=seconds)

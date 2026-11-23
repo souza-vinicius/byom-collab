@@ -169,7 +169,9 @@ def status_line(name: str) -> SessionLine | None:
     """
     found = parse_session_lines(_text(run(["status", "-s", name])))
     for line in found:
-        if line.name == name or line.endpoint:
+        # An endpoint from a differently named session is not this session's
+        # endpoint; accepting it would point the tunnel at another worker.
+        if line.name == name:
             return line
     return None
 

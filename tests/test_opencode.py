@@ -63,7 +63,7 @@ def test_sync_merges_active_profile_without_replacing_other_settings(
     assert second.changed is False
     assert path.read_text(encoding="utf-8") == written
     assert result["model"] == model_id
-    assert "opencode-models-discovery@latest" in result["plugin"]
+    assert opencode.PLUGIN_SPEC in result["plugin"]
     assert result["provider"]["mimo"] == initial["provider"]["mimo"]
     assert result["mcp"] == initial["mcp"]
     assert result["permission"] == initial["permission"]

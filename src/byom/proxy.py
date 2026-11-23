@@ -97,8 +97,7 @@ class Runtime:
                 self.tunnel.status.last_error or "Gateway is inaccessible through the tunnel"
             )
             return
-        nonce = str(payload.get("nonce", ""))
-        if not nonce or nonce != self.state.nonce:
+        if not config.nonce_matches(payload, self.state):
             # Never forward to a destination of unknown identity.
             self.worker.verified = False
             self.worker.model_ready = False
@@ -129,8 +128,11 @@ class Runtime:
 
     async def verify_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            with contextlib.suppress(Exception):
+            try:
                 await self.verify()
+            except Exception as exc:
+                # Never log the nonce or any response body, only the cause.
+                log.warning("Worker verification failed: %s", exc)
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=VERIFY_INTERVAL_S)
 
