@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import subprocess
@@ -70,13 +69,13 @@ class WatchdogSupervisor:
                         self.process = await asyncio.to_thread(self._start_process)
                     except Exception:
                         log.exception("Could not start watchdog")
-                        await _sleep_or_stop(stop, backoff)
+                        await config.sleep_or_stop(stop, backoff)
                         backoff = min(RESTART_BACKOFF_MAX_S, backoff * 2)
                         continue
                     self._save_pid(self.process.pid)
                     log.info("Watchdog started (pid %s)", self.process.pid)
 
-                await _sleep_or_stop(stop, self.check_interval_s)
+                await config.sleep_or_stop(stop, self.check_interval_s)
                 if stop.is_set():
                     break
 
@@ -88,7 +87,7 @@ class WatchdogSupervisor:
                 log.warning("Restarting watchdog: %s", reason)
                 await self._stop_process()
                 self._save_pid(None)
-                await _sleep_or_stop(stop, backoff)
+                await config.sleep_or_stop(stop, backoff)
                 backoff = min(RESTART_BACKOFF_MAX_S, backoff * 2)
         finally:
             await self._stop_process()
@@ -119,17 +118,25 @@ class WatchdogSupervisor:
         try:
             async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
                 response = await client.get(url)
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            log.warning("Watchdog heartbeat probe failed: %s", exc)
             return None
         if response.status_code != 200:
+            log.warning("Watchdog heartbeat probe returned HTTP %s", response.status_code)
             return None
         try:
             payload = response.json()
-            if payload.get("nonce") != self.state.nonce:
-                return None
+        except ValueError as exc:
+            log.warning("Watchdog heartbeat probe returned invalid JSON: %s", exc)
+            return None
+        if not config.nonce_matches(payload, self.state):
+            log.warning("Watchdog heartbeat probe returned a different session nonce")
+            return None
+        try:
             value = payload.get("watchdog_silence_s")
             return None if value is None else float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            log.warning("Watchdog heartbeat probe returned an invalid silence value: %s", exc)
             return None
 
     async def _stop_process(self) -> None:
@@ -151,16 +158,10 @@ class WatchdogSupervisor:
             await asyncio.to_thread(process.wait)
 
     def _save_pid(self, pid: int | None) -> None:
-        current = config.load_state()
-        if current is None or current.session != self.state.session:
-            return
-        current.watchdog_pid = pid
         try:
-            config.save_state(current)
-        except OSError:
-            log.exception("Could not save watchdog PID")
-
-
-async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(stop.wait(), timeout=seconds)
+            current = config.update_state(watchdog_pid=pid)
+        except (config.StateFileError, OSError) as exc:
+            log.warning("Could not save watchdog PID: %s", exc)
+            return
+        if current.session != self.state.session:
+            log.warning("State session changed while saving watchdog PID")

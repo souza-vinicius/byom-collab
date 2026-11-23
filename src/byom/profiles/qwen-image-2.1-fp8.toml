@@ -1,0 +1,27 @@
+name = "Qwen-Image-2.1 (FP8/INT8-ConvRot)"
+description = "Pesos INT8-ConvRot para GPU de 24 GB+; endpoint de imagem, não chat."
+opencode_output_limit = 8192
+runtime = "image"
+catalog_model = "qwen-image-2.1"
+catalog_variant = "fp8-int8"
+
+[config]
+model = "qwen-image-2.1"
+served_model_name = "qwen-image-2.1"
+max_model_len = 1
+gpu = "L4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+kv_cache_dtype = "fp8"
+enable_auto_tool_choice = false
+tool_call_parser = ""
+reasoning_parser = ""
+
+[worker]
+binary_url = "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1106-532d2c1/sd-master-532d2c1-bin-Linux-Ubuntu-26.04-x86_64.zip"
+binary_sha256 = "0a02f7f51feb0691128f60cf6ff1c686ec23089561cfe7c3b72645f446646e13"
+binary_dir = "sdcpp"
+model_patterns = ["Comfy-Org/Qwen-Image-2.1::diffusion_models/qwen_image_2.1_int8_convrot.safetensors", "Comfy-Org/Qwen-Image-2.1::vae/qwen_image_2.1_vae_bf16.safetensors", "Qwen/Qwen3-VL-8B-Instruct-GGUF::Qwen3VL-8B-Instruct-Q4_K_M.gguf"]

@@ -101,11 +101,12 @@ def main() -> int:
             except (urllib.error.URLError, OSError, ValueError) as exc:
                 _log(f"begin-shutdown failed: {exc}")
             else:
-                if decision.get("accepted"):
+                if decision.get("accepted") and not state.get("active_jobs", 0):
                     _log(f"Idle for {idle_s:.0f}s; deallocating runtime")
                     if _unassign():
                         return 0
                     return 1
+                _log("Shutdown was not accepted; keeping the runtime")
 
         time.sleep(POLL_S)
 

@@ -1,0 +1,30 @@
+name = "Inkling 2 Mini (2 bit, GGUF)"
+description = "2 bit para T4; requer build Unsloth com camadas loopadas."
+opencode_output_limit = 8192
+runtime = "llama-cpp"
+catalog_model = "inkling-2-mini"
+catalog_variant = "q2"
+
+[config]
+model = "inkling-2-mini"
+served_model_name = "inkling-2-mini"
+max_model_len = 32768
+gpu = "T4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+kv_cache_dtype = "fp8"
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[worker]
+binary_url = "https://github.com/unslothai/llama.cpp/releases/download/b12588-mix-c0c3de8/app-b12588-mix-c0c3de8-linux-x64-cuda12-portable.tar.gz"
+binary_sha256 = "4c30d5e3b3d7242cf3f214977c09a0d06102c71a713c256749909dcafa9f5980"
+binary_dir = "llama.cpp"
+model_repo = "unsloth/Inkling-2-Mini-GGUF"
+model_patterns = ["*UD-IQ2_XXS*", "*mmproj-F16*"]
+main_pattern = "*UD-IQ2_XXS*"
+mmproj_pattern = "mmproj-F16.gguf"

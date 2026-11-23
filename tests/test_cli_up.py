@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -162,3 +163,79 @@ def test_up_without_force_still_refuses_registered_session(tmp_path: Path, monke
     assert result.exit_code == 1
     assert "Session 'byom-old' is already registered" in result.output
     assert down_called is False
+
+
+def test_up_aborta_com_estado_corrompido_sem_alocar(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    config.save_config(config.Config())
+    path = config.state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{invalido", encoding="utf-8")
+    allocated = False
+
+    def allocate(*args, **kwargs):
+        nonlocal allocated
+        allocated = True
+
+    monkeypatch.setattr(cli.colab, "new", allocate)
+
+    result = CliRunner().invoke(cli.app, ["up"])
+    output = result.output + (getattr(result, "stderr", "") or "")
+
+    assert result.exit_code == 1
+    assert "cannot be read or parsed" in output
+    assert allocated is False
+
+
+def test_up_sem_force_bloqueia_orfao_antes_de_alocar(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    config.save_config(config.Config())
+    orphan = cli.colab.SessionLine(
+        name=None,
+        endpoint="orphan-endpoint",
+        hardware="L4",
+        shape="",
+        variant="",
+    )
+    monkeypatch.setattr(cli.colab, "orphan_assignments", lambda: [orphan])
+    allocated = False
+    synced = False
+
+    def allocate(*args, **kwargs):
+        nonlocal allocated
+        allocated = True
+
+    def sync(*args, **kwargs):
+        nonlocal synced
+        synced = True
+        return opencode.SyncResult(tmp_path / "opencode.json", "byom/model", False)
+
+    monkeypatch.setattr(cli.colab, "new", allocate)
+    monkeypatch.setattr(cli.opencode, "sync_config", sync)
+
+    result = CliRunner().invoke(cli.app, ["up"])
+
+    assert result.exit_code == 1
+    assert "orphan-endpoint" in result.output
+    assert synced is False
+    assert allocated is False
+
+
+def test_start_daemon_entrega_pid_ao_filho_antes_do_exec(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    captured = {}
+
+    class FakeProc:
+        pid = 9999
+
+    def fake_popen(command, **kwargs):
+        captured.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    assert cli._start_daemon() == 9999
+    with monkeypatch.context() as scope:
+        scope.setenv("BYOM_DAEMON_EXPECTED_PID", "")
+        captured["preexec_fn"]()
+        assert os.environ["BYOM_DAEMON_EXPECTED_PID"] == str(os.getpid())

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
-import stat
-import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +13,10 @@ from typing import Any
 from . import config
 
 PLUGIN_NAME = "opencode-models-discovery"
-PLUGIN_SPEC = f"{PLUGIN_NAME}@latest"
+# Pinned on 23/11/2026: `latest` made `up` non-reproducible. npm lists 2.2.1
+# as latest and its README documents a separate OpenCode v1 adapter, but V1
+# plugin execution under V2 was not verified here (see README).
+PLUGIN_SPEC = f"{PLUGIN_NAME}@2.2.1"
 PROVIDER_ID = "byom"
 
 
@@ -200,22 +200,6 @@ def _merge_model(models: dict[str, Any], model_id: str, template: dict[str, Any]
 
 def _atomic_write(path: Path, contents: str) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        target = path.resolve()
-        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
-        fd, temporary = tempfile.mkstemp(
-            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as output:
-                os.fchmod(output.fileno(), mode)
-                output.write(contents)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, target)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary)
-            raise
+        config.atomic_write_text(path, contents)
     except OSError as exc:
         raise OpenCodeConfigError(f"Could not write {path}: {exc}") from exc

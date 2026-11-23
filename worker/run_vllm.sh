@@ -8,7 +8,7 @@ BYOM_DIR=/content/byom
 # FlashInfer invokes `ninja` by name; the binary is installed in this venv.
 export PATH="$BYOM_DIR/venv/bin:$PATH"
 
-# `exec` makes the shell become the vLLM process, so the PID written here is
+# `exec` makes the shell become the server process, so the PID written here is
 # the server's own.
 echo $$ > "$BYOM_DIR/vllm.pid"
-exec bash "$BYOM_DIR/vllm.cmd"
+exec bash "$BYOM_DIR/runtime.cmd"

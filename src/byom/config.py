@@ -1,27 +1,40 @@
 """Local byom configuration: `config.toml` and `state.json`.
 
-No secrets are stored in these files. `state.json` only records the association
-between the created session, its Colab backend endpoint, the nonce used to
-validate the worker's identity, and local process IDs.
+`state.json` records the association between the created session, its Colab
+backend endpoint, the nonce used to validate the worker's identity, and local
+process IDs. The nonce is an identity secret: it is not a user credential, but
+anyone who reads it and controls the endpoint can pass the proxy's identity
+check. Files are written with mode 0600.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
+import stat
 import tempfile
 import tomllib
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, fields
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
-#: Default values for `config.toml`. See PRD 2.3.
+from . import catalog
+
+try:  # pragma: no cover - platform-dependent
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
+
+#: O valor padrão NÃO é literal aqui: vem da propriedade do modelo no catálogo.
+#: O modelo padrão sem perfil é o Qwen3.8 AWQ (xhigh conforme a página).
 DEFAULTS: dict[str, Any] = {
     "model": "philbert440/Qwen3.8-27B-W4A16-AWQ",
     "max_model_len": 16384,
-    "reasoning_effort": "medium",
+    "reasoning_effort": catalog.model_by_id("qwen3.8-27b-awq").reasoning_effort,
     "proxy_port": 4000,
     "tunnel_port": 4001,
     "gateway_port": 8001,
@@ -33,6 +46,7 @@ DEFAULTS: dict[str, Any] = {
     "gpu": "L4",
     "gpu_high_mem": False,
     "profile": "",
+    "runtime": "vllm",
     "served_model_name": "qwen3.8-27b",
     "gpu_memory_utilization": 0.92,
     "kv_cache_dtype": "fp8",
@@ -46,6 +60,41 @@ DEFAULTS: dict[str, Any] = {
     "vllm_enforce_eager": False,
     "vllm_language_model_only": True,
 }
+
+#: Valores documentados pelas páginas conferidas em 2026-11-23. A origem de
+#: cada valor por modelo está em catalog.ModelEntry.reasoning_source.
+REASONING_EFFORTS = frozenset(catalog.REASONING_EFFORTS)
+PORT_FIELDS = frozenset({"proxy_port", "tunnel_port", "gateway_port", "vllm_port"})
+TIMEOUT_FIELDS = frozenset(
+    {"idle_timeout_min", "max_job_min", "bootstrap_timeout_min", "watchdog_timeout_s"}
+)
+BOOL_FIELDS = frozenset(
+    {"gpu_high_mem", "enable_auto_tool_choice", "vllm_enforce_eager", "vllm_language_model_only"}
+)
+STRING_FIELDS = frozenset(
+    {
+        "model",
+        "gpu",
+        "profile",
+        "runtime",
+        "served_model_name",
+        "kv_cache_dtype",
+        "ssh_key",
+        "vllm_spec",
+    }
+)
+
+
+class ConfigError(ValueError):
+    """A configuration value failed boundary validation."""
+
+
+class StateFileError(ValueError):
+    """The state file exists but is unreadable or invalid.
+
+    It is deliberately distinct from "no state file": `up` must not treat a
+    corrupted state as a missing session and allocate another VM.
+    """
 
 
 def config_dir() -> Path:
@@ -73,11 +122,56 @@ def colab_sessions_path() -> Path:
     return config_dir() / "colab-sessions.json"
 
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def validate_config(cfg: Config) -> None:
+    """Check types and ranges at the TOML boundary; raise `ConfigError`."""
+    values = asdict(cfg)
+    for key in sorted(PORT_FIELDS):
+        value = values[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+            raise ConfigError(f"Invalid {key}: {value!r}; expected a port between 1 and 65535")
+    for key in sorted(TIMEOUT_FIELDS):
+        value = values[key]
+        if not _is_number(value) or value <= 0:
+            raise ConfigError(f"Invalid {key}: {value!r}; expected a positive timeout")
+    value = values["max_model_len"]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"Invalid max_model_len: {value!r}; expected a positive integer")
+    value = values["gpu_memory_utilization"]
+    if not _is_number(value) or not 0 < value <= 1:
+        raise ConfigError(
+            f"Invalid gpu_memory_utilization: {value!r}; expected a number in (0, 1]"
+        )
+    value = values["runtime"]
+    if not isinstance(value, str) or value not in catalog.RUNTIMES:
+        choices = ", ".join(catalog.RUNTIMES)
+        raise ConfigError(f"Invalid runtime: {value!r}; expected one of {choices}")
+    value = values["reasoning_effort"]
+    # None é legítimo: a página do modelo (Gemma 4) não documenta o campo e o
+    # gateway não deve injetar nada nesse caso.
+    if value is not None and (not isinstance(value, str) or value not in REASONING_EFFORTS):
+        choices = ", ".join(sorted(REASONING_EFFORTS))
+        raise ConfigError(f"Invalid reasoning_effort: {value!r}; expected one of {choices} or none")
+    for key in sorted(BOOL_FIELDS):
+        if not isinstance(values[key], bool):
+            raise ConfigError(f"Invalid {key}: {values[key]!r}; expected a boolean")
+    for key in sorted(STRING_FIELDS):
+        if not isinstance(values[key], str):
+            raise ConfigError(f"Invalid {key}: {values[key]!r}; expected a string")
+    for key in ("tool_call_parser", "reasoning_parser"):
+        value = values[key]
+        if value is not None and not isinstance(value, str):
+            raise ConfigError(f"Invalid {key}: {value!r}; expected a string or null")
+
+
 @dataclass
 class Config:
     model: str = DEFAULTS["model"]
     max_model_len: int = DEFAULTS["max_model_len"]
-    reasoning_effort: str = DEFAULTS["reasoning_effort"]
+    reasoning_effort: str | None = DEFAULTS["reasoning_effort"]
     proxy_port: int = DEFAULTS["proxy_port"]
     tunnel_port: int = DEFAULTS["tunnel_port"]
     gateway_port: int = DEFAULTS["gateway_port"]
@@ -89,6 +183,7 @@ class Config:
     gpu: str = DEFAULTS["gpu"]
     gpu_high_mem: bool = DEFAULTS["gpu_high_mem"]
     profile: str = DEFAULTS["profile"]
+    runtime: str = DEFAULTS["runtime"]
     served_model_name: str = DEFAULTS["served_model_name"]
     gpu_memory_utilization: float = DEFAULTS["gpu_memory_utilization"]
     kv_cache_dtype: str = DEFAULTS["kv_cache_dtype"]
@@ -112,11 +207,34 @@ class Profile:
     description: str
     opencode_output_limit: int
     settings: dict[str, Any]
+    runtime: str = "vllm"
+    catalog_model: str = ""
+    catalog_variant: str = ""
+    worker: dict[str, Any] | None = None
 
     @property
     def opencode_model(self) -> str:
         return f"byom/{self.id}"
 
+
+#: Chaves aceitas na tabela [worker] de um perfil. Valores são strings ou
+#: listas de strings; nada é interpretado como código.
+WORKER_FIELDS = frozenset(
+    {
+        "binary_url",
+        "binary_sha256",
+        "binary_dir",
+        "binary_asset",
+        "model_repo",
+        "model_patterns",
+        "main_pattern",
+        "mmproj_pattern",
+        "drafter_pattern",
+        "dspark",
+        "chat_template_kwargs",
+        "sampling",
+    }
+)
 
 PROFILE_FIELDS = frozenset(
     {
@@ -152,10 +270,50 @@ def available_profiles() -> list[Profile]:
         unknown = set(settings) - PROFILE_FIELDS
         if unknown:
             raise ValueError(f"Unknown fields in {path.name}: {', '.join(sorted(unknown))}")
-        Config(**settings)
+        try:
+            validate_config(Config(**settings))
+        except ConfigError as exc:
+            raise ValueError(f"Invalid values in {path.name}: {exc}") from exc
         output_limit = raw.get("opencode_output_limit", 8192)
         if isinstance(output_limit, bool) or not isinstance(output_limit, int) or output_limit <= 0:
             raise ValueError(f"profile {path.name} must define a positive opencode_output_limit")
+        runtime = str(raw.get("runtime", "vllm"))
+        if runtime not in catalog.RUNTIMES:
+            raise ValueError(f"Invalid runtime in {path.name}: {runtime!r}")
+        catalog_model = str(raw.get("catalog_model") or "")
+        catalog_variant = str(raw.get("catalog_variant") or "")
+        if bool(catalog_model) != bool(catalog_variant):
+            raise ValueError(f"{path.name} must declare catalog_model and catalog_variant together")
+        if catalog_model:
+            try:
+                variant = catalog.variant_by_id(catalog_model, catalog_variant)
+                entry = catalog.model_by_id(catalog_model)
+            except ValueError as exc:
+                raise ValueError(f"Invalid catalog reference in {path.name}: {exc}") from exc
+            if entry.runtime != runtime:
+                raise ValueError(f"Runtime mismatch in {path.name}: {runtime} != {entry.runtime}")
+            if not variant.available:
+                raise ValueError(f"{path.name} references an unavailable catalog variant")
+        worker = raw.get("worker", {})
+        if not isinstance(worker, dict):
+            raise ValueError(f"profile {path.name}: [worker] must be a table")
+        unknown_worker = set(worker) - WORKER_FIELDS
+        if unknown_worker:
+            raise ValueError(
+                f"Unknown [worker] fields in {path.name}: {', '.join(sorted(unknown_worker))}"
+            )
+        for key, value in worker.items():
+            if key == "sampling":
+                if not isinstance(value, dict) or not all(
+                    isinstance(k, str) and isinstance(v, int | float) and not isinstance(v, bool)
+                    for k, v in value.items()
+                ):
+                    raise ValueError(f"Invalid [worker].sampling in {path.name}: {value!r}")
+                continue
+            if not isinstance(value, str | bool | int | list):
+                raise ValueError(f"Invalid [worker].{key} in {path.name}: {value!r}")
+            if isinstance(value, list) and not all(isinstance(item, str) for item in value):
+                raise ValueError(f"Invalid [worker].{key} in {path.name}: {value!r}")
         profiles.append(
             Profile(
                 id=path.name.removesuffix(".toml"),
@@ -163,6 +321,10 @@ def available_profiles() -> list[Profile]:
                 description=str(raw.get("description") or ""),
                 opencode_output_limit=output_limit,
                 settings=settings,
+                runtime=runtime,
+                catalog_model=catalog_model,
+                catalog_variant=catalog_variant,
+                worker=worker,
             )
         )
     return profiles
@@ -180,12 +342,34 @@ def load_profile(profile_id: str) -> Profile:
 
 
 def apply_profile(cfg: Config, profile_id: str) -> Profile:
-    """Apply model/runtime settings while preserving local connection options."""
+    """Aplica o perfil; reasoning_effort vem do catálogo quando omitido."""
     profile = load_profile(profile_id)
     for key, value in profile.settings.items():
         setattr(cfg, key, value)
     cfg.profile = profile.id
+    cfg.runtime = profile.runtime
+    # Herança: o valor padrão é propriedade do MODELO no catálogo. Um perfil
+    # pode sobrescrever explicitamente em [config]; o cliente pode sobrescrever
+    # por requisição (chat_template_kwargs.reasoning_effort no gateway).
+    if "reasoning_effort" not in profile.settings and profile.catalog_model:
+        cfg.reasoning_effort = catalog.model_by_id(profile.catalog_model).reasoning_effort
     return profile
+
+
+def active_catalog_ref(cfg: Config) -> tuple[str, str]:
+    """Return (model_id, variant_id) for the active config, defaulting to AWQ/vLLM."""
+    if cfg.profile:
+        profile = load_profile(cfg.profile)
+        if profile.catalog_model:
+            return profile.catalog_model, profile.catalog_variant
+    return "qwen3.8-27b-awq", "q4-awq"
+
+
+def check_compatibility(cfg: Config) -> catalog.CompatibilityResult:
+    """Check the declared GPU against the active variant before any allocation."""
+    model_id, variant_id = active_catalog_ref(cfg)
+    gpu = catalog.resolve_gpu(cfg.gpu, cfg.gpu_high_mem)
+    return catalog.check_fit(model_id, variant_id, gpu.id, cfg.max_model_len)
 
 
 def _toml_value(value: Any) -> str:
@@ -202,6 +386,9 @@ def _toml_value(value: Any) -> str:
 def dumps_config(cfg: Config) -> str:
     lines = []
     for key, value in asdict(cfg).items():
+        # TOML não tem null. Ausência de reasoning_effort = herdar do catálogo.
+        if value is None:
+            continue
         lines.append(f"{key} = {_toml_value(value)}")
     return "\n".join(lines) + "\n"
 
@@ -212,7 +399,19 @@ def load_config() -> Config:
         return Config()
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     known = {f.name for f in fields(Config)}
-    return Config(**{k: v for k, v in raw.items() if k in known})
+    values = {k: v for k, v in raw.items() if k in known}
+    cfg = Config(**values)
+    if "reasoning_effort" not in values and cfg.profile:
+        # Perfil ativo sem valor no arquivo: herda a propriedade do modelo.
+        try:
+            profile = load_profile(cfg.profile)
+        except ValueError:
+            pass  # perfil inválido é tratado por validate_config/outras camadas
+        else:
+            if profile.catalog_model:
+                cfg.reasoning_effort = catalog.model_by_id(profile.catalog_model).reasoning_effort
+    validate_config(cfg)
+    return cfg
 
 
 def save_config(cfg: Config) -> Path:
@@ -231,40 +430,119 @@ class State:
     watchdog_pid: int | None = None
 
 
+def validate_state(state: State) -> None:
+    """Check state types before the values reach `os.kill` or a VM allocation."""
+    for key in ("session", "endpoint", "nonce", "created_at"):
+        value = getattr(state, key)
+        if not isinstance(value, str) or (key in {"session", "nonce"} and not value):
+            raise StateFileError(f"Invalid {key} in state.json: {value!r}; expected a string")
+    for key in ("daemon_pid", "watchdog_pid"):
+        value = getattr(state, key)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
+            raise StateFileError(f"Invalid {key} in state.json: {value!r}; expected a positive PID")
+
+
 def load_state() -> State | None:
+    """Return None only when the file is absent; raise on unreadable/invalid state."""
     path = state_path()
     if not path.exists():
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
+        raise StateFileError(
+            f"state.json exists but cannot be read or parsed ({exc}); "
+            "a VM may still be allocated. Stop it in Colab, then remove the file."
+        ) from exc
+    if not isinstance(raw, dict):
+        raise StateFileError("state.json must contain a JSON object")
     known = {f.name for f in fields(State)}
     filtered = {k: v for k, v in raw.items() if k in known}
     if "session" not in filtered or "nonce" not in filtered:
-        return None
+        raise StateFileError("state.json is missing required fields (session, nonce)")
     filtered.setdefault("endpoint", "")
     filtered.setdefault("created_at", "")
-    return State(**filtered)
+    state = State(**filtered)
+    validate_state(state)
+    return state
 
 
-def save_state(state: State) -> Path:
+def _save_state_unlocked(state: State) -> Path:
+    validate_state(state)
     path = state_path()
     _atomic_write(path, json.dumps(asdict(state), indent=2) + "\n")
     return path
 
 
+def save_state(state: State) -> Path:
+    """Atomically persist state, serializing writers from all local processes."""
+    with state_lock():
+        return _save_state_unlocked(state)
+
+
+def update_state(**changes: Any) -> State:
+    """Re-read state under the lock, apply `changes`, then persist atomically.
+
+    Processes that only own one PID (the daemon, the watchdog supervisor) must
+    use this instead of `save_state` so they do not erase each other's PIDs.
+    """
+    unknown = set(changes) - {f.name for f in fields(State)}
+    if unknown:
+        raise ValueError(f"Unknown state fields: {', '.join(sorted(unknown))}")
+    with state_lock():
+        current = load_state()
+        if current is None:
+            raise StateFileError("No active session is registered in state.json")
+        for key, value in changes.items():
+            setattr(current, key, value)
+        _save_state_unlocked(current)
+        return current
+
+
 def clear_state() -> None:
-    with contextlib.suppress(FileNotFoundError):
-        state_path().unlink()
+    with state_lock():
+        with contextlib.suppress(FileNotFoundError):
+            state_path().unlink()
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    """Write the file atomically to avoid leaving partial state."""
+def nonce_matches(payload: Any, state: State) -> bool:
+    """True when a gateway payload carries this session's identity nonce."""
+    if not isinstance(payload, dict):
+        return False
+    nonce = payload.get("nonce")
+    return isinstance(nonce, str) and bool(nonce) and nonce == state.nonce
+
+
+@contextlib.contextmanager
+def state_lock() -> Iterator[None]:
+    """Cross-process advisory lock around state read-modify-write cycles."""
+    if fcntl is None:  # pragma: no cover - non-POSIX platforms
+        yield
+        return
+    path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
+    with open(path.with_name(path.name + ".lock"), "a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def atomic_write_text(
+    path: Path, text: str, *, mode: int | None = None, newline: str | None = None
+) -> None:
+    """Write text via temp file + `os.replace`, preserving the target mode."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = path.resolve()
+    if mode is None:
+        mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else 0o600
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as handle:
+            os.fchmod(handle.fileno(), mode)
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
@@ -273,3 +551,14 @@ def _atomic_write(path: Path, text: str) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write the file atomically to avoid leaving partial state."""
+    atomic_write_text(path, text)
+
+
+async def sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
+    """Sleep, or return immediately when the caller is asked to stop."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
