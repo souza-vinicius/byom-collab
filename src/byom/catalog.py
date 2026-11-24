@@ -109,6 +109,19 @@ VISION_PROJECTOR_GIB_BY_MODEL = {
 #: 2026-11-24).
 IMAGE_VISION_GIB = 1.08
 
+#: Custo do drafter DSpark em VRAM quando o perfil declara `[worker] dspark`.
+#: É o peso do próprio drafter, que o llama-server carrega ao lado do modelo
+#: (`--model-draft`): `unsloth/Inkling-2-Mini-GGUF/dspark-Inkling-2-Mini-Q8_0.gguf`,
+#: 503.889.952 B = 0,47 GiB (tree da API do HF, consultado em 2026-11-24). O
+#: arquivo é baixado pelo `prepare_runtime` e vive no manifest como `drafter`.
+DSPARK_DRAFTER_GIB = 0.47
+
+
+def drafter_gib(worker: dict[str, object] | None) -> float:
+    """VRAM extra do drafter declarado no `[worker]`; zero sem `dspark`."""
+    dados = worker or {}
+    return DSPARK_DRAFTER_GIB if dados.get("dspark") else 0.0
+
 GPU_SOURCE = (
     "Google Cloud, Compute Engine > GPU machine types > General comparison chart "
     "(docs.cloud.google.com/compute/docs/gpus), consultado em 2026-11-23"
@@ -946,11 +959,13 @@ def required_vram_gib(
     *,
     kv_cache_dtype: str | None = None,
     model: ModelEntry | None = None,
+    drafter_gib: float = 0.0,
 ) -> float:
-    """Pesos + projetor de visão + runtime + KV; sem folga (ver `check_fit`).
+    """Pesos + projetor de visão + runtime + KV + drafter; sem folga.
 
     `model` é a entrada do catálogo: é dela que sai o `kv_shape` (quando existe)
-    — sem ele a conta cai no heurístico de 2 GiB/32K.
+    — sem ele a conta cai no heurístico de 2 GiB/32K. `drafter_gib` é o custo do
+    drafter DSpark que o perfil carrega (`catalog.drafter_gib(worker)`).
     """
     kv = (
         0.0
@@ -960,7 +975,7 @@ def required_vram_gib(
         )
     )
     return round(
-        variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv, 2
+        variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv + drafter_gib, 2
     )
 
 
@@ -971,27 +986,37 @@ def _fits(
     max_model_len: int,
     kv_cache_dtype: str | None = None,
     model: ModelEntry | None = None,
+    drafter_gib: float = 0.0,
 ) -> bool:
-    """Pesos + visão + runtime + KV precisam caber com a folga da GPU."""
+    """Pesos + visão + runtime + KV + drafter precisam caber com a folga da GPU."""
     required = required_vram_gib(
-        variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype, model=model
+        variant,
+        max_model_len,
+        runtime,
+        kv_cache_dtype=kv_cache_dtype,
+        model=model,
+        drafter_gib=drafter_gib,
     )
     # `<` e não `<=`: com igualdade a folga é zero, que é justamente o caso que
     # a folga existe para reprovar.
     return variant.available and required + vram_headroom_gib(gpu.vram_gib) < gpu.vram_gib
 
 
-def min_gpu_for(model_id: str, variant_id: str, max_model_len: int) -> str:
+def min_gpu_for(
+    model_id: str, variant_id: str, max_model_len: int, *, drafter_gib: float = 0.0
+) -> str:
     """Menor GPU do catálogo que comporta a variante NO contexto do perfil.
 
     `Variant.min_gpu` é calibrado no menor contexto servido; exibir esse valor
     como "GPU mínima" num perfil de 131K produzia "Exige pelo menos L4; não cabe
     em L4". Quando nenhuma GPU comporta, devolve a maior (o chamador mostra o
-    motivo de `check_fit`).
+    motivo de `check_fit`). `drafter_gib` entra na conta do perfil DSpark.
     """
     order = sorted(GPUS, key=lambda gpu: (gpu.vram_gib, gpu.id))
     for gpu in order:
-        if check_fit(model_id, variant_id, gpu.id, max_model_len).fits:
+        if check_fit(
+            model_id, variant_id, gpu.id, max_model_len, drafter_gib=drafter_gib
+        ).fits:
             return gpu.id
     return order[-1].id
 
@@ -1003,6 +1028,7 @@ def check_fit(
     max_model_len: int = 32768,
     *,
     kv_cache_dtype: str | None = None,
+    drafter_gib: float = 0.0,
 ) -> CompatibilityResult:
     """Verifique se a variante cabe na GPU declarada, sem realocar nada."""
     variant = variant_by_id(model_id, variant_id)
@@ -1015,6 +1041,7 @@ def check_fit(
         runtime,
         kv_cache_dtype=kv_cache_dtype,
         model=entry,
+        drafter_gib=drafter_gib,
     )
     headroom = vram_headroom_gib(gpu.vram_gib)
     alternatives: list[str] = []
@@ -1022,9 +1049,13 @@ def check_fit(
         for other in entry.variants:
             if other.id == variant.id or not other.available:
                 continue
-            if _fits(other, runtime, gpu, max_model_len, kv_cache_dtype, entry):
+            if _fits(
+                other, runtime, gpu, max_model_len, kv_cache_dtype, entry, drafter_gib
+            ):
                 alternatives.append(f"{model_id}:{other.id}")
-    fits = _fits(variant, runtime, gpu, max_model_len, kv_cache_dtype, entry)
+    fits = _fits(
+        variant, runtime, gpu, max_model_len, kv_cache_dtype, entry, drafter_gib
+    )
     reason = ""
     if not variant.available:
         reason = variant.reason
@@ -1047,10 +1078,11 @@ def check_fit(
                 f"de atenção completa, janela de {entry.kv_shape.window})"
             )
         visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
+        drafter = f" + drafter {drafter_gib:g}" if drafter_gib else ""
         reason = (
             f"{variant.label} precisa de ~{required:.2f} GiB "
             f"(pesos {variant.memory_gib:g}{visao} + runtime {RUNTIME_RESERVE_GIB:g} + "
-            f"{cache}) mais {headroom:.1f} GiB de margem, "
+            f"{cache}{drafter}) mais {headroom:.1f} GiB de margem, "
             f"mas {gpu.label} tem {gpu.vram_gib} GiB utilizáveis."
         )
     return CompatibilityResult(
@@ -1121,14 +1153,21 @@ class CompatibleSelection:
         return len(self.rows)
 
 
-def compatible_variants(gpu_id: str) -> CompatibleSelection:
+def compatible_variants(
+    gpu_id: str, drafters: dict[str, float] | None = None
+) -> CompatibleSelection:
     """Filtre variantes disponíveis com `check_fit` em cada contexto servido.
 
     Uma variante passa se pelo menos um contexto servido couber na GPU. O
     perfil exibido é o daquele contexto, preferindo o registrado para a própria
     GPU quando houver mais de um. Variantes indisponíveis são ignoradas.
+
+    `drafters` mapeia profile_id -> GiB do drafter DSpark. O catálogo não lê
+    `[worker]` (a tabela vive no perfil, e `config` importa este módulo), então
+    quem chama passa o custo — do mesmo jeito que `packages`.
     """
     gpu = gpu_by_id(gpu_id)
+    custo_drafter = drafters or {}
     rows: list[CompatibleVariant] = []
     dropped = 0
     for model in MODELS:
@@ -1137,9 +1176,6 @@ def compatible_variants(gpu_id: str) -> CompatibleSelection:
                 continue
             candidates: list[tuple[int, int, str, int, CompatibilityResult]] = []
             for context in served_contexts_for(model.id, variant.id):
-                fit = check_fit(model.id, variant.id, gpu.id, context)
-                if not fit.fits:
-                    continue
                 refs = [
                     item
                     for item in PROFILE_CONTEXTS
@@ -1150,8 +1186,20 @@ def compatible_variants(gpu_id: str) -> CompatibleSelection:
                 if not refs:
                     # Sem perfil registrado, served_contexts_for já devolveu
                     # Variant.context como contexto de referência.
-                    candidates.append((1, -context, "", context, fit))
+                    fit = check_fit(model.id, variant.id, gpu.id, context)
+                    if fit.fits:
+                        candidates.append((1, -context, "", context, fit))
+                    continue
                 for ref in refs:
+                    fit = check_fit(
+                        model.id,
+                        variant.id,
+                        gpu.id,
+                        context,
+                        drafter_gib=custo_drafter.get(ref.profile_id, 0.0),
+                    )
+                    if not fit.fits:
+                        continue
                     candidates.append(
                         (
                             0 if ref.gpu_id == gpu.id else 1,
@@ -1184,16 +1232,19 @@ def compatible_variants(gpu_id: str) -> CompatibleSelection:
 
 
 def format_compatible_models(
-    gpu_id: str, packages: dict[str, str] | None = None
+    gpu_id: str,
+    packages: dict[str, str] | None = None,
+    drafters: dict[str, float] | None = None,
 ) -> str:
     """Tabela de compatíveis no mesmo estilo de colunas de `format_models`.
 
     `packages` mapeia profile_id -> publicador dos pesos (derivado do repositório
     de onde o byom baixa). A coluna "Pacote" só aparece quando algum perfil desta
     GPU publica os pesos em nome de outra org — repetir a coluna com o mesmo
-    valor do fornecedor seria ruído.
+    valor do fornecedor seria ruído. `drafters` leva o custo do drafter DSpark
+    por perfil para o orçamento (ver `compatible_variants`).
     """
-    selection = compatible_variants(gpu_id)
+    selection = compatible_variants(gpu_id, drafters)
     gpu = gpu_by_id(gpu_id)
     pacotes = packages or {}
     linha_pacote = {

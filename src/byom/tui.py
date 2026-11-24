@@ -749,6 +749,8 @@ class PerfilView:
     pesos_gib: float
     visao_gib: float
     runtime_gib: float
+    #: VRAM do drafter DSpark quando `[worker] dspark = true`; 0,0 sem ele.
+    drafter_gib: float
     kv_gib: float
     kv_dtype: str
     #: De onde veio o KV: arquitetura datada do `config.json` ou heurístico.
@@ -803,9 +805,12 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
 
         ctx_servido = int(p.settings.get("max_model_len", 0))
         ctx_doc = variant.context_doc if variant else ctx_servido
+        drafter = catalog.drafter_gib(p.worker)
         if variant and p.catalog_model:
             # No contexto DESTE perfil, não no mínimo calibrado da variante.
-            gpu_min = catalog.min_gpu_for(p.catalog_model, p.catalog_variant, ctx_servido)
+            gpu_min = catalog.min_gpu_for(
+                p.catalog_model, p.catalog_variant, ctx_servido, drafter_gib=drafter
+            )
         else:
             gpu_min = str(p.settings.get("gpu", "L4"))
         pesos = variant.memory_gib if variant else 0.0
@@ -829,6 +834,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 p.runtime,
                 kv_cache_dtype=p.settings.get("kv_cache_dtype"),
                 model=entry,
+                drafter_gib=drafter,
             )
             if variant
             else pesos + runtime_gib + kv_gib
@@ -841,6 +847,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 gpu_ref,
                 ctx_servido,
                 kv_cache_dtype=p.settings.get("kv_cache_dtype"),
+                drafter_gib=drafter,
             )
             if p.catalog_model and p.catalog_variant
             else None
@@ -886,6 +893,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 pesos_gib=pesos,
                 visao_gib=visao_gib,
                 runtime_gib=runtime_gib,
+                drafter_gib=drafter,
                 kv_gib=kv_gib,
                 kv_dtype=kv_dtype,
                 kv_fonte=catalog.kv_shape_note(entry),
@@ -916,6 +924,7 @@ class GpuView:
 
 def listar_gpus_estruturadas() -> list[GpuView]:
     perfis = config.available_profiles()
+    drafters = config.drafter_gib_by_profile()
     total = len(perfis)
     views: list[GpuView] = []
     for idx, gpu in enumerate(catalog.GPUS, 1):
@@ -928,6 +937,7 @@ def listar_gpus_estruturadas() -> list[GpuView]:
                 p.catalog_variant,
                 gpu.id,
                 int(p.settings["max_model_len"]),
+                drafter_gib=drafters.get(p.id, 0.0),
             ).fits
         )
         views.append(
@@ -1124,12 +1134,17 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
             if item.visao_gib
             else ""
         )
+        drafter = (
+            f" + {M.formatar_gib(item.drafter_gib)} para o drafter DSpark"
+            if item.drafter_gib
+            else ""
+        )
         add(
             "Memória estimada",
             f"{M.formatar_gib(item.total_gib, aproximado=True)} "
             f"({M.formatar_gib(item.pesos_gib)} para os pesos{visao} + "
             f"{M.formatar_gib(item.runtime_gib)} para o motor + "
-            f"{M.formatar_gib(item.kv_gib)} para o cache KV).",
+            f"{M.formatar_gib(item.kv_gib)} para o cache KV{drafter}).",
         )
         # O número do KV muda de ordem de grandeza quando vem da arquitetura;
         # sem dizer a procedência ele parece erro ao lado do heurístico.
@@ -1260,7 +1275,7 @@ def renderizar_modelos_por_gpu(
 ) -> tuple[catalog.CompatibleSelection, dict[str, PerfilView]]:
     """Renderiza variantes compatíveis com uma GPU usando Rich em português."""
     gpu = catalog.gpu_by_id(gpu_id)
-    selection = catalog.compatible_variants(gpu.id)
+    selection = catalog.compatible_variants(gpu.id, config.drafter_gib_by_profile())
     modo = _modo_layout(con)
 
     perfis_por_id = {pv.profile.id: pv for pv in listar_perfis_estruturados(estado)}
@@ -1814,6 +1829,8 @@ def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView)
     if item.visao_gib:
         memoria += f" + visão {M.formatar_gib(item.visao_gib)}"
     memoria += f" + motor {M.formatar_gib(item.runtime_gib)}"
+    if item.drafter_gib:
+        memoria += f" + drafter {M.formatar_gib(item.drafter_gib)}"
     if item.profile.runtime != "image":
         memoria += f" + cache KV {M.formatar_gib(item.kv_gib)} ({item.kv_dtype})"
 
