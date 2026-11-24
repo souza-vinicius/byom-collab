@@ -206,13 +206,17 @@ MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
         "inkling-2-mini", "Inkling 2 Mini", "llama-cpp",
         (
-            Variant("q2", "UD-IQ2_XXS (2 bit)", 11.0, 32_768, "L4",
+            Variant("q2", "UD-IQ2_XXS (2 bit)", 7.90, 32_768, "T4",
                     context_doc=1_000_000,
                     needs_custom_build=True,
-                    context_reason="1M pediria ~64 GiB de KV; 32K em L4 fica com margem.",
-                    notes=("10-11 GB em 2 bit; build loopado obrigatório nos arquivos da raiz.",
-                           "11 GiB + 0,65 de visão + 2 de runtime = 13,65: não cabe nos "
-                           "15 GiB utilizáveis da T4, então a GPU mínima é L4."),
+                    context_reason="1M pediria ~64 GiB de KV; 32K cabe nos 15 GiB da T4 "
+                                   "com 2,45 GiB de sobra.",
+                    notes=("`Mainline_Support/Inkling-2-Mini-UD-IQ2_XXS.gguf_file` tem "
+                           "8.486.237.632 B = 7,90 GiB (não 10-11 GB); build loopado "
+                           "obrigatório nos arquivos da raiz.",
+                           "Com o KV contado: 7,90 + 0,65 de visão + 2 de runtime + 2 de KV "
+                           "em 32K = 12,55, mais 1,0 de folga = 13,55 <= 15 GiB utilizáveis "
+                           "da T4. A GPU mínima volta a ser T4."),
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
             Variant("q4", "UD-Q4_K_XL (4 bit)", 18.0, 65_536, "A100-40",
                     context_doc=1_000_000,
@@ -414,8 +418,8 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
     ProfileContext("qwen3.8-27b-256k", "qwen3.8-27b-awq", "q4-awq", 262_144, 262_144,
                    "A100-80", "Contexto máximo documentado mantido em A100 80 GB (high_mem)."),
     ProfileContext("inkling-2-mini-iq2-gguf", "inkling-2-mini", "q2", 1_000_000, 32_768,
-                   "L4", "11 GiB pesos + 0,65 visão + 2 runtime estouram os 15 GiB "
-                         "utilizáveis da T4; em L4, 32K fica com ~7 GiB de margem."),
+                   "T4", "7,90 GiB de pesos + 0,65 visão + 2 runtime + 2 de KV em 32K = "
+                         "12,55, mais 1,0 de folga = 13,55 <= 15 GiB utilizáveis da T4."),
     ProfileContext("inkling-2-mini-q4-gguf", "inkling-2-mini", "q4", 1_000_000, 65_536,
                    "A100-40", "18 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 24,65: não "
                               "cabe em L4 (24 GiB) com a folga de 1,2 GiB."),

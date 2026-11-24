@@ -55,12 +55,12 @@ def test_compatibilidade_com_margem_e_alternativas():
     assert com_folga.fits
     assert com_folga.headroom_gib == pytest.approx(2.0)
 
-    # Em L4 a alternativa q2 (com visão) ainda cabe em 65.536; em T4 nenhuma cabe.
+    # Em L4 a alternativa q2 (com visão) ainda cabe em 65.536; em T4 só o q2 cabe.
     assert "inkling-2-mini:q2" in no_limite.alternatives
     too_big = catalog.check_fit("inkling-2-mini", "q4", "T4", 32768)
     assert not too_big.fits
     assert "GiB" in too_big.reason
-    assert too_big.alternatives == ()
+    assert too_big.alternatives == ("inkling-2-mini:q2",)
 
     with pytest.raises(ValueError):
         catalog.check_fit("modelo-inexistente", "q4", "L4")

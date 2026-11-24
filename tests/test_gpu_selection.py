@@ -6,7 +6,7 @@ import builtins
 
 import pytest
 
-from byom import catalog
+from byom import catalog, config
 
 UNAVAILABLE = ("minimax-m3.1-flash", "glm-5.3-flash", "deepseek-v4.1-flash")
 
@@ -63,6 +63,7 @@ def test_t4_filtra_modelos_grandes():
         assert excluded not in ids
     # 9,22 GiB + 1,08 de visão + 2 de runtime + 1 de folga cabem nos 15 GiB.
     assert ("qwen-image-2.1", "q4km") in ids
+
     assert selection.dropped_for_memory > 0
 
     text = catalog.format_compatible_models("T4")
@@ -75,6 +76,21 @@ def test_t4_filtra_modelos_grandes():
     assert row.profile_id == ""
     assert row.context_served == catalog.variant_by_id("gemma-4", "e2b-q4").context
     assert "n/a (sem perfil)" in text
+
+
+def test_inkling_q2_cabe_na_t4_com_o_kv_contado():
+    """7,90 + 0,65 visão + 2 runtime + 2 KV = 12,55; + 1,0 = 13,55 <= 15 GiB."""
+    fit = catalog.check_fit("inkling-2-mini", "q2", "T4", 32768)
+
+    assert fit.fits is True
+    assert fit.required_gib == 12.55
+    assert fit.available_gib == 15.0
+    variante = catalog.variant_by_id("inkling-2-mini", "q2")
+    assert variante.memory_gib == 7.90
+    assert variante.min_gpu == "T4"
+    profile = config.load_profile("inkling-2-mini-iq2-gguf")
+    assert profile.settings["gpu"] == "T4"
+    assert catalog.profile_context("inkling-2-mini-iq2-gguf").gpu_id == "T4"
 
 
 def test_a100_80_libera_variantes_que_nao_cabem_em_l4():

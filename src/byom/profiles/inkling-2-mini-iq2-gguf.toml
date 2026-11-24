@@ -1,5 +1,5 @@
 name = "Inkling 2 Mini (2 bit, GGUF)"
-description = "2 bit para L4 (a T4 não comporta pesos + projetor de visão); build mainline b12611 com arquivos Mainline_Support."
+description = "2 bit para T4 (7,90 GiB de pesos + 0,65 de visão + 2 de runtime + 2 de KV cabem nos 15 GiB); build mainline b12611 com arquivos Mainline_Support."
 opencode_output_limit = 8192
 runtime = "llama-cpp"
 catalog_model = "inkling-2-mini"
@@ -9,7 +9,7 @@ catalog_variant = "q2"
 model = "inkling-2-mini"
 served_model_name = "inkling-2-mini"
 max_model_len = 32768
-gpu = "L4"
+gpu = "T4"
 gpu_high_mem = false
 vllm_spec = "vllm"
 vllm_enforce_eager = false
