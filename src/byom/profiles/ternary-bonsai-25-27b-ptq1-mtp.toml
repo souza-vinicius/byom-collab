@@ -1,0 +1,54 @@
+name = "Ternary Bonsai 2.5 27B (PTQ1_0-MTP, fork PrismML)"
+description = "GGUF PTQ1_0-mtp do Bonsai 2.5 (5,80 GiB): a cabeça MTP vem embutida no próprio arquivo e acelera o decode em 1,5-1,8x nas NVIDIA medidas; 64K na T4."
+opencode_output_limit = 8192
+runtime = "llama-cpp"
+catalog_model = "ternary-bonsai-2.5-27b"
+catalog_variant = "ptq1-mtp"
+
+[config]
+model = "ternary-bonsai-2.5-27b"
+served_model_name = "ternary-bonsai-2.5-27b"
+max_model_len = 65536
+gpu = "T4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+# Mesmo binário do irmão `ptq1`: o MTP também exige os kernels do fork PrismML.
+# Pin em prism-b12128-d7b2896 (o build onde o preset MTP foi medido); o
+# prism-b12178-03ec600 já existe e fica para um bump futuro.
+[worker]
+binary_url = "https://github.com/PrismML-Eng/llama.cpp/releases/download/prism-b12128-d7b2896/llama-prism-b12128-d7b2896-bin-linux-cuda-12.8-x64.tar.gz"
+binary_sha256 = "d800a807295e73742d4dff7d3aa3a3438d6147882c9b609ef8bacba333bead01"
+binary_dir = "llama.cpp"
+model_repo = "prism-ml/Ternary-Bonsai-2.5-27B-GGUF"
+model_patterns = ["Ternary-Bonsai-2.5-27B-PTQ1_0-mtp.gguf", "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf"]
+main_pattern = "Ternary-Bonsai-2.5-27B-PTQ1_0-mtp.gguf"
+mmproj_pattern = "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf"
+llama_jinja = true
+flash_attn = true
+
+# Thinking do 27B: 1.0 / 0.95 / 20 / 0.0, sem presence nem repeat penalty.
+# `min_p` explícito porque o default do llama.cpp é 0.05.
+[worker.sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+
+# MTP: a cabeça de rascunho está DENTRO do `-mtp.gguf`, que é carregado como
+# modelo (`-m`) — não há `drafter_pattern` e o `-md` não é emitido. Valores do
+# preset do publicador (`presets/llama.cpp/mtp-cuda.json`, medido no build
+# prism-b12128-d7b2896) e da tabela por device do model page: 3 drafts, corte
+# 0,1 em H200/H100/RTX 5090. A tabela NÃO tem linha de T4 — o custo no Colab
+# não foi medido pelo publicador.
+[worker.spec]
+type = "draft-mtp"
+n_min = 0
+n_max = 3
+p_min = 0.1

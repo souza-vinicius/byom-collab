@@ -474,3 +474,41 @@ def test_prepare_carrega_o_mtp_como_modelo_e_nao_como_drafter(
 
     assert manifest["main"].endswith("PTQ1_0-mtp.gguf")
     assert "drafter" not in manifest
+
+
+def test_sonda_de_argv_imprime_o_argv_dos_tres_perfis_do_bonsai():
+    """`scripts/llama_argv.py` mostra o argv real; o MTP não tem `--model-draft`."""
+    import os
+    import subprocess
+    import sys
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "llama_argv.py"
+    resultado = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "ternary-bonsai-25-27b-q2",
+            "ternary-bonsai-25-27b-ptq1",
+            "ternary-bonsai-25-27b-ptq1-mtp",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "BYOM_CONFIG_DIR": os.devnull},
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    linhas = {
+        linha.split("—")[0].strip().removeprefix("# "): linha
+        for linha in resultado.stdout.splitlines()
+        if linha.startswith("# ")
+    }
+    assert set(linhas) == {
+        "ternary-bonsai-25-27b-q2",
+        "ternary-bonsai-25-27b-ptq1",
+        "ternary-bonsai-25-27b-ptq1-mtp",
+    }
+    assert "-fa on" in resultado.stdout
+    assert "--min-p 0.0" in resultado.stdout
+    assert "--spec-type draft-mtp" in resultado.stdout
+    assert "--model-draft" not in resultado.stdout
