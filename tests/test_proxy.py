@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from byom import config
+from byom import config, proxy
 from byom.proxy import Runtime, WorkerStatus, create_app
 from byom.tunnel import TunnelState, TunnelSupervisor
 
@@ -471,3 +472,87 @@ def test_traversal_literal_no_nivel_asgi():
         assert b"byom_bad_path" in body, path
 
     assert seen == []
+
+
+# ---------------------------------------------------------------------------
+# Timeout, deadline de primeiro byte e vazamento de `AsyncClient`
+# ---------------------------------------------------------------------------
+class SilentTransport(httpx.AsyncBaseTransport):
+    """Upstream que aceita a requisição e nunca responde (VM pausada)."""
+
+    def __init__(self) -> None:
+        self.closed = 0
+        self.requests = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests += 1
+        await asyncio.Event().wait()  # nunca retorna
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+def proxy_app_with_transport(runtime: Runtime, transport: httpx.AsyncBaseTransport):
+    runtime.verify_loop = _idle_verify_loop  # type: ignore[method-assign]
+    return create_app(runtime, transport=transport)
+
+
+def test_upstream_mudo_vira_503_no_deadline(monkeypatch):
+    monkeypatch.setattr("byom.proxy.FIRST_BYTE_DEADLINE_S", 0.1)
+    transport = SilentTransport()
+    app = proxy_app_with_transport(make_runtime(), transport)
+
+    with TestClient(app, base_url=PROXY_BASE_URL) as client:
+        started = time.monotonic()
+        response = client.post("/v1/chat/completions", json={"model": "m"})
+        elapsed = time.monotonic() - started
+
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "byom_tunnel"
+    assert "first byte" in response.json()["error"]["message"]
+    assert elapsed < 10
+    # O cliente não pode ficar aberto depois do deadline.
+    assert transport.closed == 1
+
+
+async def test_cancelamento_durante_send_fecha_o_async_client():
+    transport = SilentTransport()
+    app = proxy_app_with_transport(make_runtime(), transport)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=PROXY_BASE_URL
+    ) as client:
+        task = asyncio.create_task(client.post("/v1/chat/completions", json={"model": "m"}))
+        # Espera o `send` começar antes de cancelar.
+        while transport.requests == 0:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert transport.closed == 1, "o CancelledError não pode deixar o AsyncClient aberto"
+
+
+def test_erro_de_transporte_fecha_o_async_client():
+    class Failing(SilentTransport):
+        async def handle_async_request(self, request):
+            raise httpx.ConnectError("tunnel dropped")
+
+    transport = Failing()
+    app = proxy_app_with_transport(make_runtime(), transport)
+
+    with TestClient(app, base_url=PROXY_BASE_URL) as client:
+        response = client.post("/v1/chat/completions", json={"model": "m"})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "byom_tunnel"
+    assert transport.closed == 1
+
+
+def test_timeout_sem_read_timeout_no_stream():
+    """O stream SSE pode ficar quieto: nenhum read timeout no cliente."""
+    assert proxy.PROXY_TIMEOUT.read is None
+    assert proxy.PROXY_TIMEOUT.connect == 5.0
+    assert proxy.PROXY_TIMEOUT.write == 30.0
+    assert proxy.PROXY_TIMEOUT.pool == 5.0

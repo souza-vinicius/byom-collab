@@ -46,6 +46,14 @@ ALLOWED_PATH_CHARS = re.compile(r"[A-Za-z0-9._~/-]+")
 #: resolva um domínio público para 127.0.0.1 envia o domínio nesse header.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 
+#: Timeout do cliente que fala com o gateway. Sem `read`: um SSE legítimo fica
+#: quieto entre eventos, e um read timeout mataria a geração no meio.
+PROXY_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0)
+
+#: Deadline do primeiro byte. Cobre a VM pausada pelo Colab: o `send` espera os
+#: headers e, sem prazo, o request penduraria para sempre.
+FIRST_BYTE_DEADLINE_S = 60.0
+
 
 @dataclass
 class WorkerStatus:
@@ -181,7 +189,7 @@ def create_app(
     def make_client() -> httpx.AsyncClient:
         if client_factory is not None:
             return client_factory()
-        return httpx.AsyncClient(transport=transport, timeout=None)
+        return httpx.AsyncClient(transport=transport, timeout=PROXY_TIMEOUT)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -315,35 +323,56 @@ async def _forward(
     upstream = client.build_request(
         request.method, url, content=body, headers=_forward_headers(request)
     )
+    # O gerador do stream passa a ser o dono do cliente: fechá-lo aqui
+    # abortaria uma resposta que ainda está sendo lida.
+    streamed = False
     try:
-        response = await client.send(upstream, stream=True)
-    except httpx.HTTPError as exc:
-        await client.aclose()
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": f"Tunnel unavailable: {exc}", "type": "byom_tunnel"}},
-        )
-
-    if response.status_code != 200:
-        payload = await response.aread()
-        await response.aclose()
-        await client.aclose()
         try:
-            content = json.loads(payload)
-        except ValueError:
-            content = {"error": {"message": payload.decode(errors="replace")[:2000]}}
-        return JSONResponse(status_code=response.status_code, content=content)
+            response = await asyncio.wait_for(
+                client.send(upstream, stream=True), FIRST_BYTE_DEADLINE_S
+            )
+        except TimeoutError:
+            # `asyncio.TimeoutError` é `TimeoutError` desde o Python 3.11.
+            return _tunnel_unavailable(
+                f"Gateway did not send a first byte within {int(FIRST_BYTE_DEADLINE_S)}s"
+            )
+        except httpx.HTTPError as exc:
+            return _tunnel_unavailable(f"Tunnel unavailable: {exc}")
 
-    media_type = response.headers.get("content-type", "text/event-stream")
-
-    async def stream() -> AsyncIterator[bytes]:
-        # Forward each event as it arrives instead of waiting for the end of
-        # the response. Closing the stream aborts the request on the worker.
-        try:
-            async for chunk in response.aiter_raw():
-                yield chunk
-        finally:
+        if response.status_code != 200:
+            payload = await response.aread()
             await response.aclose()
+            try:
+                content = json.loads(payload)
+            except ValueError:
+                content = {"error": {"message": payload.decode(errors="replace")[:2000]}}
+            return JSONResponse(status_code=response.status_code, content=content)
+
+        media_type = response.headers.get("content-type", "text/event-stream")
+
+        async def stream() -> AsyncIterator[bytes]:
+            # Forward each event as it arrives instead of waiting for the end
+            # of the response. Closing the stream aborts the request on the
+            # worker.
+            try:
+                async for chunk in response.aiter_raw():
+                    yield chunk
+            finally:
+                await response.aclose()
+                await client.aclose()
+
+        streamed = True
+        return StreamingResponse(stream(), status_code=response.status_code, media_type=media_type)
+    finally:
+        # Qualquer saída — erro, deadline, `CancelledError` durante o `send` —
+        # fecha o cliente. `aclose` é idempotente, então o `finally` do gerador
+        # de stream pode chamá-lo de novo.
+        if not streamed:
             await client.aclose()
 
-    return StreamingResponse(stream(), status_code=response.status_code, media_type=media_type)
+
+def _tunnel_unavailable(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"error": {"message": message, "type": "byom_tunnel"}},
+    )
