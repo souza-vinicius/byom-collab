@@ -491,6 +491,16 @@ def resolve_gpu(colab_gpu: str, high_mem: bool = False) -> Gpu:
     raise ValueError(f"GPU do Colab desconhecida: {colab_gpu!r}")
 
 
+def colab_settings_for_gpu(gpu_id: str) -> tuple[str, bool]:
+    """Traduza um ID do catálogo para os campos `gpu`/`gpu_high_mem` do config.toml.
+
+    `resolve_gpu` faz o caminho de volta. O mapeamento não é identidade: no
+    Colab, A100-40 e A100-80 são o mesmo `gpu=A100`, distinguidas por `high_mem`.
+    """
+    gpu = gpu_by_id(gpu_id)
+    return gpu.colab_names[0], gpu.id == "A100-80"
+
+
 def model_by_id(model_id: str) -> ModelEntry:
     for model in MODELS:
         if model.id == model_id:

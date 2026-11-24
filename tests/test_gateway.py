@@ -318,9 +318,7 @@ def install_fake_google_colab(monkeypatch, calls: list[str]) -> None:
     """Fake `google.colab.runtime` in `sys.modules`, without importing Colab."""
     google = types.ModuleType("google")
     colab_module = types.ModuleType("google.colab")
-    setattr(
-        colab_module, "runtime", types.SimpleNamespace(unassign=lambda: calls.append("unassign"))
-    )
+    colab_module.runtime = types.SimpleNamespace(unassign=lambda: calls.append("unassign"))
     monkeypatch.setitem(sys.modules, "google", google)
     monkeypatch.setitem(sys.modules, "google.colab", colab_module)
 

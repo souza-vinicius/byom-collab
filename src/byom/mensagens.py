@@ -23,44 +23,33 @@ DICA_PAGINACAO = (
     "role com ↑↓/PageUp/PageDown ou use os números para abrir um item."
 )
 
-TECLAS_MENU = "↑↓ navegar • atalhos 1–9 / c / h / q • Enter selecionar • Ctrl+C sair"
+TECLAS_MENU = "↑↓ navegar • atalhos 1–5 / c / h / q • Enter selecionar • Ctrl+C sair"
 TECLAS_SELECAO = "↑↓ navegar • digite para filtrar • Enter selecionar • Ctrl+C voltar"
 TECLAS_LISTA = "↑↓ navegar • Enter abrir • Ctrl+C voltar"
 TECLAS_CONFIRMACAO = "↑↓ ou s/n escolher • Enter confirmar • Ctrl+C cancelar"
 TECLAS_DETALHE = "↑↓ navegar • Enter selecionar • Ctrl+C voltar"
 
 MENU_PERGUNTA = "Escolha uma ação:"
-MENU_AJUDA = (
-    "Fluxo recomendado para usar o byom:\n"
-    "  1. Preparar ambiente local — verifica ssh/Colab e cria a chave SSH.\n"
-    "  2. Selecionar perfil de modelo — escolhe modelo e GPU padrão.\n"
-    "  3. Configurar harness — exibe instruções manuais ou configura OpenCode / dsh.\n"
-    "  4. Iniciar sessão no Colab — aloca a GPU e publica a API local.\n"
-    "  5. Conversar com o modelo — abre o chat no terminal (llm chat) com a API do Colab.\n"
-    "  6. Verificar estado / Encerrar sessão — acompanha ou libera a GPU.\n\n"
-    "Use as setas (↑↓) ou as teclas de atalho (1–9, c, h, q) e Enter para confirmar.\n"
-    "As ações de consulta (4, 5 e 6) são somente leitura e não gastam créditos."
-)
 
-#: Grupos na ordem natural de uso (D3).
-GRUPOS_MENU: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Preparar", ("init", "configure", "harness")),
-    ("Explorar catálogo", ("profiles", "gpus", "models")),
-    ("Usar sessão no Colab", ("up", "status", "down")),
-    ("Conversar", ("chat",)),
+#: Tela inicial única, na ordem de uso. A saída (`q. Sair`) é fixa na TUI (D3).
+MENU_INICIAL: tuple[str, ...] = (
+    "init",
+    "selecionar_gpu",
+    "up",
+    "status",
+    "down",
+    "chat",
+    "harness",
 )
 
 ATALHOS_MENU: dict[str, str] = {
     "init": "1",
-    "configure": "2",
-    "harness": "3",
-    "profiles": "4",
-    "gpus": "5",
-    "models": "6",
-    "up": "7",
-    "status": "8",
-    "down": "9",
+    "selecionar_gpu": "2",
+    "up": "3",
+    "status": "4",
+    "down": "5",
     "chat": "c",
+    "harness": "h",
 }
 
 ACOES: dict[str, tuple[str, str]] = {
@@ -72,21 +61,13 @@ ACOES: dict[str, tuple[str, str]] = {
         "Selecionar perfil de modelo",
         "Grava em config.toml o modelo e a GPU para a próxima sessão.",
     ),
+    "selecionar_gpu": (
+        "Selecionar GPU",
+        "Escolhe um perfil pronto ou um par GPU + modelo para a próxima sessão.",
+    ),
     "harness": (
         "Configurar harness (OpenCode / dsh)",
         "Mostra instruções manuais e permite configurar a conexão automaticamente.",
-    ),
-    "profiles": (
-        "Consultar perfis disponíveis",
-        "Mostra modelos, quantização, GPU mínima, contexto e raciocínio.",
-    ),
-    "gpus": (
-        "Consultar GPUs do Colab",
-        "Mostra VRAM aproximada, suporte a bf16 e perfis compatíveis.",
-    ),
-    "models": (
-        "Filtrar modelos por GPU",
-        "Lista apenas as variantes do catálogo que cabem na GPU escolhida.",
     ),
     "up": (
         "Iniciar sessão no Colab",
@@ -117,6 +98,10 @@ O_QUE_VAI_ACONTECER: dict[str, tuple[str, ...]] = {
         "Atualiza o perfil, o modelo e a GPU padrão em config.toml.",
         "Não aloca GPU nem inicia sessão no Colab.",
     ),
+    "selecionar_gpu": (
+        "Mostra os perfis prontos e as GPUs com os modelos compatíveis.",
+        "Nada é gravado em config.toml até você confirmar um perfil ou um par GPU + modelo.",
+    ),
     "harness": (
         "Exibe as instruções para configurar manualmente o harness escolhido.",
         "Permite aplicar automaticamente a conexão em OpenCode ou dsh.",
@@ -145,10 +130,16 @@ CONFIRMACOES = {
     "down": "Deseja encerrar a sessão ativa e liberar a GPU agora?",
 }
 
-SELECAO_GPU = "Escolha uma GPU para filtrar os modelos:"
+SELECAO_GPU = "Escolha a GPU que será usada na próxima sessão:"
 SELECAO_PERFIL = "Escolha um perfil para abrir os detalhes ou aplicar:"
 SELECAO_HARNESS = "Qual harness de codificação você deseja configurar?"
 SELECAO_PROXIMO = "O que fazer agora?"
+
+SELECAO_SUBMENU_GPU = "O que você quer selecionar?"
+SELECAO_MODELO_GPU = "Escolha o modelo desta GPU para gravar em config.toml:"
+SUBMENU_PERFIL = "Selecionar perfil de modelo"
+SUBMENU_GPU_MODELOS = "Selecionar uma GPU para ver os modelos compatíveis"
+USAR_PAR_GPU_MODELO = "Usar este perfil (GPU escolhida + modelo escolhido)"
 
 HARNESS_OPCOES: tuple[tuple[str, str, str, bool], ...] = (
     (
@@ -182,21 +173,19 @@ EQUIVALENTE_CLI = "Equivalente na CLI: {comando}"
 
 PROXIMO_ACAO: dict[str, tuple[str, str]] = {
     "init": ("configure", "Selecionar perfil de modelo"),
-    "profiles": ("configure", "Selecionar perfil de modelo"),
-    "gpus": ("models", "Filtrar modelos por GPU"),
-    "models": ("configure", "Selecionar perfil de modelo"),
+    "selecionar_gpu": ("up", "Iniciar sessão no Colab"),
     "configure": ("up", "Iniciar sessão no Colab"),
     "harness": ("up", "Iniciar sessão no Colab"),
     "up": ("status", "Verificar estado da sessão"),
     "status": ("down", "Encerrar sessão no Colab"),
-    "down": ("gpus", "Consultar GPUs do Colab"),
+    "down": ("selecionar_gpu", "Selecionar GPU"),
     "chat": ("down", "Encerrar sessão no Colab"),
 }
 
 #: Mantido para compatibilidade e cobertura textual.
 AJUDA_ACOES = {k: v[1] for k, v in ACOES.items()}
 ANTES = {k: " ".join(v) for k, v in O_QUE_VAI_ACONTECER.items()}
-ANTES.update({k: SOMENTE_LEITURA for k in ("profiles", "gpus", "models", "status")})
+ANTES["status"] = SOMENTE_LEITURA
 PROXIMO = {k: f"{v[1]} (`byom {v[0]}`)" for k, v in PROXIMO_ACAO.items()}
 
 ERRO_TITULO = "Não foi possível concluir"

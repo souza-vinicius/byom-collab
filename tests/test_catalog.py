@@ -30,6 +30,19 @@ def test_resolve_gpu_respeita_high_mem():
         catalog.resolve_gpu("GPU-INEXISTENTE")
 
 
+def test_colab_settings_for_gpu_fecha_o_ciclo_com_resolve_gpu():
+    for gpu in catalog.GPUS:
+        gpu_cfg, high_mem = catalog.colab_settings_for_gpu(gpu.id)
+        assert catalog.resolve_gpu(gpu_cfg, high_mem).id == gpu.id
+
+    # O mapeamento catálogo -> config.toml não é identidade para as A100.
+    assert catalog.colab_settings_for_gpu("A100-40") == ("A100", False)
+    assert catalog.colab_settings_for_gpu("A100-80") == ("A100", True)
+    assert catalog.colab_settings_for_gpu("L4") == ("L4", False)
+    with pytest.raises(ValueError):
+        catalog.colab_settings_for_gpu("GPU-INEXISTENTE")
+
+
 def test_compatibilidade_com_margem_e_alternativas():
     fit = catalog.check_fit("inkling-2-mini", "q4", "L4", 65536)
     assert fit.fits

@@ -20,7 +20,7 @@ def test_gpu_valida_por_id():
     selection = catalog.compatible_variants("L4")
     assert selection.gpu_id == "L4"
     assert selection.compatible_count == len(selection.rows)
-    assert f"GPU: L4" in catalog.format_compatible_models("L4")
+    assert "GPU: L4" in catalog.format_compatible_models("L4")
     assert "Contexto doc | Contexto servido | Perfil" in catalog.format_compatible_models("L4")
 
 

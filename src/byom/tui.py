@@ -224,7 +224,7 @@ def proximo_passo_recomendado(estado: EstadoLocal) -> str:
     if estado.sessao_ativa:
         return "status"
     if not estado.perfil_id:
-        return "configure"
+        return "selecionar_gpu"
     return "up"
 
 
@@ -418,7 +418,7 @@ def _opcoes_up() -> dict[str, Any]:
 
 def _mostrar_pre_acao(con: Console, acao_id: str) -> None:
     sim = obter_simbolos(con)
-    if acao_id in ("profiles", "gpus", "models", "status"):
+    if acao_id == "status":
         con.print(M.SOMENTE_LEITURA, style="dim")
         con.print()
         return
@@ -668,12 +668,10 @@ def _tipo_modelo(model_id: str, runtime: str, tem_mmproj: bool) -> str:
     return "Chat"
 
 
-def listar_perfis_estruturados(
-    estado: EstadoLocal, *, filtro_gpu: str | None = None
-) -> list[PerfilView]:
-    """Constrói visão estruturada de todos os perfis (ou apenas os que cabem em filtro_gpu)."""
+def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
+    """Constrói visão estruturada de todos os perfis do catálogo."""
     perfis = config.available_profiles()
-    gpu_ref = filtro_gpu or estado.gpu_id
+    gpu_ref = estado.gpu_id
     itens_brutos: list[PerfilView] = []
 
     ordem_familias = list(M.FAMILIAS_MODELOS.values())
@@ -716,8 +714,6 @@ def listar_perfis_estruturados(
             else None
         )
         cabe = bool(fit_atual.fits) if fit_atual else True
-        if filtro_gpu and not cabe:
-            continue
 
         esforco = p.settings.get("reasoning_effort") or (entry.reasoning_effort if entry else None)
         tem_think = bool(entry and entry.thinking is not None)
@@ -814,15 +810,10 @@ def renderizar_perfis(
     con: Console,
     estado: EstadoLocal,
     *,
-    filtro_gpu: str | None = None,
     itens: Sequence[PerfilView] | None = None,
 ) -> list[PerfilView]:
     """Renderiza os perfis em tabela (completa/compacta) ou cartões conforme a largura."""
-    lista = (
-        list(itens)
-        if itens is not None
-        else listar_perfis_estruturados(estado, filtro_gpu=filtro_gpu)
-    )
+    lista = list(itens) if itens is not None else listar_perfis_estruturados(estado)
     sim = obter_simbolos(con)
     modo = _modo_layout(con)
 
@@ -832,17 +823,13 @@ def renderizar_perfis(
             style="dim",
         )
 
-    titulo_lista = (
-        f"Perfis compatíveis com {filtro_gpu} ({len(lista)})"
-        if filtro_gpu
-        else f"Perfis de modelo disponíveis ({len(lista)})"
-    )
+    titulo_lista = f"Perfis de modelo disponíveis ({len(lista)})"
     con.print(titulo_lista, style="bold cyan")
     if not lista:
         con.print(_erro("vazio", origem="catálogo de perfis"), style="yellow")
         return lista
 
-    gpu_alvo = filtro_gpu or estado.gpu_id
+    gpu_alvo = estado.gpu_id
 
     if modo == "cartoes":
         familia_atual = ""
@@ -1284,16 +1271,26 @@ def _escolher_perfil(
 
 
 def _aplicar_perfil_interativo(
-    con: Console, item: PerfilView, *, pedir_confirmacao: bool = True
+    con: Console,
+    item: PerfilView,
+    *,
+    pedir_confirmacao: bool = True,
+    gpu_id: str | None = None,
 ) -> tuple[bool, float]:
+    """Aplica um perfil em config.toml; com `gpu_id`, fixa essa GPU por último.
+
+    `apply_profile` copia `profile.settings`, que inclui `gpu`/`gpu_high_mem`.
+    Quando o usuário escolheu a GPU no caminho GPU + modelo, essa escolha
+    sobrescreve o que o perfil declara, e o par precisa passar por
+    `config.check_compatibility` antes de ser gravado.
+    """
     p = item.profile
+    gpu = catalog.gpu_by_id(gpu_id) if gpu_id else None
+    alvo = f"'{item.familia} — {item.variante_curta}'"
     if pedir_confirmacao:
         _mostrar_pre_acao(con, "configure")
-        if not _confirmar(
-            "configure",
-            pergunta=f"Aplicar '{item.familia} — {item.variante_curta}' em config.toml?",
-            default=True,
-        ):
+        origem = f"{gpu.id} + {alvo}" if gpu else alvo
+        if not _confirmar("configure", pergunta=f"Aplicar {origem} em config.toml?", default=True):
             return False, 0.0
 
     inicio = time.monotonic()
@@ -1309,6 +1306,29 @@ def _aplicar_perfil_interativo(
 
     cfg = config.load_config()
     config.apply_profile(cfg, p.id)
+    fit: catalog.CompatibilityResult | None = None
+    if gpu is not None:
+        cfg.gpu, cfg.gpu_high_mem = catalog.colab_settings_for_gpu(gpu.id)
+        try:
+            fit = config.check_compatibility(cfg)
+        except ValueError as exc:
+            _renderizar_erro(
+                con,
+                f"{gpu.id} + '{item.familia} — {item.variante_curta}' não é um par válido.",
+                str(exc),
+                "Escolha outro modelo ou outra GPU.",
+                detalhes_tecnicos=str(exc),
+            )
+            return False, time.monotonic() - inicio
+        if not fit.fits:
+            _renderizar_erro(
+                con,
+                f"'{item.familia} — {item.variante_curta}' não cabe em {gpu.id}.",
+                fit.reason,
+                "Escolha um modelo compatível com esta GPU ou volte e escolha outra GPU.",
+            )
+            return False, time.monotonic() - inicio
+
     caminho = config.save_config(cfg)
     duracao = time.monotonic() - inicio
     memoria = "memória estendida" if cfg.gpu_high_mem else "memória padrão"
@@ -1317,6 +1337,13 @@ def _aplicar_perfil_interativo(
         f"Perfil ativo: {item.familia} — {item.variante_curta}",
         f"GPU padrão: {cfg.gpu} ({memoria})",
         f"Contexto servido: {M.formatar_contexto_detalhe(cfg.max_model_len, cfg.runtime)}",
+    ]
+    if fit is not None:
+        detalhes.append(
+            f"Compatível: {M.formatar_gib(fit.required_gib, aproximado=True)} necessários "
+            f"de {M.formatar_gib(fit.available_gib)} disponíveis em {fit.gpu_id}"
+        )
+    detalhes += [
         f"Arquivo salvo: {M.encurtar_caminho(caminho)}",
         f"No OpenCode, use o modelo: {p.opencode_model}",
     ]
@@ -1505,133 +1532,29 @@ def _executar_init(con: Console, cli: Any, estado: EstadoLocal) -> str:
     return _perguntar_proximo_passo("init", novo_estado)
 
 
-def _executar_profiles(con: Console, estado: EstadoLocal, *, filtro_gpu: str | None = None) -> str:
-    while True:
-        renderizar_cabecalho(
-            con,
-            estado,
-            subtela=f"Modelos compatíveis com {filtro_gpu}"
-            if filtro_gpu
-            else M.ACOES["profiles"][0],
-        )
-        con.print(M.SOMENTE_LEITURA, style="dim")
-        con.print()
-        itens = renderizar_perfis(con, estado, filtro_gpu=filtro_gpu)
-        con.print()
-        try:
-            selecionado = _escolher_perfil(con, estado, itens=itens)
-        except KeyboardInterrupt:
-            return "menu"
-        destino = _fluxo_detalhe_perfil(con, selecionado, ler_estado_local())
-        if destino != "lista":
-            return destino
-
-
-def _executar_gpus(con: Console, estado: EstadoLocal) -> str:
-    import questionary
-
-    while True:
-        renderizar_cabecalho(con, estado, subtela=M.ACOES["gpus"][0])
-        con.print(M.SOMENTE_LEITURA, style="dim")
-        con.print()
-        views = renderizar_gpus(con, estado)
-        con.print()
-        escolhas = [
-            questionary.Choice(
-                title=(
-                    f"Ver modelos compatíveis com {gv.gpu.id} "
-                    f"({gv.compativeis} de {gv.total_perfis})"
-                ),
-                value=gv.gpu.id,
-            )
-            for gv in views
-        ]
-        escolhas.append(questionary.Choice(title="Voltar ao menu principal", value="__voltar__"))
-        escolha = questionary.select(
-            "Selecione uma GPU para ver os modelos compatíveis:",
-            choices=escolhas,
-            use_jk_keys=False,
-            style=_estilo_select(),
-            instruction=M.TECLAS_LISTA,
-        ).ask()
-        if escolha is None or escolha == "__voltar__":
-            return "menu"
-        destino = _executar_models(con, ler_estado_local(), gpu_id=str(escolha))
-        if destino != "lista_gpus":
-            return destino
-
-
-def _executar_models(con: Console, estado: EstadoLocal, *, gpu_id: str | None = None) -> str:
-    import questionary
-
-    if gpu_id is None:
-        renderizar_cabecalho(con, estado, subtela=M.ACOES["models"][0])
-        con.print(M.SOMENTE_LEITURA, style="dim")
-        con.print()
-        try:
-            gpu_id = _escolher_gpu(con, estado)
-        except KeyboardInterrupt:
-            return "menu"
-
-    while True:
-        renderizar_cabecalho(con, estado, subtela=f"Modelos compatíveis com {gpu_id}")
-        con.print(M.SOMENTE_LEITURA, style="dim")
-        con.print()
-        selection, perfis_por_id = renderizar_modelos_por_gpu(con, gpu_id, estado)
-        con.print()
-
-        escolhas: list[Any] = []
-        for row in selection.rows:
-            if row.profile_id and row.profile_id in perfis_por_id:
-                pv = perfis_por_id[row.profile_id]
-                escolhas.append(
-                    questionary.Choice(
-                        title=(
-                            f"Abrir detalhe: {pv.familia} — "
-                            f"{pv.variante_curta} ({pv.contexto_curto})"
-                        ),
-                        value=pv,
-                    )
-                )
-        escolhas.append(questionary.Choice(title="Escolher outra GPU", value="__outra_gpu__"))
-        escolhas.append(questionary.Choice(title="Voltar ao menu principal", value="__voltar__"))
-
-        escolha = questionary.select(
-            "Selecione um perfil compatível para ver detalhes ou aplicar:",
-            choices=escolhas,
-            use_jk_keys=False,
-            style=_estilo_select(),
-            instruction=M.TECLAS_LISTA,
-        ).ask()
-
-        if escolha is None or escolha == "__voltar__":
-            return "menu"
-        if escolha == "__outra_gpu__":
-            try:
-                gpu_id = _escolher_gpu(con, estado)
-            except KeyboardInterrupt:
-                return "menu"
-            continue
-        destino = _fluxo_detalhe_perfil(con, escolha, ler_estado_local())
-        if destino != "lista":
-            return destino
+def _troca_bloqueada_por_sessao(con: Console, estado: EstadoLocal) -> str | None:
+    """Devolve o destino quando há sessão ativa; None quando a troca é permitida."""
+    if not estado.sessao_ativa:
+        return None
+    _painel(
+        con,
+        "Sessão ativa encontrada",
+        f"A sessão '{estado.sessao_nome}' está ativa no momento.\n"
+        "É necessário encerrá-la antes de trocar o perfil de modelo.",
+        estilo="yellow",
+    )
+    if _confirmar(
+        "down", pergunta="Deseja ir para 'Encerrar sessão no Colab' agora?", default=False
+    ):
+        return "acao:down"
+    return "menu"
 
 
 def _executar_configure(con: Console, estado: EstadoLocal) -> str:
     renderizar_cabecalho(con, estado, subtela=M.ACOES["configure"][0])
-    if estado.sessao_ativa:
-        _painel(
-            con,
-            "Sessão ativa encontrada",
-            f"A sessão '{estado.sessao_nome}' está ativa no momento.\n"
-            "É necessário encerrá-la antes de trocar o perfil de modelo.",
-            estilo="yellow",
-        )
-        if _confirmar(
-            "down", pergunta="Deseja ir para 'Encerrar sessão no Colab' agora?", default=False
-        ):
-            return "acao:down"
-        return "menu"
+    bloqueio = _troca_bloqueada_por_sessao(con, estado)
+    if bloqueio:
+        return bloqueio
 
     renderizar_perfis(con, estado)
     con.print()
@@ -1640,6 +1563,157 @@ def _executar_configure(con: Console, estado: EstadoLocal) -> str:
     except KeyboardInterrupt:
         return "menu"
     return _fluxo_detalhe_perfil(con, selecionado, estado)
+
+
+def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView) -> None:
+    """Mostra o par que será gravado, incluindo o mapeamento do catálogo para o config.toml."""
+    sim = obter_simbolos(con)
+    gpu_cfg, high_mem = catalog.colab_settings_for_gpu(gpu.id)
+    memoria = f"pesos {M.formatar_gib(item.pesos_gib)} + motor {M.formatar_gib(item.runtime_gib)}"
+    if item.profile.runtime != "image":
+        memoria += f" + cache KV {M.formatar_gib(item.kv_gib)}"
+
+    corpo = Text()
+    corpo.append("GPU: ", style="bold cyan")
+    corpo.append(
+        f"{gpu.id} ({gpu.label}) {sim.bullet} "
+        f"{M.formatar_gib(gpu.vram_gib, aproximado=gpu.vram_approximate)}\n"
+    )
+    corpo.append("Modelo: ", style="bold cyan")
+    corpo.append(f"{item.familia} — {item.variante_curta}\n")
+    corpo.append("Contexto servido: ", style="bold cyan")
+    corpo.append(f"{M.formatar_contexto_detalhe(item.contexto_servido, item.profile.runtime)}\n")
+    corpo.append("Memória estimada: ", style="bold cyan")
+    corpo.append(f"{M.formatar_gib(item.total_gib, aproximado=True)} ({memoria})\n")
+    corpo.append("config.toml: ", style="bold cyan")
+    corpo.append(f'gpu = "{gpu_cfg}"  {sim.barra}  gpu_high_mem = {str(high_mem).lower()}')
+    _painel(con, "GPU + modelo escolhidos", corpo, estilo="cyan", expand=True)
+
+
+def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) -> str:
+    """Lista os modelos compatíveis e grava o par escolhido; devolve o destino da tela."""
+    import questionary
+
+    gpu = catalog.gpu_by_id(gpu_id)
+    while True:
+        renderizar_cabecalho(con, estado, subtela=f"Modelos compatíveis com {gpu.id}")
+        con.print(M.SOMENTE_LEITURA, style="dim")
+        con.print()
+        selection, perfis_por_id = renderizar_modelos_por_gpu(con, gpu.id, estado)
+        con.print()
+
+        escolhas: list[Any] = []
+        for row in selection.rows:
+            pv = perfis_por_id.get(row.profile_id) if row.profile_id else None
+            if pv is None:
+                continue
+            escolhas.append(
+                questionary.Choice(
+                    title=f"{pv.familia} — {pv.variante_curta} ({pv.contexto_curto})",
+                    value=pv,
+                )
+            )
+        if not escolhas:
+            _renderizar_erro(
+                con,
+                f"Nenhum modelo compatível com {gpu.id} tem perfil pronto.",
+                "As variantes que cabem nesta GPU não têm perfil em config.available_profiles().",
+                "Escolha outra GPU ou selecione um perfil de modelo.",
+            )
+            _aguardar_enter(con)
+            return "outra_gpu"
+
+        escolhas.append(questionary.Choice(title="Escolher outra GPU", value="__outra_gpu__"))
+        escolhas.append(questionary.Choice(title="Voltar ao menu principal", value="__voltar__"))
+        escolha = questionary.select(
+            M.SELECAO_MODELO_GPU,
+            choices=escolhas,
+            use_search_filter=True,
+            use_jk_keys=False,
+            style=_estilo_select(),
+            instruction=M.TECLAS_SELECAO,
+        ).ask()
+        if escolha is None or escolha == "__voltar__":
+            return "menu"
+        if escolha == "__outra_gpu__":
+            return "outra_gpu"
+        item: PerfilView = escolha
+
+        renderizar_cabecalho(con, estado, subtela="Confirmar GPU e modelo")
+        _renderizar_par_gpu_modelo(con, gpu, item)
+        con.print()
+        escolha_par = questionary.select(
+            "Gravar este par em config.toml?",
+            choices=[
+                questionary.Choice(title=M.USAR_PAR_GPU_MODELO, value="usar"),
+                questionary.Choice(title="Escolher outro modelo", value="modelo"),
+                questionary.Choice(title="Voltar ao menu principal", value="menu"),
+            ],
+            use_jk_keys=False,
+            style=_estilo_select(),
+            instruction=M.TECLAS_DETALHE,
+        ).ask()
+        if escolha_par is None or escolha_par == "menu":
+            return "menu"
+        if escolha_par == "modelo":
+            continue
+
+        ok, _ = _aplicar_perfil_interativo(con, item, pedir_confirmacao=True, gpu_id=gpu.id)
+        if not ok:
+            _aguardar_enter(con)
+            continue
+        return _perguntar_proximo_passo(
+            "configure",
+            ler_estado_local(),
+            extras=[("acao:harness", M.ACOES["harness"][0])],
+        )
+
+
+def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
+    """Caminho GPU + modelo: escolhe a GPU, o modelo compatível e confirma o par."""
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
+    bloqueio = _troca_bloqueada_por_sessao(con, estado)
+    if bloqueio:
+        return bloqueio
+
+    while True:
+        renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
+        con.print(M.SOMENTE_LEITURA, style="dim")
+        con.print()
+        renderizar_gpus(con, estado)
+        con.print()
+        try:
+            gpu_id = _escolher_gpu(con, estado)
+        except KeyboardInterrupt:
+            return "menu"
+        destino = _escolher_modelo_para_gpu(con, ler_estado_local(), gpu_id)
+        if destino != "outra_gpu":
+            return destino
+
+
+def _executar_selecionar_gpu(con: Console, estado: EstadoLocal) -> str:
+    """Submenu de GPU: reusa o fluxo de perfil pronto ou o par GPU + modelo."""
+    import questionary
+
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
+    _mostrar_pre_acao(con, "selecionar_gpu")
+    con.print()
+    escolha = questionary.select(
+        M.SELECAO_SUBMENU_GPU,
+        choices=[
+            questionary.Choice(title=M.SUBMENU_PERFIL, value="perfil"),
+            questionary.Choice(title=M.SUBMENU_GPU_MODELOS, value="gpu"),
+            questionary.Choice(title="Voltar ao menu principal", value="menu"),
+        ],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_LISTA,
+    ).ask()
+    if escolha is None or escolha == "menu":
+        return "menu"
+    if escolha == "perfil":
+        return _executar_configure(con, ler_estado_local())
+    return _executar_gpu_modelo(con, ler_estado_local())
 
 
 def renderizar_instrucoes_harness(
@@ -2460,38 +2534,34 @@ def _rotulo_item_menu(
     incluir_atalho: bool = True,
 ) -> str:
     atalho = M.ATALHOS_MENU[acao_id]
-    rotulo, desc = M.ACOES[acao_id]
+    rotulo = M.ACOES[acao_id][0]
     prefixo = f"{atalho}. {rotulo}" if incluir_atalho else rotulo
     if acao_id == recomendado:
         prefixo += f" {sim.estrela} recomendado"
 
     aviso = ""
-    if acao_id == "configure" and estado.sessao_ativa:
+    if acao_id == "selecionar_gpu" and estado.sessao_ativa:
         aviso = " [requer encerrar sessão]"
     elif acao_id == "up" and not estado.ambiente_configurado:
         aviso = " [requer preparar ambiente]"
     elif acao_id in ("down", "chat") and not estado.sessao_ativa:
         aviso = " [sem sessão ativa]"
 
-    return f"{prefixo}{aviso} — {desc}"
+    return f"{prefixo}{aviso}"
 
 
 def renderizar_menu_estatico(con: Console, estado: EstadoLocal) -> None:
-    """Renderiza o menu agrupado em texto estruturado (útil para snapshots/testes)."""
+    """Renderiza a tela inicial em texto estruturado (útil para snapshots/testes)."""
     renderizar_cabecalho(con, estado)
     sim = obter_simbolos(con)
     recomendado = proximo_passo_recomendado(estado)
 
-    for grupo, acoes in M.GRUPOS_MENU:
-        con.print(f"[bold cyan]{grupo}[/bold cyan]")
-        for acao_id in acoes:
-            linha = _rotulo_item_menu(acao_id, estado, recomendado, sim, incluir_atalho=True)
-            estilo = "green" if acao_id == recomendado else ""
-            con.print(f"  {linha}", style=estilo)
-        con.print()
+    for acao_id in M.MENU_INICIAL:
+        linha = _rotulo_item_menu(acao_id, estado, recomendado, sim)
+        estilo = "green" if acao_id == recomendado else ""
+        # `markup=False`: os avisos usam colchetes e Rich os trataria como estilo.
+        con.print(f"  {linha}", style=estilo, markup=False)
 
-    con.print("[bold cyan]Outros[/bold cyan]")
-    con.print("  h. Ajuda sobre a interface")
     con.print("  q. Sair")
     con.print()
     con.print(M.TECLAS_MENU, style="dim")
@@ -2503,21 +2573,15 @@ def _construir_escolhas_menu(estado: EstadoLocal, sim: Simbolos) -> tuple[list[A
     recomendado = proximo_passo_recomendado(estado)
     escolhas: list[Any] = []
     escolha_padrao: Any = None
-    for grupo, acoes in M.GRUPOS_MENU:
-        escolhas.append(questionary.Separator(f"── {grupo} ──"))
-        for acao_id in acoes:
-            item = questionary.Choice(
-                title=_rotulo_item_menu(acao_id, estado, recomendado, sim, incluir_atalho=False),
-                value=acao_id,
-                shortcut_key=M.ATALHOS_MENU[acao_id],
-            )
-            if acao_id == recomendado:
-                escolha_padrao = item
-            escolhas.append(item)
-    escolhas.append(questionary.Separator("── Outros ──"))
-    escolhas.append(
-        questionary.Choice(title="Ajuda sobre a interface", value="__ajuda__", shortcut_key="h")
-    )
+    for acao_id in M.MENU_INICIAL:
+        item = questionary.Choice(
+            title=_rotulo_item_menu(acao_id, estado, recomendado, sim, incluir_atalho=False),
+            value=acao_id,
+            shortcut_key=M.ATALHOS_MENU[acao_id],
+        )
+        if acao_id == recomendado:
+            escolha_padrao = item
+        escolhas.append(item)
     escolhas.append(questionary.Choice(title="Sair", value="__sair__", shortcut_key="q"))
     return escolhas, escolha_padrao
 
@@ -2526,12 +2590,8 @@ def _despachar_acao(con: Console, cli: Any, acao_id: str) -> str:
     estado = ler_estado_local()
     if acao_id == "init":
         return _executar_init(con, cli, estado)
-    if acao_id == "profiles":
-        return _executar_profiles(con, estado)
-    if acao_id == "gpus":
-        return _executar_gpus(con, estado)
-    if acao_id == "models":
-        return _executar_models(con, estado)
+    if acao_id == "selecionar_gpu":
+        return _executar_selecionar_gpu(con, estado)
     if acao_id == "configure":
         return _executar_configure(con, estado)
     if acao_id == "harness":
@@ -2575,11 +2635,6 @@ def mostrar_menu(cli: Any) -> None:
                 ).ask()
                 if escolha is None or escolha == "__sair__":
                     break
-                if escolha == "__ajuda__":
-                    renderizar_cabecalho(console, estado, subtela="Ajuda")
-                    _painel(console, "Como usar o byom", M.MENU_AJUDA, estilo="cyan", expand=True)
-                    _aguardar_enter(console)
-                    continue
                 acao_id = str(escolha)
             else:
                 acao_id = proxima_acao
