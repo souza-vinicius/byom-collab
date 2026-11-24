@@ -70,10 +70,23 @@ MIN_KV_CACHE_GIB = 1.0
 VRAM_HEADROOM_FRACTION = 0.05
 VRAM_HEADROOM_MIN_GIB = 1.0
 
-#: Custo do projetor de visão (mmproj) usado pelos perfis que declaram
-#: `mmproj_pattern`. A nota do Inkling no catálogo registra "639 MB"; o valor
-#: arredonda para cima e cobre buffers do projetor.
+#: Custo do projetor de visão (mmproj) por MODELO, em GiB. Não é um valor
+#: global: cada repo publica um projetor de tamanho próprio, e o padrão
+#: `*mmproj*` do perfil resolve para o primeiro arquivo em ordem alfabética.
+#: Bytes conferidos na API do HF em 2026-11-24:
+#: Inkling `mmproj-F16.gguf` 639.348.160 B = 0,60 GiB (0,65 mantém a folga de
+#: buffers que a nota original já cobria);
+#: Gemma 26B `mmproj-BF16.gguf` 1.194.828.256 B = 1,11 GiB;
+#: Gemma 31B `mmproj-BF16.gguf` 1.200.726.496 B = 1,12 GiB;
+#: Muse `mmproj-Muse-Glimmer-30B-BF16.gguf` 3.849.173.728 B = 3,58 GiB (é o que
+#: `*mmproj*` resolve: BF16 vem antes de Q8_0 e de kquant).
 VISION_PROJECTOR_GIB = 0.65
+VISION_PROJECTOR_GIB_BY_MODEL = {
+    "inkling-2-mini": 0.65,
+    "gemma-4-26b": 1.11,
+    "gemma-4-31b": 1.12,
+    "muse-glimmer-30b": 3.58,
+}
 
 #: Projetor do Qwen3-VL usado na edição de imagem (papel `vision`):
 #: `mmproj-Qwen3VL-8B-Instruct-F16.gguf`, 1.159.029.824 B = 1,08 GiB (API do HF,
@@ -200,20 +213,20 @@ MODELS: tuple[ModelEntry, ...] = (
                     notes=("10-11 GB em 2 bit; build loopado obrigatório nos arquivos da raiz.",
                            "11 GiB + 0,65 de visão + 2 de runtime = 13,65: não cabe nos "
                            "15 GiB utilizáveis da T4, então a GPU mínima é L4."),
-                    vision_gib=VISION_PROJECTOR_GIB),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
             Variant("q4", "UD-Q4_K_XL (4 bit)", 18.0, 65_536, "A100-40",
                     context_doc=1_000_000,
                     needs_custom_build=True,
                     context_reason="18 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 24,65: "
                                    "L4 (24 GiB) não comporta com a folga de 1,2 GiB.",
                     notes=("17,6 GB recomendados; mmproj-F16.gguf adiciona 639 MB.",),
-                    vision_gib=VISION_PROJECTOR_GIB),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
             Variant("q8", "UD-Q8_K_XL (8 bit)", 24.0, 131_072, "A100-40",
                     context_doc=1_000_000,
                     context_reason="24 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 34,65: "
                                    "cabe na A100-40 com 2 GiB de margem.",
                     notes=("Faixa de 8 bit: 24 GB.",),
-                    vision_gib=VISION_PROJECTOR_GIB),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
         ),
         INKLING_SOURCE,
         notes=(
@@ -268,16 +281,17 @@ MODELS: tuple[ModelEntry, ...] = (
             Variant("12b-q4", "12B UD-Q4_K_XL", 8.0, 32_768, "T4",
                     context_doc=262_144,
                     context_reason="8 GiB de pesos em T4: 32K mantêm 2 GiB de KV."),
-            Variant("26b-a4b-q4", "26B-A4B UD-Q4_K_XL", 18.0, 32_768, "L4",
+            Variant("26b-a4b-q4", "26B-A4B UD-Q4_K_XL", 18.0, 32_768, "A100-40",
                     context_doc=262_144,
-                    context_reason="18 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 22,65: L4 "
-                                   "ainda tem 1,2 GiB de margem em 32K.",
-                    vision_gib=VISION_PROJECTOR_GIB),
+                    context_reason="18 GiB pesos + 1,11 visão + 2 runtime + 2 KV = 23,11, "
+                                   "mais 1,2 de folga = 24,31: não cabe em L4 (24 GiB). A "
+                                   "A100-40 tem 15,69 GiB de margem em 32K.",
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["gemma-4-26b"]),
             Variant("31b-q4", "31B UD-Q4_K_XL", 20.0, 131_072, "A100-40",
                     context_doc=262_144,
-                    context_reason="20 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 30,65 na "
-                                   "A100-40, com 2 GiB de margem.",
-                    vision_gib=VISION_PROJECTOR_GIB),
+                    context_reason="20 GiB pesos + 1,12 visão + 2 runtime + 8 KV = 31,12 na "
+                                   "A100-40, com 6,88 GiB de margem.",
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["gemma-4-31b"]),
         ),
         GEMMA4_SOURCE,
         notes=(
@@ -297,15 +311,15 @@ MODELS: tuple[ModelEntry, ...] = (
             Variant("q2", "UD-Q2_K_XL (2 bit)", 12.0, 32_768, "L4",
                     context_doc=131_072,
                     needs_custom_build=True,
-                    context_reason="12 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 16,65: "
+                    context_reason="12 GiB pesos + 3,58 visão + 2 runtime + 2 KV = 19,58: "
                                    "a T4 (15 GiB utilizáveis) não comporta.",
-                    vision_gib=VISION_PROJECTOR_GIB),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["muse-glimmer-30b"]),
             Variant("q4", "UD-Q4_K_XL (4 bit)", 17.0, 65_536, "A100-40",
                     context_doc=131_072,
                     needs_custom_build=True,
-                    context_reason="17 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 23,65: "
-                                   "L4 (24 GiB) não comporta com a folga de 1,2 GiB.",
-                    vision_gib=VISION_PROJECTOR_GIB),
+                    context_reason="17 GiB pesos + 3,58 visão + 2 runtime + 4 KV = 26,58: "
+                                   "L4 (24 GiB) não comporta; a A100-40 fica com 11,42 GiB.",
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["muse-glimmer-30b"]),
             Variant("q6", "UD-Q6_K_XL (6 bit)", 22.0, 131_072, "A100-40",
                     context_doc=131_072, needs_custom_build=True),
         ),
@@ -418,8 +432,9 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
     ProfileContext("gemma-4-12b-q4-gguf", "gemma-4", "12b-q4", 262_144, 32_768,
                    "T4", "8 GiB de pesos em T4: 32K mantêm 2 GiB de KV."),
     ProfileContext("gemma-4-26b-a4b-q4-gguf", "gemma-4", "26b-a4b-q4", 262_144, 32_768,
-                   "L4", "18 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 22,65: L4 fica com "
-                         "1,2 GiB de margem em 32K."),
+                   "A100-40", "18 GiB pesos + 1,11 visão + 2 runtime + 2 KV = 23,11, mais "
+                              "1,2 de folga = 24,31 > 24 GiB da L4; a A100-40 comporta 32K "
+                              "com 15,69 GiB de margem."),
     ProfileContext("gemma-4-31b-q4-gguf", "gemma-4", "31b-q4", 262_144, 131_072,
                    "A100-40", "20 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 30,65 na "
                               "A100-40, com 2 GiB de margem."),

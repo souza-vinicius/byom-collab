@@ -45,9 +45,10 @@ def test_snapshot_cli_profiles():
         "gemma-4-26b-a4b-q4-gguf — Gemma 4 26b-a4b-q4 (32,768 tokens servidos; reasoni"
         "ng not documented)\n"
         "  gemma-4:26b-a4b-q4 — contexto doc 262,144 / servido 32,768\n"
-        "  18 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 22,65: L4 fica com 1,2 GiB d"
-        "e margem em 32K.\n"
-        "  Gemma 4 26B-A4B 4 bit com mmproj de visão.\n"
+        "  18 GiB pesos + 1,11 visão + 2 runtime + 2 KV = 23,11, mais 1,2 de folga = 2"
+        "4,31 > 24 GiB da L4; a A100-40 comporta 32K com 15,69 GiB de margem.\n"
+        "  Gemma 4 26B-A4B 4 bit com mmproj de visão; A100 de 40 GB (o projetor de 1,1"
+        "1 GiB tira a margem da L4).\n"
         "gemma-4-31b-q4-gguf — Gemma 4 31b-q4 (131,072 tokens servidos; reasoning not "
         "documented)\n"
         "  gemma-4:31b-q4 — contexto doc 262,144 / servido 131,072\n"
@@ -141,10 +142,9 @@ def test_snapshot_cli_gpus():
         "\n"
         "T4 (Tesla T4) | 15 | nao | sim | gemma-4-12b-q4-gguf, gemma-4-e4b-q4-gguf, qw"
         "en-image-2.1-q4km\n"
-        "L4 (L4) | 24 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, gemm"
-        "a-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, muse-glimmer-30b-q2-gguf, qwen-imag"
-        "e-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8"
-        "-27b-q4-gguf\n"
+        "L4 (L4) | 24 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-"
+        "2-mini-iq2-gguf, muse-glimmer-30b-q2-gguf, qwen-image-2.1-fp8, qwen-image-2.1"
+        "-q4km, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf\n"
         "A100-40 (A100 40 GB) | 40 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-"
         "q4-gguf, gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, i"
         "nkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, muse-glimmer-30b-q2-gguf, muse"
@@ -178,7 +178,7 @@ def test_snapshot_cli_models_all_gpus_e_prompt():
         assert "Summary:" in res.output
 
     res_l4 = runner.invoke(cli.app, ["models", "--gpu", "L4"])
-    assert "Summary: 11 compatible variant(s); 5 discarded for insufficient VRAM." in res_l4.output
+    assert "Summary: 10 compatible variant(s); 6 discarded for insufficient VRAM." in res_l4.output
 
     res_prompt = runner.invoke(cli.app, ["models"], input="2\n")
     assert res_prompt.exit_code == 0

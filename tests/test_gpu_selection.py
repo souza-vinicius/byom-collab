@@ -57,9 +57,11 @@ def test_t4_filtra_modelos_grandes():
         ("gemma-4", "31b-q4"),
         ("muse-glimmer-30b", "q6"),
         ("qwen-image-2.1", "fp8-int8"),
+        # 18 GiB + 1,11 de visão + 2 de runtime + 2 de KV passa dos 15 GiB.
+        ("gemma-4", "26b-a4b-q4"),
     ):
         assert excluded not in ids
-    # 9,22 GiB + 2 de runtime + 1 de folga cabem nos 15 GiB utilizáveis.
+    # 9,22 GiB + 1,08 de visão + 2 de runtime + 1 de folga cabem nos 15 GiB.
     assert ("qwen-image-2.1", "q4km") in ids
     assert selection.dropped_for_memory > 0
 

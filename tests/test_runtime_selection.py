@@ -579,3 +579,33 @@ def test_gateway_aceita_edits_com_o_papel_vision(gateway_module):
     assert resposta.status_code == 200
 
 
+# -- 5.2: o custo do projetor vem do arquivo que o padrão resolve -------------
+def _size_gib(repo: str, path: str) -> float:
+    dados = json.loads(FIXTURE.read_text(encoding="utf-8"))["repos"][repo]
+    for item in dados:
+        if item["path"] == path:
+            return round(item["size"] / 2**30, 2)
+    raise AssertionError(f"{path} não está na fixture de {repo}")
+
+
+def test_vision_gib_por_variante_usa_o_projetor_publicado(prepare_module):
+    assert catalog.variant_by_id("inkling-2-mini", "q2").vision_gib == 0.65
+    assert catalog.variant_by_id("gemma-4", "26b-a4b-q4").vision_gib == 1.11
+    assert catalog.variant_by_id("gemma-4", "31b-q4").vision_gib == 1.12
+    assert catalog.variant_by_id("muse-glimmer-30b", "q2").vision_gib == 3.58
+    assert catalog.variant_by_id("muse-glimmer-30b", "q4").vision_gib == 3.58
+
+    # O padrão `*mmproj*` do Muse resolve para o BF16 (3,85 GB), não para o kquant.
+    assert prepare_module.match_file(
+        HF_FILES["unsloth/Muse-Glimmer-30B-GGUF"], "*mmproj*"
+    ) == "mmproj-Muse-Glimmer-30B-BF16.gguf"
+    assert (
+        _size_gib("unsloth/Muse-Glimmer-30B-GGUF", "mmproj-Muse-Glimmer-30B-BF16.gguf")
+        == 3.58
+    )
+    assert _size_gib("unsloth/gemma-4-26B-A4B-it-GGUF", "mmproj-BF16.gguf") == 1.11
+    assert _size_gib("unsloth/gemma-4-31B-it-GGUF", "mmproj-BF16.gguf") == 1.12
+    assert _size_gib("unsloth/Inkling-2-Mini-GGUF", "mmproj-F16.gguf") == 0.6
+
+
+
