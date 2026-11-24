@@ -87,6 +87,7 @@ WORKER_FILES = (
     "run_runtime.sh",
     "run_gateway.sh",
     "requirements.txt",
+    "requirements.lock",
     "gateway.py",
     "watchdog.py",
 )

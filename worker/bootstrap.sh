@@ -52,7 +52,15 @@ if [ "$RUNTIME" = "vllm" ]; then
   log "Installing $VLLM_SPEC and gateway dependencies"
   uv pip install --python "$VENV/bin/python" "$VLLM_SPEC"
 fi
-uv pip install --python "$VENV/bin/python" -r "$BYOM_DIR/requirements.txt"
+# `requirements.lock` traz versoes exatas com hashes (fonte: requirements.txt);
+# sem ele o install cairia nas faixas e um release novo poderia quebrar a sessao.
+if [ -f "$BYOM_DIR/requirements.lock" ]; then
+  log "Installing gateway dependencies from requirements.lock (pinned, hashes)"
+  uv pip install --python "$VENV/bin/python" --require-hashes -r "$BYOM_DIR/requirements.lock"
+else
+  log "WARNING: requirements.lock is missing; falling back to requirements.txt ranges"
+  uv pip install --python "$VENV/bin/python" -r "$BYOM_DIR/requirements.txt"
+fi
 
 # 4. runtime-specific binaries and weights --------------------------------
 python3 "$BYOM_DIR/prepare_runtime.py" "$SESSION_FILE"
