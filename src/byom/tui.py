@@ -23,10 +23,11 @@ from rich import box
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-from . import catalog, config, dsh, opencode
+from . import catalog, config, dsh, llm_chat, opencode
 from . import mensagens as M
 
 # ---------------------------------------------------------------------------
@@ -447,6 +448,8 @@ def _perguntar_proximo_passo(
     import questionary
 
     escolhas: list[Any] = []
+    if acao_id == "up":
+        escolhas.append(questionary.Choice(title=M.ACOES["chat"][0], value="acao:chat"))
     for valor, rotulo in extras:
         escolhas.append(questionary.Choice(title=rotulo, value=valor))
 
@@ -462,9 +465,7 @@ def _perguntar_proximo_passo(
         )
     elif acao_id == "harness":
         prox_id, prox_rotulo = (
-            ("status", M.ACOES["status"][0])
-            if estado.sessao_ativa
-            else ("up", M.ACOES["up"][0])
+            ("status", M.ACOES["status"][0]) if estado.sessao_ativa else ("up", M.ACOES["up"][0])
         )
     escolhas.append(
         questionary.Choice(
@@ -491,6 +492,7 @@ class EtapaExecucao:
     detalhe: str = ""
     inicio: float = 0.0
     duracao: float = 0.0
+    dica: str = ""
 
 
 class ExecutorEtapas:
@@ -503,12 +505,24 @@ class ExecutorEtapas:
         self.detalhes_tecnicos: list[str] = []
         self._inicio_total = time.monotonic()
         self._live: Live | None = None
+        unicode_ok = "utf" in (getattr(self.con, "encoding", "") or "").lower()
+        self._spinner_nome = "dots" if unicode_ok else "line"
+        self._spinners: dict[int, Spinner] = {}
 
     def __enter__(self) -> ExecutorEtapas:
+        # `Live.refresh` só desenha quando `Console.is_terminal` é verdadeiro, e
+        # esse teste segue `sys.stdout` enquanto `Console.file` não estiver
+        # fixado. As etapas redirecionam stdout para capturar a saída bruta;
+        # congelar o terminal aqui evita que a animação pare no redirect.
+        terminal = self.con.file
+        self._arquivo_original = self.con._file
+        self.con.file = terminal
         if self.con.is_terminal:
+            # `get_renderable` refaz o desenho a cada atualização: o spinner anima
+            # e o tempo decorrido avança mesmo sem nenhuma chamada nova.
             self._live = Live(
-                self._render(),
                 console=self.con,
+                get_renderable=self._render,
                 refresh_per_second=8,
                 transient=False,
             )
@@ -516,22 +530,26 @@ class ExecutorEtapas:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        if self._live is not None:
-            self._live.update(self._render(), refresh=True)
-            self._live.__exit__(exc_type, exc, tb)
-            self._live = None
-        else:
-            self.con.print(self._render())
+        try:
+            if self._live is not None:
+                self._live.update(self._render(), refresh=True)
+                self._live.__exit__(exc_type, exc, tb)
+                self._live = None
+            else:
+                self.con.print(self._render())
+        finally:
+            self.con._file = self._arquivo_original
 
     def registrar_log(self, texto: str) -> None:
         limpo = texto.strip()
         if limpo:
             self.detalhes_tecnicos.append(limpo)
 
-    def iniciar(self, indice: int, detalhe: str = "") -> None:
+    def iniciar(self, indice: int, detalhe: str = "", *, dica: str = "") -> None:
         etapa = self.etapas[indice]
         etapa.estado = "andamento"
         etapa.detalhe = detalhe
+        etapa.dica = dica
         etapa.inicio = time.monotonic()
         self._atualizar()
 
@@ -568,7 +586,8 @@ class ExecutorEtapas:
         tabela = Table.grid(padding=(0, 1))
         tabela.add_column(no_wrap=True)
         tabela.add_column()
-        for etapa in self.etapas:
+        for indice, etapa in enumerate(self.etapas):
+            icone: Text | Spinner
             if etapa.estado == "ok":
                 icone = Text(self.sim.ok, style="green")
             elif etapa.estado == "aviso":
@@ -576,7 +595,7 @@ class ExecutorEtapas:
             elif etapa.estado == "erro":
                 icone = Text(self.sim.erro, style="red")
             elif etapa.estado == "andamento":
-                icone = Text(self.sim.ativo, style="cyan")
+                icone = self._spinners.setdefault(indice, Spinner(self._spinner_nome, style="cyan"))
             else:
                 icone = Text(self.sim.pendente, style="dim")
 
@@ -586,8 +605,10 @@ class ExecutorEtapas:
                 linha.append(f" {self.sim.barra} {etapa.detalhe}", style=estilo_det)
             if etapa.estado == "andamento" and etapa.inicio:
                 decorrido = time.monotonic() - etapa.inicio
-                if decorrido >= 1.5:
+                if decorrido >= 1.0:
                     linha.append(f" ({decorrido:.0f}s)", style="dim")
+                if etapa.dica:
+                    linha.append(f"\n  {etapa.dica}", style="dim italic")
             elif etapa.duracao >= 2.0:
                 linha.append(f" ({etapa.duracao:.1f}s)", style="dim")
             tabela.add_row(icone, linha)
@@ -1449,6 +1470,16 @@ def _executar_init(con: Console, cli: Any, estado: EstadoLocal) -> str:
             criou_chave = True
             exec_etapas.concluir(3, f"criada em {M.encurtar_caminho(cfg.ssh_key_path)}")
         else:
+            problema = cli.remote.validate_ssh_key(cfg.ssh_key_path)
+            if problema:
+                exec_etapas.falhar(3, "chave inválida")
+                raise _ErroEtapa(
+                    "A chave SSH existente não é válida.",
+                    problema[0].upper() + problema[1:] + ".",
+                    f"Renomeie ou apague {M.encurtar_caminho(cfg.ssh_key_path)} e rode "
+                    "'Preparar ambiente local' de novo para gerar uma chave nova.",
+                    detalhes_tecnicos="\n".join(exec_etapas.detalhes_tecnicos),
+                )
             exec_etapas.registrar_log(f"Chave existente reutilizada: {cfg.ssh_key_path}")
             exec_etapas.concluir(3, f"já existente em {M.encurtar_caminho(cfg.ssh_key_path)}")
 
@@ -2070,6 +2101,15 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
             "Selecione um perfil compatível ou altere a GPU em config.toml.",
         )
 
+    problema_chave = cli.remote.validate_ssh_key(cfg.ssh_key_path)
+    if problema_chave:
+        raise _ErroEtapa(
+            "A chave SSH do byom não é válida.",
+            problema_chave[0].upper() + problema_chave[1:] + ".",
+            f"Renomeie ou apague {M.encurtar_caminho(cfg.ssh_key_path)} e rode "
+            "'Preparar ambiente local' para gerar uma chave nova. Nenhuma GPU foi alocada.",
+        )
+
     _mostrar_pre_acao(con, "up")
     try:
         opcoes = _opcoes_up()
@@ -2100,7 +2140,11 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
             exec_etapas.concluir(0, "sem conflitos")
 
             # 2. Alocar GPU
-            exec_etapas.iniciar(1, f"GPU {cfg.gpu}")
+            exec_etapas.iniciar(
+                1,
+                f"GPU {cfg.gpu}",
+                dica="Pedindo a máquina ao Colab. Costuma levar de 1 a 3 minutos.",
+            )
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 cli._create_colab_session(cfg, name)
                 allocated = True
@@ -2108,20 +2152,30 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
             exec_etapas.concluir(1, f"sessão {name}")
 
             # 3. SSH + upload
-            exec_etapas.iniciar(2)
+            exec_etapas.iniciar(
+                2,
+                dica="Abrindo o túnel SSH com a VM. Se falhar, tenta de novo sozinho (até ~2 min).",
+            )
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                client.start()
+                client.start(on_progress=lambda msg: exec_etapas.atualizar_detalhe(2, msg))
             exec_etapas.concluir(2, "conectado")
 
             # 4. Bootstrap
-            exec_etapas.iniciar(3, cfg.runtime)
+            exec_etapas.iniciar(
+                3,
+                cfg.runtime,
+                dica="Instalando dependências e baixando o modelo. Pode levar vários minutos.",
+            )
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 cli._bootstrap_worker(cfg, state, client)
                 client.stop()
             exec_etapas.concluir(3, "worker iniciado")
 
             # 5. Daemon + wait ready
-            exec_etapas.iniciar(4)
+            exec_etapas.iniciar(
+                4,
+                dica="Carregando o modelo na GPU. Quando terminar, a API responde sozinha.",
+            )
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 cli._register_daemon(state)
                 cli._wait_ready(cfg, cfg.bootstrap_timeout_min * 60, expected_session=state.session)
@@ -2202,6 +2256,92 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
         ler_estado_local(),
         extras=[("acao:harness", M.ACOES["harness"][0])],
     )
+
+
+def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
+    import questionary
+
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["chat"][0])
+    if not estado.sessao_ativa:
+        _painel(
+            con,
+            "Nenhuma sessão ativa",
+            "O chat usa a API do modelo no Colab (127.0.0.1), que só existe com a sessão iniciada.",
+            estilo="yellow",
+        )
+        if _confirmar(
+            "up", pergunta="Deseja ir para 'Iniciar sessão no Colab' agora?", default=False
+        ):
+            return "acao:up"
+        return "menu"
+
+    cfg = config.load_config()
+    endpoint = f"http://127.0.0.1:{cfg.proxy_port}/v1"
+    try:
+        resultado = llm_chat.run_setup(url=endpoint, model_name=cfg.served_model_name)
+    except (llm_chat.LlmChatError, config.ConfigError) as exc:
+        raise _ErroEtapa(
+            "Não foi possível preparar o chat.",
+            str(exc),
+            "Confira a pasta do byom e tente novamente (equivalente: `byom setup`).",
+        ) from exc
+
+    _mostrar_pre_acao(con, "chat")
+    sim = obter_simbolos(con)
+    con.print(f"  {sim.bullet} Modelo: {resultado.model_name}  {sim.barra}  API: {endpoint}")
+    con.print(
+        f"  {sim.bullet} Histórico (se ativado): {M.encurtar_caminho(resultado.home / 'logs.db')}",
+        style="dim",
+    )
+    con.print()
+    escolha = questionary.select(
+        "Como deseja conversar?",
+        choices=[
+            questionary.Choice(title="Conversar e salvar o histórico", value="salvar"),
+            questionary.Choice(title="Conversar sem salvar o histórico", value="sem"),
+            questionary.Choice(title="Voltar ao menu principal", value="menu"),
+        ],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_DETALHE,
+    ).ask()
+    if escolha is None or escolha == "menu":
+        return "menu"
+
+    con.print()
+    inicio = time.monotonic()
+    try:
+        resultado_chat = llm_chat.run_chat(no_history=escolha == "sem")
+    except llm_chat.LlmChatError as exc:
+        raise _ErroEtapa(
+            "Não foi possível abrir o chat.",
+            str(exc),
+            "Rode 'Conversar' de novo ou execute `byom setup` no terminal.",
+        ) from exc
+
+    codigo = resultado_chat.returncode
+    renderizar_cabecalho(con, ler_estado_local(), subtela=M.ACOES["chat"][0])
+    if codigo == 0 or resultado_chat.aborted:
+        _mostrar_resultado(
+            con,
+            "chat",
+            titulo_ok="Conversa encerrada",
+            linhas_detalhe=[
+                "Histórico não foi salvo (modo sem histórico)."
+                if escolha == "sem"
+                else f"Histórico salvo em {M.encurtar_caminho(resultado.home / 'logs.db')}."
+            ],
+            duracao_s=time.monotonic() - inicio,
+        )
+    else:
+        _renderizar_erro(
+            con,
+            f"O chat terminou com erro (código {codigo}).",
+            "A API do modelo pode estar indisponível ou a sessão pode ter sido encerrada.",
+            "Use 'Verificar estado da sessão' para conferir o worker e o túnel.",
+            detalhes_tecnicos=resultado_chat.stderr,
+        )
+    return _perguntar_proximo_passo("chat", ler_estado_local())
 
 
 def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
@@ -2330,7 +2470,7 @@ def _rotulo_item_menu(
         aviso = " [requer encerrar sessão]"
     elif acao_id == "up" and not estado.ambiente_configurado:
         aviso = " [requer preparar ambiente]"
-    elif acao_id == "down" and not estado.sessao_ativa:
+    elif acao_id in ("down", "chat") and not estado.sessao_ativa:
         aviso = " [sem sessão ativa]"
 
     return f"{prefixo}{aviso} — {desc}"
@@ -2367,9 +2507,7 @@ def _construir_escolhas_menu(estado: EstadoLocal, sim: Simbolos) -> tuple[list[A
         escolhas.append(questionary.Separator(f"── {grupo} ──"))
         for acao_id in acoes:
             item = questionary.Choice(
-                title=_rotulo_item_menu(
-                    acao_id, estado, recomendado, sim, incluir_atalho=False
-                ),
+                title=_rotulo_item_menu(acao_id, estado, recomendado, sim, incluir_atalho=False),
                 value=acao_id,
                 shortcut_key=M.ATALHOS_MENU[acao_id],
             )
@@ -2404,6 +2542,8 @@ def _despachar_acao(con: Console, cli: Any, acao_id: str) -> str:
         return _executar_status(con, cli, estado)
     if acao_id == "down":
         return _executar_down(con, cli, estado)
+    if acao_id == "chat":
+        return _executar_chat(con, cli, estado)
     return "menu"
 
 

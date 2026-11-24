@@ -22,7 +22,7 @@ import logging
 import shlex
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +53,34 @@ Forward = tuple[int, int]
 
 class RemoteError(RuntimeError):
     """Error raised when a VM operation fails."""
+
+
+def validate_ssh_key(path: Path) -> str | None:
+    """Return a problem description when `path` is not a usable private key.
+
+    The Colab CLI derives the public key with `ssh-keygen -y`. A file that is
+    not a real private key makes every handshake fail with an opaque
+    `Connection closed`, after minutes of retries. Checking first fails fast.
+    """
+    if not path.is_file():
+        return f"a chave SSH não existe em {path}"
+    try:
+        proc = subprocess.run(
+            ["ssh-keygen", "-y", "-f", str(path)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None  # sem ssh-keygen não dá para validar; o init já exige o cliente ssh
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return f"não foi possível validar a chave: {exc}"
+    if proc.returncode == 0 and proc.stdout.strip():
+        return None
+    detail = proc.stderr.decode(errors="replace").strip().splitlines()
+    reason = detail[-1] if detail else "formato inválido"
+    return f"o arquivo {path} não é uma chave privada SSH válida ({reason})"
 
 
 @dataclass
@@ -197,8 +225,16 @@ class Remote:
         tail = [line for line in content.strip().splitlines() if line.strip()][-lines:]
         return " | ".join(tail)
 
-    def start(self, forwards: Sequence[Forward] = ()) -> None:
-        """Start the master, backing off for a refused banner and for 429s."""
+    def start(
+        self,
+        forwards: Sequence[Forward] = (),
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
+        """Start the master, backing off for a refused banner and for 429s.
+
+        `on_progress` receives short status strings (attempt N of M) so a UI can
+        show that a slow connection is still working.
+        """
         self.stop()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_path.unlink(missing_ok=True)
@@ -207,6 +243,8 @@ class Remote:
         backoff = START_BACKOFF_MIN_S
         for attempt in range(1, START_ATTEMPTS + 1):
             self._clear_socket()
+            if on_progress is not None:
+                on_progress(f"tentativa {attempt} de {START_ATTEMPTS}")
             try:
                 # No pipes: the master detached by `-f` keeps the inherited
                 # descriptors open, and `capture_output` would wait for an EOF
@@ -228,6 +266,8 @@ class Remote:
                 reason = self.log_tail() or f"ssh exited with code {proc.returncode}"
 
             if attempt < START_ATTEMPTS:
+                if on_progress is not None:
+                    on_progress(f"tentativa {attempt} falhou; nova tentativa em {int(backoff)}s")
                 time.sleep(backoff)
                 backoff = min(START_BACKOFF_MAX_S, backoff * 2)
 

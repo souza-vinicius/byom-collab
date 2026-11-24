@@ -13,6 +13,7 @@ WORKER = ROOT / "worker"
 @pytest.fixture(autouse=True)
 def isolated_config_dir(tmp_path, monkeypatch):
     """No test touches ~/.config/byom."""
+    monkeypatch.delenv("BYOM_HOME", raising=False)
     monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
     return tmp_path / "byom"
 
@@ -37,3 +38,11 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     return home
+
+
+@pytest.fixture(autouse=True)
+def stub_ssh_key_validation(monkeypatch):
+    """Tests use fake key files; the real `ssh-keygen -y` check is tested directly."""
+    from byom import remote
+
+    monkeypatch.setattr(remote, "validate_ssh_key", lambda path: None)

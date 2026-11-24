@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import stat
+import sys
 import tempfile
 import tomllib
 from collections.abc import Iterator
@@ -97,12 +98,35 @@ class StateFileError(ValueError):
     """
 
 
+def byom_home(*, platform: str | None = None) -> Path:
+    """Return the exclusive `byom` directory for config, state, and `llm` data.
+
+    Precedence: `BYOM_HOME`, then `BYOM_CONFIG_DIR` (used by existing tests),
+    then the OS-standard per-user location named `byom` via the standard library.
+    """
+    if "BYOM_HOME" in os.environ:
+        raw = os.environ["BYOM_HOME"]
+        if not raw.strip():
+            raise ConfigError("BYOM_HOME cannot be empty")
+        return Path(raw).expanduser()
+    legacy_override = os.environ.get("BYOM_CONFIG_DIR", "").strip()
+    if legacy_override:
+        return Path(legacy_override).expanduser()
+    plat = platform or sys.platform
+    if plat == "darwin":
+        return Path.home() / "Library" / "Application Support" / "byom"
+    if plat.startswith("win"):
+        appdata = os.environ.get("APPDATA", "").strip()
+        base = Path(appdata).expanduser() if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "byom"
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return base / "byom"
+
+
 def config_dir() -> Path:
-    """Return the config directory; tests can override it with `BYOM_CONFIG_DIR`."""
-    override = os.environ.get("BYOM_CONFIG_DIR")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".config" / "byom"
+    """Return the config directory (delegates to `byom_home`)."""
+    return byom_home()
 
 
 def config_path() -> Path:
