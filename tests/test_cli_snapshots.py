@@ -246,8 +246,11 @@ def test_snapshot_cli_models_all_gpus_e_prompt():
         assert "Summary:" in res.output
 
     res_l4 = runner.invoke(cli.app, ["models", "--gpu", "L4"])
-    # O q4 do Inkling passou a caber na L4 com o KV medido pela arquitetura.
-    assert "Summary: 13 compatible variant(s); 6 discarded for insufficient VRAM." in res_l4.output
+    # O q4 do Inkling passou a caber na L4 com o KV medido pela arquitetura; as
+    # três variantes do Bonsai 2.5 também cabem (a T4 é a GPU que elas exigem).
+    assert "Summary: 16 compatible variant(s); 6 discarded for insufficient VRAM." in (
+        res_l4.output
+    )
 
     res_prompt = runner.invoke(cli.app, ["models"], input="2\n")
     assert res_prompt.exit_code == 0
