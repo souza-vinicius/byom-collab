@@ -1639,13 +1639,19 @@ def _executar_configure(con: Console, estado: EstadoLocal) -> str:
     if bloqueio:
         return bloqueio
 
-    renderizar_perfis(con, estado)
-    con.print()
-    try:
-        selecionado = _escolher_perfil(con, estado)
-    except KeyboardInterrupt:
-        return "menu"
-    return _fluxo_detalhe_perfil(con, selecionado, estado)
+    while True:
+        renderizar_perfis(con, estado)
+        con.print()
+        try:
+            selecionado = _escolher_perfil(con, estado)
+        except KeyboardInterrupt:
+            return "menu"
+        destino = _fluxo_detalhe_perfil(con, selecionado, estado)
+        if destino != "lista":
+            return destino
+        # "Voltar para a lista" volta para ESTA lista, não para o menu principal.
+        estado = ler_estado_local()
+        renderizar_cabecalho(con, estado, subtela=M.ACOES["configure"][0])
 
 
 def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView) -> None:
@@ -1770,8 +1776,12 @@ def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
         except KeyboardInterrupt:
             return "menu"
         destino = _escolher_modelo_para_gpu(con, ler_estado_local(), gpu_id)
-        if destino != "outra_gpu":
-            return destino
+        if destino == "outra_gpu":
+            continue
+        if destino == "lista":
+            # "Voltar para a lista" no detalhe do perfil recua para a lista de GPUs.
+            continue
+        return destino
 
 
 def _executar_selecionar_gpu(con: Console, estado: EstadoLocal) -> str:
