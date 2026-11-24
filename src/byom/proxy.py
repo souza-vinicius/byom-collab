@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -31,6 +32,19 @@ from .tunnel import TunnelSupervisor
 log = logging.getLogger("byom.proxy")
 
 VERIFY_INTERVAL_S = 5.0
+
+#: Cabeçalhos do cliente repassados ao gateway. `host` e `authorization` nunca
+#: entram: o destino é loopback e o gateway não autentica o cliente, então
+#: repassá-los só aumentaria a superfície de ataque.
+FORWARDED_REQUEST_HEADERS = ("accept", "openai-beta", "user-agent")
+
+#: Segmentos de caminho aceitos. Qualquer outro caractere (barra invertida,
+#: `%`, NUL) é recusado antes de montar a URL.
+ALLOWED_PATH_CHARS = re.compile(r"[A-Za-z0-9._~/-]+")
+
+#: Únicos valores aceitos em `Host`. Bloqueia DNS rebinding: um navegador que
+#: resolva um domínio público para 127.0.0.1 envia o domínio nesse header.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 
 
 @dataclass
@@ -182,32 +196,125 @@ def create_app(
     app = FastAPI(lifespan=lifespan)
 
     @app.get("/__byom/status")
-    async def status() -> dict[str, Any]:
+    async def status(request: Request) -> Any:
+        if not _host_allowed(request):
+            return _bad_host()
         return runtime.status_payload()
 
     @app.api_route("/v1/{path:path}", methods=["GET", "POST"])
     async def forward(path: str, request: Request) -> Any:
+        if not _host_allowed(request):
+            return _bad_host()
+        # A recusa acontece antes de qualquer coisa sair: o Starlette casa
+        # `{path:path}` com `../internal/state`, e o httpx normaliza `..` ao
+        # montar a URL, entregando o endpoint interno do gateway.
+        url, path_error = _forward_url(runtime.base_url, path, request.url.query)
+        if url is None:
+            return _bad_path(path_error or "Invalid request path")
         reason = runtime.refuse_reason()
         if reason is not None:
             return JSONResponse(
                 status_code=503,
                 content={"error": {"message": reason, "type": "byom_unavailable"}},
             )
-        return await _forward(runtime, make_client(), path, request)
+        return await _forward(runtime, make_client(), url, request)
 
     return app
+
+
+def _bad_path(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"error": {"message": message, "type": "byom_bad_path"}},
+    )
+
+
+def _bad_host() -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={
+            "error": {
+                "message": "Host not allowed: the proxy only accepts 127.0.0.1 or localhost",
+                "type": "byom_bad_host",
+            }
+        },
+    )
+
+
+def _host_allowed(request: Request) -> bool:
+    """Aceite apenas loopback no `Host`, com porta opcional."""
+    raw = request.headers.get("host", "").strip().lower()
+    if not raw or raw.startswith("["):
+        return False
+    name, _, port = raw.partition(":")
+    if name not in LOOPBACK_HOSTS:
+        return False
+    if not port:
+        return True
+    return port.isdigit() and 1 <= int(port) <= 65535
+
+
+def _path_error(path: str) -> str | None:
+    """Motivo para recusar `path`, ou None quando ele é seguro."""
+    if not path:
+        return "Empty request path"
+    if "\\" in path:
+        return "Backslash is not allowed in the request path"
+    if "\x00" in path:
+        return "NUL byte is not allowed in the request path"
+    if "%" in path:
+        # O caminho chega decodificado; um `%` restante é dupla codificação.
+        return "Percent-encoding is not allowed in the request path"
+    if not ALLOWED_PATH_CHARS.fullmatch(path):
+        return "Character outside [A-Za-z0-9._~/-] in the request path"
+    if any(segment in {".", ".."} for segment in path.split("/")):
+        return "Dot segments are not allowed in the request path"
+    return None
+
+
+def _forward_url(
+    base_url: str, path: str, query: str
+) -> tuple[httpx.URL | None, str | None]:
+    """URL de destino validada, preservando a query string do cliente."""
+    error = _path_error(path)
+    if error is not None:
+        return None, error
+    raw = f"{base_url}/v1/{path}"
+    if query:
+        raw = f"{raw}?{query}"
+    try:
+        url = httpx.URL(raw)
+    except (httpx.InvalidURL, ValueError) as exc:
+        return None, f"Invalid request URL: {exc}"
+    # Defesa em profundidade: depois da normalização do httpx, o caminho
+    # encaminhado continua obrigatoriamente dentro de /v1/.
+    if not url.path.startswith("/v1/") or "/../" in url.path:
+        return None, "Request path escapes /v1/"
+    return url, None
+
+
+def _forward_headers(request: Request) -> dict[str, str]:
+    """Allowlist de headers de entrada; o stream nunca é comprimido."""
+    headers = {
+        name: request.headers[name]
+        for name in FORWARDED_REQUEST_HEADERS
+        if name in request.headers
+    }
+    headers["content-type"] = request.headers.get("content-type", "application/json")
+    headers["accept-encoding"] = "identity"
+    return headers
 
 
 async def _forward(
     runtime: Runtime,
     client: httpx.AsyncClient,
-    path: str,
+    url: httpx.URL,
     request: Request,
 ) -> Any:
-    url = f"{runtime.base_url}/v1/{path}"
     body = await request.body()
-    headers = {"content-type": request.headers.get("content-type", "application/json")}
-    upstream = client.build_request(request.method, url, content=body, headers=headers)
+    upstream = client.build_request(
+        request.method, url, content=body, headers=_forward_headers(request)
+    )
     try:
         response = await client.send(upstream, stream=True)
     except httpx.HTTPError as exc:

@@ -13,6 +13,7 @@ from byom.proxy import Runtime, WorkerStatus, create_app
 from byom.tunnel import TunnelState, TunnelSupervisor
 
 NONCE = "session-nonce"
+PROXY_BASE_URL = "http://127.0.0.1:4000"
 
 
 def make_state() -> config.State:
@@ -60,7 +61,25 @@ def client_for(runtime: Runtime, transport: httpx.MockTransport) -> TestClient:
     # not exist in tests. The worker state is set in `make_runtime`.
     runtime.verify_loop = _idle_verify_loop  # type: ignore[method-assign]
     app = create_app(runtime, transport=transport)
-    return TestClient(app)
+    # O proxy só aceita `Host` de loopback (DNS rebinding); o endereço do
+    # cliente precisa ser o mesmo que o daemon usa de verdade.
+    return TestClient(app, base_url=PROXY_BASE_URL)
+
+
+def recording_transport(seen: list[httpx.Request], *, status: int = 200) -> httpx.MockTransport:
+    """Upstream que registra a requisição recebida e responde o mínimo."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": "rejected"}})
+
+        async def body():
+            yield b'data: {"ok": true}\n\n'
+
+        return httpx.Response(200, content=body(), headers={"content-type": "text/event-stream"})
+
+    return httpx.MockTransport(handler)
 
 
 def test_local_status_reports_tunnel_and_worker():
@@ -296,3 +315,159 @@ async def test_tunnel_health_feeds_status(monkeypatch):
     # The model is still loading, so the state is "initializing", not "unavailable".
     assert runtime.status_payload()["worker"]["state"] == "initializing"
     assert runtime.refuse_reason() is None
+
+
+# ---------------------------------------------------------------------------
+# Superfície local: caminho, Host e headers repassados
+# ---------------------------------------------------------------------------
+#: Variantes que chegam ao roteador como `..`: o cliente HTTP entrega o
+#: caminho decodificado, e o Starlette casa `{path:path}` com ele.
+TRAVERSAL_PATHS = (
+    "/v1/%2e%2e/internal/state",
+    "/v1/..%2Finternal%2Fstate",
+    "/v1/%2e/internal/state",
+)
+
+
+@pytest.mark.parametrize("path", TRAVERSAL_PATHS)
+def test_traversal_recusado_antes_de_montar_a_url(path):
+    seen: list[httpx.Request] = []
+    runtime = make_runtime()
+
+    with client_for(runtime, recording_transport(seen)) as client:
+        response = client.get(path)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "byom_bad_path"
+    assert seen == [], "nenhuma chamada pode sair para o upstream"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/%2e%2e/internal/begin-shutdown",
+        "/v1/a%5c..%5cinternal/state",
+        "/v1/models%00",
+        "/v1/%252e%252e/internal/state",
+    ],
+)
+def test_post_e_encoding_recusados_sem_upstream(path):
+    seen: list[httpx.Request] = []
+    runtime = make_runtime()
+
+    with client_for(runtime, recording_transport(seen)) as client:
+        response = client.post(path, content=b"{}")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "byom_bad_path"
+    assert seen == []
+
+
+def test_query_string_chega_ao_upstream():
+    seen: list[httpx.Request] = []
+    runtime = make_runtime()
+
+    with client_for(runtime, recording_transport(seen)) as client:
+        response = client.get("/v1/models?x=1")
+
+    assert response.status_code == 200
+    assert len(seen) == 1
+    assert seen[0].url.path == "/v1/models"
+    assert seen[0].url.query == b"x=1"
+
+
+@pytest.mark.parametrize("host", ["evil.com", "evil.com:4000", "127.0.0.1.evil.com", "[::1]:4000"])
+def test_host_nao_loopback_e_recusado(host):
+    seen: list[httpx.Request] = []
+    runtime = make_runtime()
+
+    with client_for(runtime, recording_transport(seen)) as client:
+        response = client.get("/v1/models", headers={"host": host})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["type"] == "byom_bad_host"
+    assert seen == []
+
+
+def test_host_loopback_com_porta_e_aceito():
+    seen: list[httpx.Request] = []
+    runtime = make_runtime()
+
+    with client_for(runtime, recording_transport(seen)) as client:
+        assert client.get("/v1/models", headers={"host": "localhost:4000"}).status_code == 200
+
+    assert len(seen) == 1
+
+
+def test_headers_repassados_seguem_allowlist():
+    seen: list[httpx.Request] = []
+    runtime = make_runtime()
+
+    with client_for(runtime, recording_transport(seen)) as client:
+        client.get(
+            "/v1/models",
+            headers={
+                "accept": "text/event-stream",
+                "openai-beta": "assistants=v2",
+                "user-agent": "opencode/1.0",
+                "authorization": "Bearer sk-cliente",
+                "accept-encoding": "gzip, br",
+            },
+        )
+
+    headers = seen[0].headers
+    assert headers["accept"] == "text/event-stream"
+    assert headers["openai-beta"] == "assistants=v2"
+    assert headers["user-agent"] == "opencode/1.0"
+    # Comprimir o stream mudaria o corpo SSE e o repasse byte a byte.
+    assert headers["accept-encoding"] == "identity"
+    assert "authorization" not in headers
+
+
+def _raw_get(app, path: str, *, host: bytes = b"127.0.0.1:4000") -> tuple[int, bytes]:
+    """Chame o app ASGI com o `path` exatamente como o uvicorn o entrega.
+
+    O cliente HTTP normaliza `..` antes de enviar; o uvicorn não. Esta sonda
+    reproduz o pedido que realmente chega ao roteador.
+    """
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", host)],
+        "server": ("127.0.0.1", 4000),
+        "client": ("127.0.0.1", 54321),
+    }
+    messages: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        messages.append(message)
+
+    asyncio.run(app(scope, receive, send))
+    status = messages[0]["status"]
+    body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+    return status, body
+
+
+def test_traversal_literal_no_nivel_asgi():
+    """`/v1/../internal/state` cru, como o uvicorn repassa ao roteador."""
+    seen: list[httpx.Request] = []
+    runtime = make_runtime()
+    runtime.verify_loop = _idle_verify_loop  # type: ignore[method-assign]
+    app = create_app(runtime, transport=recording_transport(seen))
+
+    for path in ("/v1/../internal/state", "/v1/../internal/begin-shutdown", "/v1/./models"):
+        status, body = _raw_get(app, path)
+        assert status == 400, path
+        assert b"byom_bad_path" in body, path
+
+    assert seen == []
