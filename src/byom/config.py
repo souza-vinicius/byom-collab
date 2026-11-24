@@ -284,8 +284,26 @@ WORKER_FIELDS = frozenset(
         "drafter_pattern",
         "dspark",
         "llama_jinja",
+        "flash_attn",
         "chat_template_kwargs",
         "sampling",
+    }
+)
+
+#: Chaves aceitas em `[worker.sampling]`, cada uma com a flag do llama-server
+#: em `worker/build_vllm_command.py`. Chave fora daqui seria descartada em
+#: silêncio no argv (um `repeat_penaly` digitado errado viraria servidor com o
+#: default), então o load do perfil recusa. Nomes conferidos no `--help` da
+#: build fixada `prism-b12128-d7b2896` (2026-11-24).
+SAMPLING_KEYS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "presence_penalty",
+        "repeat_penalty",
+        "repeat_last_n",
     }
 )
 
@@ -409,6 +427,20 @@ def available_profiles(directory: Path | None = None) -> list[Profile]:
                     for k, v in value.items()
                 ):
                     raise ValueError(f"Invalid [worker].sampling in {path.name}: {value!r}")
+                unknown_sampling = set(value) - SAMPLING_KEYS
+                if unknown_sampling:
+                    raise ValueError(
+                        f"Unknown keys in [worker.sampling] of {path.name}: "
+                        f"{', '.join(sorted(unknown_sampling))}; expected "
+                        f"{', '.join(sorted(SAMPLING_KEYS))}"
+                    )
+                continue
+            if key == "flash_attn":
+                if not isinstance(value, bool):
+                    raise ValueError(
+                        f"Invalid [worker].flash_attn in {path.name}: {value!r}; "
+                        "expected true or false"
+                    )
                 continue
             if key == "image_roles":
                 if not isinstance(value, dict) or not value:

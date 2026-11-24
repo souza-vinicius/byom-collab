@@ -99,6 +99,10 @@ def build_llama_args(cfg: dict) -> list[str]:
     ]
     if worker.get("llama_jinja"):
         args.append("--jinja")
+    if worker.get("flash_attn"):
+        # `-fa on` é a forma dos docs do publicador e a que o binário aceita:
+        # `-fa, --flash-attn [on|off|auto]` no `--help` da build fixada.
+        args.extend(["-fa", "on"])
     mmproj = worker.get("mmproj_pattern")
     if mmproj:
         args.extend(["--mmproj", _resolved("mmproj", str(mmproj))])
@@ -123,6 +127,12 @@ def build_llama_args(cfg: dict) -> list[str]:
         ("top_p", "--top-p"),
         ("top_k", "--top-k"),
         ("min_p", "--min-p"),
+        # Penas de presença/repetição: os modelos pequenos da mesma família
+        # pedem `--presence-penalty 1.0 --repeat-penalty 1.0 --repeat-last-n 64`
+        # (docs.prismml.com/run/llamacpp.md, 2026-11-24); o 27B não usa nenhuma.
+        ("presence_penalty", "--presence-penalty"),
+        ("repeat_penalty", "--repeat-penalty"),
+        ("repeat_last_n", "--repeat-last-n"),
     ):
         if key in sampling:
             args.extend([flag, str(sampling[key])])
