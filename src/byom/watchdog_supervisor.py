@@ -93,6 +93,7 @@ class WatchdogSupervisor:
         `byom status` shows the cause instead of an endless restart loop.
         """
         backoff = RESTART_BACKOFF_MIN_S
+        self._reset_log()
         try:
             while not stop.is_set():
                 if self.process is None:
@@ -135,6 +136,18 @@ class WatchdogSupervisor:
             self.status.pid = None
             if self.status.state != "gave_up":
                 self.status.state = "stopped"
+
+    def _reset_log(self) -> None:
+        """Cada sessão começa com `watchdog.log` vazio.
+
+        Cada relançamento do `colab exec` fazia append no mesmo arquivo e ele
+        crescia sem limite; truncar no início da sessão mantém só a atual.
+        """
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self.log_path.write_text("", encoding="utf-8")
+        except OSError as exc:
+            log.warning("Could not reset %s: %s", self.log_path, exc)
 
     def _record_failure(self, reason: str) -> None:
         self.status.failures += 1

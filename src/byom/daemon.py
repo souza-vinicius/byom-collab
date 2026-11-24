@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -23,6 +24,10 @@ from .tunnel import TunnelSupervisor
 from .watchdog_supervisor import WatchdogSupervisor
 
 log = logging.getLogger("byom.daemon")
+
+#: Teto de `daemon.log`. Um append por sessão e por restart crescia sem limite.
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUP_COUNT = 2
 
 
 def _log_path(name: str) -> Path:
@@ -54,7 +59,15 @@ async def run() -> int:
     app = create_app(runtime)
 
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=cfg.proxy_port, log_level="warning")
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=cfg.proxy_port,
+            log_level="warning",
+            # Sem `log_config`: o uvicorn usaria handlers próprios em stderr e
+            # escaparia da rotação do `daemon.log`.
+            log_config=None,
+        )
     )
 
     # The proxy app starts the worker verification loop during startup, so do
@@ -96,12 +109,32 @@ async def _load_registered_state(timeout_s: float = 5.0) -> config.State | None:
     return None
 
 
-def main() -> int:
+def configure_logging() -> logging.handlers.RotatingFileHandler:
+    """Send root logs to a rotating `daemon.log`.
+
+    `cli.main()` already configured the root logger, so without `force=True`
+    the `basicConfig` here was a no-op and lines like "Daemon started" never
+    reached the file.
+    """
+    path = _log_path("daemon")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        path,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        filename=str(_log_path("daemon")),
+        handlers=[handler],
+        force=True,
     )
+    return handler
+
+
+def main() -> int:
+    configure_logging()
     return asyncio.run(run())
 
 
