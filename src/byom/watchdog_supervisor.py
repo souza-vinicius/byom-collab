@@ -130,7 +130,7 @@ class WatchdogSupervisor:
         except ValueError as exc:
             log.warning("Watchdog heartbeat probe returned invalid JSON: %s", exc)
             return None
-        if not config.nonce_matches(payload, self.state):
+        if "nonce" in payload and not config.nonce_matches(payload, self.state):
             log.warning("Watchdog heartbeat probe returned a different session nonce")
             return None
         try:

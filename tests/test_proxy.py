@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import http.server
 import json
+import logging
 import threading
 import time
 
@@ -607,3 +608,46 @@ def test_probe_health_envia_o_nonce_da_sessao():
     assert payload == {"model_ready": True, "watchdog_silence_s": 1.0}
     assert handler.seen[0]["x-byom-nonce"] == NONCE
     assert handler.seen[0]["host"] == f"127.0.0.1:{port}"
+
+
+# ---------------------------------------------------------------------------
+# `/__byom/status` não vaza identidade
+# ---------------------------------------------------------------------------
+def test_status_nao_expoe_nonce_nem_material_secreto():
+    runtime = make_runtime()
+
+    with client_for(runtime, recording_transport([])) as client:
+        payload = client.get("/__byom/status").json()
+
+    assert set(payload) == {"session", "endpoint", "created_at", "tunnel", "worker"}
+    assert "nonce" not in json.dumps(payload)
+    assert NONCE not in json.dumps(payload)
+
+
+async def test_verify_aceita_payload_de_health_sem_nonce(monkeypatch):
+    """A identidade vem do header: o 200 já prova que o gateway é este."""
+    runtime = make_runtime(verified=False)
+
+    async def ok_health():
+        return {"model_ready": True, "watchdog_silence_s": 1.0}
+
+    monkeypatch.setattr(runtime.tunnel, "probe_health", ok_health)
+    await runtime.verify()
+
+    assert runtime.worker.verified is True
+    assert runtime.refuse_reason() is None
+
+
+async def test_verify_nao_registra_nonce_no_log(caplog, monkeypatch):
+    runtime = make_runtime(verified=False)
+
+    async def bad_health():
+        return {"nonce": "outro-nonce", "model_ready": True}
+
+    monkeypatch.setattr(runtime.tunnel, "probe_health", bad_health)
+    with caplog.at_level(logging.DEBUG):
+        await runtime.verify()
+
+    assert runtime.worker.verified is False
+    assert NONCE not in caplog.text
+    assert "outro-nonce" not in caplog.text

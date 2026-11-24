@@ -701,3 +701,15 @@ def test_endpoints_internos_exigem_nonce(gateway_module, shutdowns):
 
     # O 403 não pode registrar heartbeat nem aceitar shutdown.
     assert gateway._watchdog_seen is True  # a chamada válida acima registrou
+
+
+def test_nonce_nao_aparece_em_nenhum_payload_de_status(gateway_module, shutdowns):
+    """O nonce vai só na requisição: nenhuma resposta de status o devolve."""
+    fake = FakeVLLM()
+    app, _ = build_app(gateway_module, fake, shutdowns)
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        for path in ("/health", "/internal/state"):
+            body = client.get(path, headers=NONCE_HEADERS).text
+            assert "nonce" not in body
+            assert "test-nonce" not in body

@@ -397,8 +397,10 @@ class Gateway:
 
     # -- endpoints -------------------------------------------------------
     def status_payload(self) -> dict[str, Any]:
+        # Sem `nonce`: o payload de status vai para o proxy, para `byom status`
+        # e (potencialmente) para log. A identidade é provada pelo header da
+        # requisição, nunca pela resposta.
         return {
-            "nonce": self.cfg.nonce,
             "runtime": self.cfg.runtime,
             "model_ready": self._model_ready,
             "idle_s": round(self.idle_s, 3),

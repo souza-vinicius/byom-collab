@@ -109,7 +109,12 @@ class Runtime:
         return self.tunnel.local_base_url
 
     async def verify(self) -> None:
-        """Read `/health` through the tunnel and validate the session nonce."""
+        """Read `/health` through the tunnel and validate the session identity.
+
+        A 200 already proves identity: the gateway only answers with this
+        session's `X-BYOM-Nonce`, and the payload no longer carries the nonce.
+        A payload that still carries one (an older gateway) has to match.
+        """
         payload = await self.tunnel.probe_health()
         self.worker.checked_at = time.monotonic()
         if payload is None:
@@ -119,7 +124,7 @@ class Runtime:
                 self.tunnel.status.last_error or "Gateway is inaccessible through the tunnel"
             )
             return
-        if not config.nonce_matches(payload, self.state):
+        if "nonce" in payload and not config.nonce_matches(payload, self.state):
             # Never forward to a destination of unknown identity.
             self.worker.verified = False
             self.worker.model_ready = False
