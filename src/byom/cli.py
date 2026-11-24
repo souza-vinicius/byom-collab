@@ -305,6 +305,7 @@ def _build_worker_tar(cfg: config.Config, state: config.State, dest: Path) -> No
             "reasoning_effort": cfg.reasoning_effort,
             "thinking_policy": asdict(model_entry.thinking) if model_entry.thinking else None,
             "generation_defaults": dict(model_entry.generation_defaults) or None,
+            "image_roles": dict(worker_settings.get("image_roles") or {}) or None,
             "idle_timeout_min": cfg.idle_timeout_min,
             "max_job_min": cfg.max_job_min,
             "watchdog_timeout_s": cfg.watchdog_timeout_s,

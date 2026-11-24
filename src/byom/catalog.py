@@ -75,6 +75,11 @@ VRAM_HEADROOM_MIN_GIB = 1.0
 #: arredonda para cima e cobre buffers do projetor.
 VISION_PROJECTOR_GIB = 0.65
 
+#: Projetor do Qwen3-VL usado na edição de imagem (papel `vision`):
+#: `mmproj-Qwen3VL-8B-Instruct-F16.gguf`, 1.159.029.824 B = 1,08 GiB (API do HF,
+#: 2026-11-24).
+IMAGE_VISION_GIB = 1.08
+
 GPU_SOURCE = (
     "Google Cloud, Compute Engine > GPU machine types > General comparison chart "
     "(docs.cloud.google.com/compute/docs/gpus), consultado em 2026-11-23"
@@ -326,7 +331,10 @@ MODELS: tuple[ModelEntry, ...] = (
                            "5.027.784.800 (Qwen3VL-8B-Instruct-Q4_K_M) + "
                            "675.509.688 (vae bf16) = 12.960.077.552 B = 12,07 GiB.",
                            "12,07 GiB + 2 de runtime + 1 de folga = 15,07 > 15 GiB "
-                           "utilizáveis da T4; a GPU mínima segue L4 (24 GiB).")),
+                           "utilizáveis da T4; a GPU mínima segue L4 (24 GiB).",
+                           "Projetor de visão para edição: mmproj-Qwen3VL-8B-Instruct-F16.gguf "
+                           "(1.159.029.824 B = 1,08 GiB), carregado por --llm_vision."),
+                    vision_gib=IMAGE_VISION_GIB),
             Variant("q4km", "GGUF Q4_K", 9.22, 0, "T4",
                     notes=("Pesos + encoder + VAE somam, nos bytes publicados "
                            "(2026-11-24), 4.197.494.816 (qwen_image_2.1-Q4_K, 4,20 GB) + "
@@ -335,7 +343,10 @@ MODELS: tuple[ModelEntry, ...] = (
                            "O repositório publica Q4_K, não Q4_K_M: o perfil usa o nome "
                            "exato do arquivo.",
                            "9,22 GiB + 2 de runtime + 1,0 de folga = 12,22 <= 15 GiB "
-                           "utilizáveis: cabe na T4, que é a GPU mais barata.")),
+                           "utilizáveis: cabe na T4, que é a GPU mais barata.",
+                           "Com o projetor de visão da edição (1,08 GiB): 9,22 + 1,08 + 2 + "
+                           "1,0 = 13,30 <= 15 GiB, ainda cabe na T4."),
+                    vision_gib=IMAGE_VISION_GIB),
         ),
         IMAGE_SOURCE,
         notes=(

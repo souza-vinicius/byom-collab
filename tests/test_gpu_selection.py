@@ -109,7 +109,10 @@ def test_modelo_de_imagem_sem_kv_cache():
     sentinel = catalog.profile_context("qwen-image-2.1-q4km").context_served
     fit = catalog.check_fit("qwen-image-2.1", "q4km", "L4", sentinel)
     assert fit.fits
-    assert fit.required_gib == variant.memory_gib + catalog.RUNTIME_RESERVE_GIB
+    # Sem KV (imagem), com o projetor de visão da edição.
+    assert fit.required_gib == (
+        variant.memory_gib + variant.vision_gib + catalog.RUNTIME_RESERVE_GIB
+    )
 
     row = next(
         row
@@ -121,11 +124,11 @@ def test_modelo_de_imagem_sem_kv_cache():
 
 
 def test_q4km_de_imagem_cabe_na_t4_com_folga():
-    """9,22 + 2 de runtime + 1 de folga = 12,22 <= 15 GiB utilizáveis."""
+    """9,22 + 1,08 de visão + 2 de runtime + 1 de folga = 13,30 <= 15 GiB."""
     fit = catalog.check_fit("qwen-image-2.1", "q4km", "T4", 1)
 
     assert fit.fits is True
-    assert fit.required_gib == 11.22
+    assert fit.required_gib == 12.30
     assert fit.headroom_gib == 1.0
     # A variante aparece como compatível com a T4 (e o fp8 não).
     assert ("qwen-image-2.1", "q4km") in {

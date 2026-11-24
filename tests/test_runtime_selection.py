@@ -392,6 +392,7 @@ def test_prepare_imagem_grava_os_tres_papeis_no_manifest(
                             "diffusion": "leejet/Qwen-Image-2.1-GGUF::qwen_image_2.1-Q4_K.gguf",
                             "vae": "Comfy-Org/Qwen-Image-2.1::vae/*.safetensors",
                             "text_encoder": "Qwen/Qwen3-VL-8B-Instruct-GGUF::*Q4_K_M.gguf",
+                            "vision": "Qwen/Qwen3-VL-8B-Instruct-GGUF::mmproj-*F16.gguf",
                         },
                     },
                 }
@@ -401,7 +402,7 @@ def test_prepare_imagem_grava_os_tres_papeis_no_manifest(
         manifest = prepare_module.prepare(session)
 
     assert manifest["server"] == str(byom / "sd-server")
-    assert set(manifest["image"]) == {"diffusion", "vae", "text_encoder"}
+    assert set(manifest["image"]) == {"diffusion", "vae", "text_encoder", "vision"}
     for path in manifest["image"].values():
         target = Path(path)
         assert target.is_absolute()
@@ -410,6 +411,7 @@ def test_prepare_imagem_grava_os_tres_papeis_no_manifest(
     assert manifest["image"]["diffusion"].endswith("qwen_image_2.1-Q4_K.gguf")
     assert manifest["image"]["vae"].endswith("qwen_image_2.1_vae_bf16.safetensors")
     assert manifest["image"]["text_encoder"].endswith("Qwen3VL-8B-Instruct-Q4_K_M.gguf")
+    assert manifest["image"]["vision"].endswith("mmproj-Qwen3VL-8B-Instruct-F16.gguf")
     assert (byom / "sd-server").is_symlink()
     on_disk = json.loads((byom / "runtime_manifest.json").read_text(encoding="utf-8"))
     assert on_disk["image"] == manifest["image"]
@@ -478,7 +480,7 @@ def test_t4_volta_a_comportar_o_q4km_e_o_fp8_continua_em_l4():
     assert q4km_t4.fits is True
     assert fp8_l4.fits is True
     assert fp8_t4.fits is False
-    assert fp8_t4.required_gib == pytest.approx(14.07)
+    assert fp8_t4.required_gib == pytest.approx(15.15)
     assert "Tesla T4" in fp8_t4.reason
 
 
@@ -490,4 +492,90 @@ def test_perfil_q4km_declara_a_gpu_que_comporta_o_arquivo():
     assert catalog.check_fit(
         "qwen-image-2.1", "q4km", "T4", profile.settings["max_model_len"]
     ).fits
+
+
+# -- 5.1: edição de imagem exige o projetor de visão --------------------------
+def test_build_image_args_emite_llm_vision_quando_o_papel_existe(build_module, tmp_path):
+    manifest, role_paths = write_image_manifest(tmp_path)
+    role_paths["vision"] = tmp_path / "models" / "mmproj-F16.gguf"
+    role_paths["vision"].parent.mkdir(parents=True, exist_ok=True)
+    role_paths["vision"].write_text("mmproj", encoding="utf-8")
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["image"]["vision"] = str(role_paths["vision"])
+    _write_manifest(manifest, payload)
+    build_module.MANIFEST = str(manifest)
+
+    argv = build_module.build_image_args({"vllm_port": 8000})
+
+    assert argv[argv.index("--llm_vision") + 1] == str(role_paths["vision"])
+    # As três flags obrigatórias continuam na linha de comando.
+    for flag in ("--diffusion-model", "--vae", "--llm"):
+        assert flag in argv
+
+
+def test_build_image_args_sem_vision_continua_valido_para_gerar(build_module, tmp_path):
+    """Perfil sem `vision` não impede o servidor de subir."""
+    manifest, role_paths = write_image_manifest(tmp_path)
+    build_module.MANIFEST = str(manifest)
+
+    argv = build_module.build_image_args({"vllm_port": 8000})
+
+    assert "--llm_vision" not in argv
+    assert argv[argv.index("--llm") + 1] == str(role_paths["text_encoder"])
+
+
+def test_perfis_de_imagem_declaram_o_papel_vision():
+    for profile_id in ("qwen-image-2.1-q4km", "qwen-image-2.1-fp8"):
+        profile = config.load_profile(profile_id)
+        roles = (profile.worker or {}).get("image_roles") or {}
+        assert "vision" in roles, profile_id
+        assert roles["vision"].endswith("mmproj-Qwen3VL-8B-Instruct-F16.gguf")
+        assert (
+            "Qwen/Qwen3-VL-8B-Instruct-GGUF::mmproj-Qwen3VL-8B-Instruct-F16.gguf"
+            in (profile.worker or {}).get("model_patterns", [])
+        ), profile_id
+
+
+def test_gateway_recusa_edits_sem_o_papel_vision(gateway_module):
+    import httpx
+    from fastapi.testclient import TestClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"url": "http://x/1.png"}]})
+
+    sem_vision = gateway_module.GatewayConfig(
+        nonce="n",
+        runtime="image",
+        image_roles={"diffusion": "a", "vae": "b", "text_encoder": "c"},
+    )
+    app = gateway_module.create_app(sem_vision, transport=httpx.MockTransport(handler))
+    with TestClient(app) as client:
+        resposta = client.post("/v1/images/edits", json={"prompt": "cat"})
+        geracao = client.post("/v1/images/generations", json={"prompt": "cat"})
+
+    assert resposta.status_code == 501
+    assert "`vision`" in resposta.json()["error"]["message"]
+    assert "--llm_vision" in resposta.json()["error"]["message"]
+    # A geração continua funcionando sem o projetor.
+    assert geracao.status_code == 200
+
+
+def test_gateway_aceita_edits_com_o_papel_vision(gateway_module):
+    import httpx
+    from fastapi.testclient import TestClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"url": "http://x/1.png"}]})
+
+    cfg = gateway_module.GatewayConfig(
+        nonce="n",
+        runtime="image",
+        image_roles={"diffusion": "a", "vae": "b", "text_encoder": "c", "vision": "d"},
+    )
+    app = gateway_module.create_app(cfg, transport=httpx.MockTransport(handler))
+    with TestClient(app) as client:
+        resposta = client.post("/v1/images/edits", json={"prompt": "cat"})
+
+    assert resposta.status_code == 200
+
 

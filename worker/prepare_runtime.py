@@ -34,7 +34,13 @@ IMAGE_ROLE_FLAGS = {
     "diffusion": "--diffusion-model",
     "vae": "--vae",
     "text_encoder": "--llm",
+    # Edição de imagem (`/v1/images/edits`): projetor de visão do text encoder.
+    "vision": "--llm_vision",
 }
+
+#: Papéis sem os quais o servidor não sobe. `vision` é opcional: o perfil sem
+#: ele continua servindo geração, e só a edição fica indisponível.
+REQUIRED_IMAGE_ROLES = ("diffusion", "vae", "text_encoder")
 
 
 def download(url: str, dest: Path, sha256: str | None = None) -> Path:

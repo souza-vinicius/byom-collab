@@ -104,6 +104,9 @@ class GatewayConfig:
     thinking_policy: dict[str, Any] | None = None
     #: Padrões de geração do modelo de imagem, com nomes da documentação.
     generation_defaults: dict[str, int | float] | None = None
+    #: Papéis de imagem declarados no perfil (`repo::pattern`). Ausência de
+    #: `vision` desabilita só a edição; a geração continua válida.
+    image_roles: dict[str, str] | None = None
     idle_timeout_min: float = 20.0
     max_job_min: float = 40.0
     watchdog_timeout_s: float = 60.0
@@ -141,6 +144,14 @@ class GatewayConfig:
                 f"Invalid reasoning_effort: {self.reasoning_effort!r}; "
                 f"expected one of {', '.join(sorted(REASONING_EFFORTS))} or null"
             )
+        if self.image_roles is not None and (
+            not isinstance(self.image_roles, dict)
+            or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in self.image_roles.items()
+            )
+        ):
+            raise ValueError(f"Invalid image_roles: {self.image_roles!r}")
         if self.thinking_policy is not None:
             policy = self.thinking_policy
             if not isinstance(policy, dict) or set(policy) - THINKING_POLICY_FIELDS:
@@ -753,6 +764,20 @@ def create_app(
             return JSONResponse(
                 status_code=501,
                 content={"error": {"message": "Image editing is unavailable in this runtime."}},
+            )
+        if not (cfg.image_roles or {}).get("vision"):
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "error": {
+                        "message": (
+                            "Image editing needs the `vision` role: this profile does not "
+                            "declare `[worker.image_roles].vision`, so sd-server runs "
+                            "without --llm_vision. Add it to the profile to enable "
+                            "/v1/images/edits; generation is unaffected."
+                        )
+                    }
+                },
             )
         return await _forward_image(gateway, request, "/v1/images/edits")
 

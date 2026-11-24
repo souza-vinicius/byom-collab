@@ -270,8 +270,13 @@ WORKER_FIELDS = frozenset(
 #: Papéis de imagem aceitos em `[worker.image_roles]`, cada um no formato
 #: `repo::pattern`. A flag do sd-server de cada papel está em
 #: `worker/build_vllm_command.py` e foi conferida na documentação da build
-#: fixada (`master-1106-532d2c1`).
-IMAGE_ROLES = ("diffusion", "vae", "text_encoder")
+#: fixada (`master-1106-532d2c1`): `--diffusion-model`, `--vae`, `--llm` e, para
+#: edição de imagem, `--llm_vision` (projetor do Qwen3-VL).
+#: `vision` é OPCIONAL: sem ele a geração funciona, a edição é recusada.
+IMAGE_ROLES = ("diffusion", "vae", "text_encoder", "vision")
+
+#: Papéis exigidos para gerar imagem. `vision` só é exigido em `/v1/images/edits`.
+REQUIRED_IMAGE_ROLES = ("diffusion", "vae", "text_encoder")
 
 PROFILE_FIELDS = frozenset(
     {

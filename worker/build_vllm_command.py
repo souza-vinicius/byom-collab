@@ -24,7 +24,14 @@ IMAGE_ROLE_FLAGS = {
     "diffusion": "--diffusion-model",
     "vae": "--vae",
     "text_encoder": "--llm",
+    # Confirmado na mesma tabela ("Model files") da build fixada: para edição de
+    # imagem com text encoder GGUF, `mmproj-...-F16.gguf` vai em `--llm_vision`.
+    "vision": "--llm_vision",
 }
+
+#: Papéis obrigatórios. `vision` é opcional: sem ele o servidor sobe e gera
+#: imagem; apenas `/v1/images/edits` é recusado pelo gateway.
+REQUIRED_IMAGE_ROLES = ("diffusion", "vae", "text_encoder")
 
 
 def build_args(cfg: dict) -> list[str]:
@@ -149,12 +156,13 @@ def build_image_args(cfg: dict) -> list[str]:
             "o manifest não registra image; declare [worker] image_roles "
             "(diffusion, vae, text_encoder) no perfil"
         )
-    missing = [role for role in IMAGE_ROLE_FLAGS if not image.get(role)]
+    missing = [role for role in REQUIRED_IMAGE_ROLES if not image.get(role)]
     if missing:
         raise _unsupported(f"o manifest não registra o papel {', '.join(missing)}")
     args = [server, "--model-dir", MODEL_DIR]
     for role, flag in IMAGE_ROLE_FLAGS.items():
-        args.extend([flag, str(image[role])])
+        if image.get(role):
+            args.extend([flag, str(image[role])])
     args.extend(["--listen-ip", "127.0.0.1", "--listen-port", str(cfg["vllm_port"])])
     return args
 
