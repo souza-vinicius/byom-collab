@@ -395,7 +395,10 @@ def _wait_ready(
         if (
             state is not None
             and state.daemon_pid
-            and not _pid_is_byom(state.daemon_pid, state.daemon_start_ticks)
+            and _pid_is_byom(
+                state.daemon_pid, state.daemon_start_ticks, expected_session or ""
+            )
+            is False
         ):
             raise TimeoutError(
                 f"o daemon local (pid {state.daemon_pid}) não existe mais; "
@@ -648,7 +651,7 @@ def _register_daemon(cfg: config.Config, state: config.State) -> None:
     pid = _start_daemon()
     ticks = config.process_start_ticks(pid)
     for _ in range(DAEMON_CONFIRM_TICKS):
-        if _pid_is_byom(pid, ticks):
+        if _pid_is_byom(pid, ticks) is True:
             break
         time.sleep(DAEMON_CONFIRM_INTERVAL_S)
     else:
@@ -930,29 +933,90 @@ DAEMON_CONFIRM_INTERVAL_S = 0.05
 TERMINATE_GRACE_S = 5.0
 
 
-def _pid_is_byom(pid: int, start_ticks: int | None) -> bool:
-    """True só quando o PID ainda é o processo que o byom registrou.
+def _has_proc() -> bool:
+    """True quando a plataforma expõe `/proc/self/stat` (Linux)."""
+    return Path("/proc/self/stat").exists()
 
-    Depois de um reboot o mesmo número pode pertencer a outro processo do
-    usuário: comparar o instante de início (`/proc/<pid>/stat`, campo 22) evita
-    matar o processo errado.
+
+def _process_argv(pid: int) -> list[str]:
+    """argv do processo: `/proc` quando existe, `ps -p <pid> -o command=` fora dele.
+
+    O macOS não publica `start_ticks`, então a identidade lá tem de vir do argv.
     """
+    if _has_proc():
+        return config.process_cmdline(pid).split()
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return proc.stdout.decode(errors="replace").split()
+
+
+def _has_sequence(argv: list[str], sequence: tuple[str, ...]) -> bool:
+    want = list(sequence)
+    size = len(want)
+    return any(argv[i : i + size] == want for i in range(len(argv) - size + 1))
+
+
+def _structural_kind(argv: list[str], session: str = "") -> str | None:
+    """Classifica o argv como processo do byom: "daemon", "watchdog" ou None.
+
+    Identidade ESTRUTURAL, não a palavra "byom" em qualquer posição: um processo
+    do usuário com "byom" no argv não pode ser confundido com o daemon.
+    """
+    if not argv:
+        return None
+    if _has_sequence(argv, ("-m", "byom", "_daemon")) or (
+        len(argv) >= 2 and Path(argv[0]).name == "byom" and argv[1] == "_daemon"
+    ):
+        return "daemon"
+    # `colab exec -s <sessão> -f .../watchdog.py`: a sessão está no argv.
+    if any(token.endswith("watchdog.py") for token in argv) and (
+        not session or session in argv
+    ):
+        return "watchdog"
+    return None
+
+
+def _pid_is_byom(pid: int, start_ticks: int | None, session: str = "") -> bool | None:
+    """True/False/None: é o processo registrado, não é, ou não dá para saber.
+
+    - Com `/proc`, o instante de início (`campo 22`) é a prova: depois de um
+      reboot o mesmo número pode pertencer a outro processo do usuário.
+    - State antigo sem start time: só aceita com identidade estrutural no argv.
+    - Sem `/proc` (macOS): a decisão vem do argv estrutural via `ps`. Quando
+      nem isso confirma, devolve None — o chamador NÃO sinaliza, limpa o campo
+      e pede que o usuário confira com `ps -p <pid> -o pid,command`.
+    """
+    if pid <= 0:
+        return False
     current = config.process_start_ticks(pid)
-    if current is None:
-        return False  # /proc ausente: o processo já morreu
-    if start_ticks is not None:
-        return current == start_ticks
-    # state.json antigo, sem start time: o cmdline é a única pista disponível.
-    return "byom" in config.process_cmdline(pid)
+    if current is not None:
+        if start_ticks is not None:
+            return current == start_ticks
+        return _structural_kind(_process_argv(pid), session) is not None
+    if _has_proc():
+        return False  # /proc existe e não leu o stat: o processo morreu
+    kind = _structural_kind(_process_argv(pid), session)
+    return None if kind is None else True
 
 
-def _wait_for_exit(pid: int, start_ticks: int | None, timeout_s: float) -> bool:
+def _wait_for_exit(
+    pid: int, start_ticks: int | None, timeout_s: float, session: str = ""
+) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if not _pid_is_byom(pid, start_ticks):
+        if _pid_is_byom(pid, start_ticks, session) is not True:
             return True
         time.sleep(0.1)
-    return not _pid_is_byom(pid, start_ticks)
+    return _pid_is_byom(pid, start_ticks, session) is not True
+
 
 
 def _clear_pid_fields(values: dict[str, int | None], expected_session: str) -> None:
@@ -976,10 +1040,23 @@ def _terminate_local(state: config.State) -> None:
     for label, pid, start_ticks in targets:
         if not pid:
             continue
-        if not _pid_is_byom(pid, start_ticks):
+        veredito = _pid_is_byom(pid, start_ticks, state.session)
+        if veredito is None:
+            # Sem start_ticks e sem estrutura reconhecível: não dá para provar
+            # que é o processo do byom, então nada é sinalizado.
+            _say(
+                f"  {label} pid {pid}: identidade não confirmada; nenhum sinal enviado. "
+                f"Confira com `ps -p {pid} -o pid,command`."
+            )
+            _clear_pid_fields(
+                {f"{label}_pid": None, f"{label}_start_ticks": None}, state.session
+            )
+            continue
+        if veredito is False:
             _say(
                 f"  {label} pid {pid} is not the byom process registered in state.json "
-                "(stale state after a reboot?); no signal sent"
+                f"(stale state after a reboot?); no signal sent. "
+                f"Check with `ps -p {pid} -o pid,command`."
             )
             _clear_pid_fields(
                 {f"{label}_pid": None, f"{label}_start_ticks": None}, state.session
@@ -992,7 +1069,7 @@ def _terminate_local(state: config.State) -> None:
         except OSError as exc:  # pragma: no cover - system-dependent
             _say(f"Warning: could not stop process {pid}: {exc}")
             continue
-        if _wait_for_exit(pid, start_ticks, TERMINATE_GRACE_S):
+        if _wait_for_exit(pid, start_ticks, TERMINATE_GRACE_S, state.session):
             continue
         _say(f"  {label} pid {pid} ignored SIGTERM for {int(TERMINATE_GRACE_S)}s; sending SIGKILL")
         try:
