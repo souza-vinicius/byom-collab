@@ -47,18 +47,19 @@ def _reject_jsonc(path: Path) -> Path:
     return path
 
 
-def resolve_config_path(explicit_path: Path | None = None) -> Path:
-    """Resolve the primary global OpenCode config file without editing project configs.
+def config_path(explicit_path: Path | None = None) -> Path:
+    """Resolve o arquivo global do OpenCode sem validar o formato.
 
-    `.json` tem precedência; se só existir `.jsonc`, o sync recusa com o caminho
-    e a forma de apontar outro arquivo, em vez de apagar os comentários.
+    Serve para exibir o caminho e o bloco manual na TUI: um `.jsonc` é um alvo
+    válido de instrução, mesmo que o sync automático se recuse a reescrevê-lo.
+    `.json` continua tendo precedência quando os dois existem.
     """
     if explicit_path is not None:
-        return _reject_jsonc(explicit_path.expanduser())
+        return explicit_path.expanduser()
 
     override = os.environ.get("OPENCODE_CONFIG")
     if override:
-        return _reject_jsonc(Path(override).expanduser())
+        return Path(override).expanduser()
 
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     if xdg_config_home:
@@ -69,13 +70,21 @@ def resolve_config_path(explicit_path: Path | None = None) -> Path:
         config_home = Path.home() / ".config"
 
     opencode_dir = config_home / "opencode"
-    # `.json` primeiro: é o único formato que o sync pode reescrever sem perder
-    # comentários. `.jsonc` só aparece para virar erro explicativo.
     for name in ("opencode.json", "opencode.jsonc"):
         candidate = opencode_dir / name
         if candidate.exists():
-            return _reject_jsonc(candidate)
+            return candidate
     return opencode_dir / "opencode.json"
+
+
+def resolve_config_path(explicit_path: Path | None = None) -> Path:
+    """Caminho para o sync automático: `.jsonc` é recusado sem ser tocado.
+
+    `.json` tem precedência; se só existir `.jsonc`, o sync recusa com o caminho
+    e a forma de apontar outro arquivo, em vez de apagar os comentários. A
+    leitura do caminho para instruções manuais usa `config_path`.
+    """
+    return _reject_jsonc(config_path(explicit_path))
 
 
 def sync_config(cfg: config.Config, explicit_path: Path | None = None) -> SyncResult:

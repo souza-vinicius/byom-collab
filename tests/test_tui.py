@@ -492,8 +492,9 @@ def test_aplicar_harness_automatico_opencode_e_dsh(isolated_home):
     assert tui._aplicar_harness_automatico(rec_err, "opencode", cfg) is False
     saida_err = rec_err.export_text(clear=False)
     assert "O que aconteceu:" in saida_err
-    assert "opencode.jsonc" in saida_err
+    assert "JSONC" in saida_err
     assert "Detalhes técnicos" in saida_err
+    assert jsonc.read_text(encoding="utf-8") == '{\n  // comentário\n  "mcp": {}\n}\n'
 
 
 def test_executor_etapas_mostra_spinner_tempo_e_dica():
@@ -798,3 +799,44 @@ def test_up_tui_recusa_quando_outro_up_esta_em_andamento(monkeypatch, isolated_h
     assert "em andamento" in exc.value.falha
     assert "não alterou nada" in exc.value.acao
     assert alocou is False
+
+
+def test_instrucoes_opencode_com_jsonc_mostram_bloco_manual(isolated_home):
+    """Com só `opencode.jsonc`, a tela mostra o bloco manual em vez de estourar."""
+    pasta = isolated_home / ".config" / "opencode"
+    pasta.mkdir(parents=True)
+    (pasta / "opencode.jsonc").write_text(
+        '{\n  // mantém\n  "model": "x"\n}\n', encoding="utf-8"
+    )
+
+    cfg = config.Config()
+    config.apply_profile(cfg, "inkling-2-mini-q4-gguf")
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    tui.renderizar_instrucoes_harness(rec, "opencode", cfg, tui.ler_estado_local())
+
+    saida = rec.export_text(clear=False)
+    assert "Configuração manual — OpenCode" in saida
+    assert "opencode.jsonc" in saida
+    assert "byom/inkling-2-mini-q4-gguf" in saida
+
+
+def test_harness_automatico_explica_jsonc_sem_tocar_no_arquivo(isolated_home):
+    """Escolher "automaticamente" num `.jsonc` explica e preserva o arquivo."""
+    pasta = isolated_home / ".config" / "opencode"
+    pasta.mkdir(parents=True)
+    jsonc = pasta / "opencode.jsonc"
+    original = '{\n  // mantém\n  "model": "x"\n}\n'
+    jsonc.write_text(original, encoding="utf-8")
+
+    cfg = config.Config()
+    config.apply_profile(cfg, "inkling-2-mini-q4-gguf")
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    assert tui._aplicar_harness_automatico(rec, "opencode", cfg) is False
+
+    saida = rec.export_text(clear=False)
+    assert "Não foi possível atualizar o arquivo do OpenCode automaticamente" in saida
+    assert "JSONC" in saida
+    assert "Copie o bloco JSON" in saida
+    assert jsonc.read_text(encoding="utf-8") == original

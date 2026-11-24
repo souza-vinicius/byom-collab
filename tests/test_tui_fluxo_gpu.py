@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from byom import catalog, config, tui
+from byom import catalog, cli, config, tui
 
 
 class _Pergunta:
@@ -235,3 +235,29 @@ def test_lista_de_modelos_permite_trocar_de_gpu_ou_voltar(monkeypatch, escolha, 
 
     assert tui._escolher_modelo_para_gpu(rec, tui.ler_estado_local(), "L4") == esperado
     assert not config.config_path().exists()
+
+
+def test_tela_harness_opencode_com_jsonc_mostra_manual_e_automatico(
+    monkeypatch, isolated_home
+):
+    """Só `.jsonc`: a tela mostra o bloco manual e o menu, sem erro interno.
+
+    O painel manual usava o resolvedor do sync, que levanta exceção para
+    `.jsonc`; a exceção subia como falha inesperada e a única saída era Enter.
+    """
+    pasta = isolated_home / ".config" / "opencode"
+    pasta.mkdir(parents=True)
+    (pasta / "opencode.jsonc").write_text(
+        '{\n  // mantém\n  "model": "x"\n}\n', encoding="utf-8"
+    )
+
+    capturadas = _roteirizar(monkeypatch, ["opencode", "menu"])
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    assert tui._executar_harness(rec, cli, tui.ler_estado_local()) == "menu"
+
+    saida = rec.export_text(clear=False)
+    assert "Configuração manual — OpenCode" in saida
+    assert "opencode.jsonc" in saida
+    titulos = [getattr(choice, "title", "") for choice in capturadas[1]]
+    assert any(t.startswith("Configurar automaticamente") for t in titulos)
