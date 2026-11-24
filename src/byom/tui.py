@@ -2317,6 +2317,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
     ]
 
     allocated = False
+    state: config.State | None = None
     name = cli._new_session_name()
     client = cli.remote.Remote(session=name, cfg=cfg)
     buf = io.StringIO()
@@ -2373,8 +2374,13 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                 dica="Carregando o modelo na GPU. Quando terminar, a API responde sozinha.",
             )
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                cli._register_daemon(state)
-                cli._wait_ready(cfg, cfg.bootstrap_timeout_min * 60, expected_session=state.session)
+                cli._register_daemon(cfg, state)
+                cli._wait_ready(
+                    cfg,
+                    cfg.bootstrap_timeout_min * 60,
+                    expected_session=state.session,
+                    state=state,
+                )
             exec_etapas.concluir(4, "API respondendo")
         except KeyboardInterrupt:
             exec_etapas.registrar_log(buf.getvalue())
@@ -2383,6 +2389,8 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                 # state.json e é idempotente para uma sessão inexistente.
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                     cli._stop_allocation(name)
+                    if state is not None:
+                        cli._terminate_local(state)
             else:
                 config.clear_state()
             raise
@@ -2395,6 +2403,8 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
             if allocated:
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                     cli._stop_allocation(name)
+                    if state is not None:
+                        cli._terminate_local(state)
             else:
                 config.clear_state()
             raise _ErroEtapa(

@@ -210,7 +210,8 @@ def test_up_uses_ssh_to_upload_and_run_worker(monkeypatch):
     install_fake(monkeypatch, FakeColab())
     monkeypatch.setattr(colab, "new", lambda name, gpu="": None)
     client = install_remote(monkeypatch, FakeRemote(session="s", cfg=config.Config()))
-    monkeypatch.setattr(cli, "_wait_ready", lambda cfg, timeout_s, *, expected_session=None: {})
+    monkeypatch.setattr(cli, "_wait_ready", lambda cfg, timeout_s, **kwargs: {})
+    monkeypatch.setattr(cli, "_register_daemon", lambda cfg, state: None)
     monkeypatch.setattr(cli, "_start_daemon", lambda: 9876)
 
     result = runner.invoke(cli.app, ["up"])
@@ -242,7 +243,8 @@ def test_up_passes_high_mem_to_colab(monkeypatch):
     monkeypatch.setattr(colab, "new", new)
     client = install_remote(monkeypatch, FakeRemote(session="s", cfg=cfg))
     client.hardware = "NVIDIA A100-SXM4-80GB"
-    monkeypatch.setattr(cli, "_wait_ready", lambda cfg, timeout_s, *, expected_session=None: {})
+    monkeypatch.setattr(cli, "_wait_ready", lambda cfg, timeout_s, **kwargs: {})
+    monkeypatch.setattr(cli, "_register_daemon", lambda cfg, state: None)
     monkeypatch.setattr(cli, "_start_daemon", lambda: 9876)
 
     result = runner.invoke(cli.app, ["up"])
@@ -473,6 +475,8 @@ def test_up_chega_a_worker_ready_com_o_status_do_daemon(monkeypatch):
     monkeypatch.setattr(colab, "new", lambda name, gpu="": None)
     install_remote(monkeypatch, FakeRemote(session="s", cfg=config.Config()))
     monkeypatch.setattr(cli, "_start_daemon", lambda: 9876)
+    # Daemon de mentira: o PID 9876 não existe, então a identidade é forjada.
+    monkeypatch.setattr(cli, "_pid_is_byom", lambda *args, **kwargs: True)
     respostas = iter(
         [
             {"session": "byom-x", "worker": {"state": "initializing"}, "tunnel": {}},

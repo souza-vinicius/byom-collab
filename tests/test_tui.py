@@ -301,7 +301,9 @@ def test_fluxo_simulado_completo_sem_chamadas_reais(monkeypatch, isolated_home):
     monkeypatch.setattr(cli, "_sync_external_configs", lambda cfg, oc, dc: None)
     monkeypatch.setattr(cli, "_bootstrap_worker", lambda cfg, st, cl: None)
     monkeypatch.setattr(cli, "_start_daemon", lambda: 99999)
-    monkeypatch.setattr(cli, "_wait_ready", lambda cfg, t, expected_session=None: {})
+    # Daemon de mentira: o PID 99999 não existe, então a identidade é forjada.
+    monkeypatch.setattr(cli, "_pid_is_byom", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_wait_ready", lambda cfg, t, **kwargs: {})
     monkeypatch.setattr(
         cli,
         "_daemon_status",
@@ -431,7 +433,9 @@ def test_up_tui_nao_configura_harness_automaticamente(monkeypatch, isolated_home
     )
     monkeypatch.setattr(cli, "_bootstrap_worker", lambda c, s, cl: None)
     monkeypatch.setattr(cli, "_start_daemon", lambda: 99999)
-    monkeypatch.setattr(cli, "_wait_ready", lambda c, t, expected_session=None: {})
+    # Daemon de mentira: o PID 99999 não existe, então a identidade é forjada.
+    monkeypatch.setattr(cli, "_pid_is_byom", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_wait_ready", lambda c, t, **kwargs: {})
 
     class FakeRemote:
         def __init__(self, session, cfg):

@@ -9,6 +9,7 @@ import os
 import secrets
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tarfile
@@ -378,26 +379,69 @@ def _wait_ready(
     timeout_s: float,
     *,
     expected_session: str | None = None,
+    state: config.State | None = None,
 ) -> dict:
-    """Wait for the gateway to validate the nonce and load the model."""
+    """Wait for the gateway to validate the nonce and load the model.
+
+    Falha rápido (em segundos, não no teto de `bootstrap_timeout_min`) quando não
+    há mais o que esperar: o daemon registrado morreu, o status parou de
+    responder ou o worker já se declarou indisponível por um motivo terminal
+    (túnel com falha permanente, watchdog desistente).
+    """
     deadline = time.monotonic() + timeout_s
     last = ""
+    silences = 0
     while time.monotonic() < deadline:
+        if (
+            state is not None
+            and state.daemon_pid
+            and not _pid_is_byom(state.daemon_pid, state.daemon_start_ticks)
+        ):
+            raise TimeoutError(
+                f"o daemon local (pid {state.daemon_pid}) não existe mais; "
+                f"a porta {cfg.proxy_port} pode estar ocupada — veja "
+                f"{config.config_dir() / 'logs' / 'daemon.log'}"
+            )
         payload = _daemon_status(cfg, expected_session=expected_session)
         if payload is not None:
+            silences = 0
             worker = payload.get("worker", {})
             if worker.get("state") == "ready":
                 return payload
+            tunnel = payload.get("tunnel") or {}
+            watchdog = payload.get("watchdog") or {}
+            motivos = [
+                str(valor)
+                for valor in (
+                    worker.get("error"),
+                    tunnel.get("last_error"),
+                    watchdog.get("last_error"),
+                )
+                if valor
+            ]
+            motivo = " | ".join(motivos) or "sem motivo informado"
+            if worker.get("state") == "unavailable" and (
+                tunnel.get("state") == "failed" or watchdog.get("state") == "gave_up"
+            ):
+                raise TimeoutError(f"worker indisponível: {motivo}")
             current = f"{worker.get('state')}: {worker.get('error') or 'waiting'}"
             if current != last:
                 _say(f"  Worker {current}")
                 last = current
         else:
+            silences += 1
+            if silences >= 3:
+                raise TimeoutError(
+                    f"o daemon local parou de responder em {silences} ciclos "
+                    f"(porta {cfg.proxy_port} ocupada ou processo encerrado); "
+                    f"veja {config.config_dir() / 'logs' / 'daemon.log'}"
+                )
             if last != "daemon":
                 _say("  Waiting for the local daemon to respond")
                 last = "daemon"
-        time.sleep(3)
+        time.sleep(READY_POLL_S)
     raise TimeoutError(f"Worker did not become ready within {int(timeout_s)}s")
+
 
 
 def _orphan_line(line: colab.SessionLine) -> str:
@@ -429,6 +473,31 @@ def _check_orphans() -> None:
     )
 
 
+def _port_free(port: int) -> bool:
+    """True quando ninguém está escutando em `127.0.0.1:<port>`."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _check_proxy_port(cfg: config.Config) -> None:
+    """Recusa alocar GPU quando a porta local do proxy já está ocupada.
+
+    Sem esta checagem o daemon morria no `uvicorn` (porta em uso) e o `up`
+    esperava o modelo por até `bootstrap_timeout_min` com o daemon morto.
+    """
+    if _port_free(cfg.proxy_port):
+        return
+    _die(
+        f"a porta {cfg.proxy_port} do proxy já está em uso por outro processo. "
+        "Encerre o processo que a ocupa (ou rode `byom down`) antes de alocar a GPU."
+    )
+
+
 def _prepare_session(
     cfg: config.Config, existing: config.State | None, force: bool
 ) -> None:
@@ -439,9 +508,11 @@ def _prepare_session(
         )
     if force and not _down(cfg):
         _die("Could not confirm shutdown; no new session was created")
+    _check_proxy_port(cfg)
     # Checked on both paths: a corrupted state file may leave a VM allocated
     # with no local record, and that VM keeps consuming compute units.
     _check_orphans()
+
 
 
 def _sync_external_configs(
@@ -566,19 +637,34 @@ def _bootstrap_worker(cfg: config.Config, state: config.State, client: remote.Re
         _say(f"  {lines[-1]}")
 
 
-def _register_daemon(state: config.State) -> None:
-    """Start the daemon and merge its PID and start time into the state.
+def _register_daemon(cfg: config.Config, state: config.State) -> None:
+    """Start the daemon, confirm it survived, and merge its PID into the state.
 
     The start time is read right after `Popen`: `execve` does not change it, so
-    it still identifies the daemon even before it announces itself.
+    it still identifies the daemon even before it announces itself. Se o filho
+    morrer (porta do proxy ocupada, por exemplo), o `up` aborta aqui em vez de
+    esperar o modelo por `bootstrap_timeout_min`.
     """
-    state.daemon_pid = _start_daemon()
-    state.daemon_start_ticks = config.process_start_ticks(state.daemon_pid)
+    pid = _start_daemon()
+    ticks = config.process_start_ticks(pid)
+    for _ in range(DAEMON_CONFIRM_TICKS):
+        if _pid_is_byom(pid, ticks):
+            break
+        time.sleep(DAEMON_CONFIRM_INTERVAL_S)
+    else:
+        raise RuntimeError(
+            f"o daemon local (pid {pid}) morreu logo após iniciar; a porta "
+            f"{cfg.proxy_port} do proxy provavelmente já está em uso — encerre o "
+            f"processo que a ocupa (veja {config.config_dir() / 'logs' / 'daemon.log'})"
+        )
+    state.daemon_pid = pid
+    state.daemon_start_ticks = ticks
     config.update_state(
         expected_session=state.session,
         daemon_pid=state.daemon_pid,
         daemon_start_ticks=state.daemon_start_ticks,
     )
+
 
 
 #: Expected failures that must tear down an allocated session. Programming
@@ -648,6 +734,7 @@ def _run_up_transaction(
     # connection alive to avoid competing for Colab's single `colab ssh` slot.
     client = remote.Remote(session=name, cfg=cfg)
     allocated = False
+    state: config.State | None = None
     try:
         _create_colab_session(cfg, name)
         allocated = True
@@ -657,15 +744,24 @@ def _run_up_transaction(
         _bootstrap_worker(cfg, state, client)
 
         client.stop()
-        _register_daemon(state)
+        _register_daemon(cfg, state)
 
         _say("Waiting for the model to become ready")
-        _wait_ready(cfg, cfg.bootstrap_timeout_min * 60, expected_session=state.session)
+        _wait_ready(
+            cfg,
+            cfg.bootstrap_timeout_min * 60,
+            expected_session=state.session,
+            state=state,
+        )
     except (KeyboardInterrupt, SystemExit):
         # Ctrl+C (or a nested command aborting) after the VM exists still has
         # to release it; the interruption is propagated after the cleanup.
         if allocated:
             _stop_allocation(name)
+            # O daemon local pode ter subido antes da falha: sem isto ele fica
+            # segurando a porta do proxy e o próximo `up` espera em vão.
+            if state is not None:
+                _terminate_local(state)
         else:
             config.clear_state()
         raise
@@ -675,6 +771,8 @@ def _run_up_transaction(
             # The session name is the only reliable handle here: `state.json`
             # may be unreadable by the time the failure unwinds.
             _stop_allocation(name)
+            if state is not None:
+                _terminate_local(state)
         else:
             config.clear_state()
         raise typer.Exit(1) from exc
@@ -818,6 +916,15 @@ def status() -> None:
 # ---------------------------------------------------------------------------
 # down
 # ---------------------------------------------------------------------------
+#: Intervalo entre checagens de `_wait_ready`. Falhas rápidas (daemon morto,
+#: status silencioso, worker indisponível) acontecem em segundos, não no teto de
+#: `bootstrap_timeout_min`; os testes encurtam este valor.
+READY_POLL_S = 3.0
+
+#: Confirmação de que o filho do daemon sobreviveu ao `Popen`: 20 x 0,05 s = 1 s.
+DAEMON_CONFIRM_TICKS = 20
+DAEMON_CONFIRM_INTERVAL_S = 0.05
+
 #: Espera entre SIGTERM e SIGKILL. O daemon fecha o túnel e o `AsyncClient`
 #: antes de sair; 5 s cobrem o caminho normal sem segurar o `down`.
 TERMINATE_GRACE_S = 5.0
