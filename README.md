@@ -143,14 +143,34 @@ caber na GPU declarada em `config.toml` (`byom models` exibe ambos).
 `byom models --gpu <ID>` usa o mesmo orçamento de contexto servido de `byom up`
 para filtrar a listagem; ele não altera a GPU declarada:
 
-| Modelo | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
-| :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| Inkling 2 Mini | llama.cpp | 2 bit (7,90 GiB) / 4 bit / 8 bit | 7,9 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | **T4** / A100 40 (q4 e q8) |
-| Qwen3.8 27B | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | A100 40 / A100 80 (256K) |
-| Qwen3.8 27B | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | L4 |
-| Gemma 4 | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
-| Muse Glimmer 30B | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
-| Qwen-Image-2.1 | image | INT8-ConvRot (12,07 GiB) / GGUF Q4_K (9,22 GiB) | 12,1 / 9,2 GiB | n/a | n/a | L4 / **T4** |
+| Modelo | Fornecedor | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
+| :--- | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
+| Inkling 2 Mini | Thinking Machines Lab | llama.cpp | 2 bit (7,90 GiB) / 4 bit / 8 bit — pesos Unsloth | 7,9 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | **T4** / A100 40 (q4 e q8) |
+| Inkling 2 Mini | Thinking Machines Lab | llama.cpp | AD-Q6_K / AD-Q4_K / AD-IQ2_XXS — pesos AtomicChat | 22,2 / 15,4 / 9,7 GiB | 1.000.000 | 131.072 / 32.768 / 16.384 | A100 40 / **L4** / **T4** |
+| Qwen3.8 27B | Qwen (Alibaba Cloud) | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | A100 40 / A100 80 (256K) |
+| Qwen3.8 27B | Qwen (Alibaba Cloud) | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | L4 |
+| Gemma 4 | Google DeepMind | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
+| Muse Glimmer 30B | Meta Superintelligence Lab | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
+| Qwen-Image-2.1 | Qwen (Alibaba Cloud) | image | INT8-ConvRot (12,07 GiB) / GGUF Q4_K (9,22 GiB) | 12,1 / 9,2 GiB | n/a | n/a | L4 / **T4** |
+
+**Fornecedor** é quem desenvolve o modelo; é dado do catálogo (`ModelEntry.provider`),
+com a fonte registrada em `catalog.PROVIDER_SOURCES` (URL + data) e conferida em
+2026-11-24. **Publicado por** (ou **Pacote**) é a org do repositório de onde o byom
+baixa os pesos — derivada em tempo de render do `model_repo`, do papel `diffusion`
+ou do `model` do vLLM, nunca fixada por perfil. É por isso que o mesmo Inkling 2
+Mini aparece com pesos Unsloth e com pesos AtomicChat: muda o publicador e a
+receita de quantização, não o modelo. `byom profiles` imprime as duas linhas
+(`Fornecedor:` e, quando divergem, `Pacote:`), `byom models --gpu <ID>` traz as
+duas colunas, e a TUI mostra o fornecedor na própria linha do perfil. Detalhes em
+[Model Provider and Weight Package](docs/provider.md).
+
+Os três perfis AD da AtomicChat usam o **mesmo** binário `b12611` dos perfis
+Unsloth: esses arquivos já estão no layout merged do PR #32694. Ficaram de fora
+`Inkling-2-Mini-Q4_K_M.gguf` (17,38 GB) e `Q5_K_M` (19,81 GB), que continuam no
+layout antigo do PR #32695 e **não carregam** em b12600+; o drafter DSpark
+(`dspark-Inkling-2-Mini-Q8_0.gguf`) exige um build do PR #32218 e também não tem
+perfil. O `AD-IQ2_XXS` serve 16K porque em 32K o KV estoura os 15 GiB da T4 —
+o motivo está em `Variant.context_reason`.
 
 Memória e GPU são conta, não estimativa de página: cada número vem dos bytes
 publicados no Hugging Face (conferidos em 2026-11-24) e o perfil declara a GPU
@@ -187,8 +207,12 @@ Notas dos perfis: Inkling 2 Mini usa o build mainline `b12611` do llama.cpp com
 os GGUFs de `Mainline_Support` (a extensão `.gguf_file` do repositório é
 renomeada para `.gguf` no download). Builds mainline anteriores perdem os scales
 NVFP4 por especialista na segunda e terceira passadas em loop e produzem saída
-incorreta. DSpark fica desativado: o suporte mainline ainda é um pull request
-aberto. Muse Glimmer usa o release fixado `b12649` do upstream.
+incorreta. Os perfis `inkling-2-mini-ad-*` usam o **mesmo** `b12611` porque os
+arquivos `AD-*` da AtomicChat já estão no layout merged do PR #32694 e o
+publicador exige `b12600` ou mais novo com `--jinja`; nenhum perfil usa
+`Q4_K_M`/`Q5_K_M`. DSpark fica desativado: o suporte mainline ainda é um pull
+request aberto (PR #32218), então o drafter não tem perfil. Muse Glimmer usa o
+release fixado `b12649` do upstream.
 Qwen3.8 mantém o perfil AWQ existente para vLLM e adiciona opções GGUF. Os
 perfis do Gemma 4 carregam uma chave explícita `thinking_policy` vinda do
 catálogo: o gateway adiciona `<|think|>` no início do system prompt (criando a
