@@ -145,17 +145,23 @@ para filtrar a listagem; ele não altera a GPU declarada:
 
 | Modelo | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| Inkling 2 Mini | llama.cpp | 2 bit / 4 bit (17,6 GB) / 8 bit | 11 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | L4 / A100 40 (q4 e q8) |
-| Qwen3.8 27B | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | L4 (A100 para 256K) |
+| Inkling 2 Mini | llama.cpp | 2 bit (7,90 GiB) / 4 bit / 8 bit | 7,9 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | **T4** / A100 40 (q4 e q8) |
+| Qwen3.8 27B | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | A100 40 / A100 80 (256K) |
 | Qwen3.8 27B | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | L4 |
-| Gemma 4 | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 a A100 |
+| Gemma 4 | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
 | Muse Glimmer 30B | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
-| Qwen-Image-2.1 | image | INT8-ConvRot / GGUF Q4_K_M | 20 / 12 GiB | n/a | n/a | L4 / T4 |
+| Qwen-Image-2.1 | image | INT8-ConvRot (12,07 GiB) / GGUF Q4_K (9,22 GiB) | 12,1 / 9,2 GiB | n/a | n/a | L4 / **T4** |
+
+Memória e GPU são conta, não estimativa de página: cada número vem dos bytes
+publicados no Hugging Face (conferidos em 2026-11-24) e o perfil declara a GPU
+onde `required + folga` cabe de verdade. A tabela com `required`, folga e margem
+de cada perfil está em [docs/log.md](docs/log.md#2026-11-24).
 
 A redução é dado estruturado, não texto solto: `src/byom/catalog.py` mantém
 `Variant.context_doc`, `Variant.context` e `PROFILE_CONTEXTS`, uma entrada por
-perfil com a GPU e o motivo (o cache KV cresce com o contexto; 2 GiB por 32K no
-orçamento). `byom models` mostra ambos os números; `byom profiles` e
+perfil com a GPU e o motivo (o cache KV cresce com o contexto: 2 GiB por 32K em
+f16, 1 GiB em fp8 — o orçamento usa o dtype que o runtime realmente pede no
+argv: `--kv-cache-dtype` nos perfis vLLM, f16 fixo nos llama-cpp). `byom models` mostra ambos os números; `byom profiles` e
 `byom configure` exibem o par documentado/servido com a justificativa. As
 checagens de compatibilidade continuam usando o contexto SERVIDO — o máximo
 documentado nunca é usado para alocar uma GPU incapaz de comportar o cache KV.
@@ -223,9 +229,10 @@ deles cabe em uma única GPU do Colab.
   adota os padrões documentados da API (25/1) conforme o briefing, não um valor
   inventado para o sd.cpp. `POST /v1/images/edits` usa multipart e mantém os
   padrões do servidor. A página documenta cerca de 120 s por imagem 1024x1024
-  em 25 passos numa Colab T4 de 15 GB; os dois perfis de imagem usam L4 porque o
-  custo total (pesos + encoder + VAE + runtime + folga obrigatória) não cabe nos
-  15 GiB utilizáveis da T4. A T4 não possui bf16, portanto o treino é recusado
+  em 25 passos numa Colab T4 de 15 GB; o perfil GGUF Q4_K usa **T4** (9,22 GiB
+  de pesos + 1,08 do projetor de visão + 2 de runtime + 1 de folga = 13,30, que
+  cabe nos 15 GiB utilizáveis) e o perfil INT8-ConvRot fica em L4 (12,07 + 1,08
+  + 2 + 1 = 16,15 > 15). A T4 não possui bf16, portanto o treino é recusado
   pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior. O nome do
   asset Linux fixado não declara seu backend; verifique o uso de GPU na primeira
   execução real. Se for um build de CPU, compile a partir da tag fixada com
@@ -423,7 +430,16 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   com `HostKeyAlias=byom-<sessão>`: `accept-new` na primeira conexão da sessão e
   `yes` nas seguintes, sem `/dev/null`. Se a chave mudar, o comando falha com
   "chave de host da sessão mudou; possível MITM — rode `byom down` e `byom up`"
-  em vez de cair para `no`. O arquivo é removido no `down`.
+  em vez de cair para `no`. O arquivo é removido **quando a desalocação é
+  confirmada pelo Colab** (no `down` com confirmação ou no encerramento da
+  sessão pelo `up --force`); se o `down` não confirma, o pin fica para a
+  próxima tentativa.
+* **Túnel.** `Address already in use`, `cannot listen`, `Permission denied` e
+  `Host key verification failed` são fatais: o status fica `failed` com o motivo
+  e o daemon segue de pé para `byom status` mostrar a causa. Falhas transitórias
+  usam backoff exponencial e param depois de 10 ciclos sem health OK; o contador
+  de falhas **consecutivas** só zera na reconexão que chega a health OK (um
+  health isolado no `_monitor` não zera), enquanto `reconnects` é cumulativo.
 * **OpenCode V1/V2.** A configuração gerada permanece no formato V1 (`plugin`,
   `provider`, `npm`, `options`, `tool_call`), que o guia de migração V2 indica
   ser normalizado em memória. O plugin de descoberta é fixado em

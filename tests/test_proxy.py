@@ -505,7 +505,9 @@ def proxy_app_with_transport(runtime: Runtime, transport: httpx.AsyncBaseTranspo
 
 
 def test_upstream_mudo_vira_503_no_deadline(monkeypatch):
-    monkeypatch.setattr("byom.proxy.FIRST_BYTE_DEADLINE_S", 0.1)
+    """Non-stream tem prazo longo: o 503 é `byom_deadline`, não culpa do túnel."""
+    monkeypatch.setattr("byom.proxy.NONSTREAM_DEADLINE_S", 0.1)
+    monkeypatch.setattr("byom.proxy.FIRST_BYTE_DEADLINE_S", 30.0)
     transport = SilentTransport()
     app = proxy_app_with_transport(make_runtime(), transport)
 
@@ -515,11 +517,127 @@ def test_upstream_mudo_vira_503_no_deadline(monkeypatch):
         elapsed = time.monotonic() - started
 
     assert response.status_code == 503
-    assert response.json()["error"]["type"] == "byom_tunnel"
-    assert "first byte" in response.json()["error"]["message"]
+    assert response.json()["error"]["type"] == "byom_deadline"
+    assert "prazo de primeira resposta" in response.json()["error"]["message"]
+    assert "tunnel" not in response.json()["error"]["message"].lower()
     assert elapsed < 10
     # O cliente não pode ficar aberto depois do deadline.
     assert transport.closed == 1
+
+
+def test_stream_mudo_vira_503_no_deadline_de_primeiro_byte(monkeypatch):
+    """Com `stream: true` o prazo curto de primeiro byte continua valendo."""
+    monkeypatch.setattr("byom.proxy.FIRST_BYTE_DEADLINE_S", 0.1)
+    monkeypatch.setattr("byom.proxy.NONSTREAM_DEADLINE_S", 30.0)
+    transport = SilentTransport()
+    app = proxy_app_with_transport(make_runtime(), transport)
+
+    with TestClient(app, base_url=PROXY_BASE_URL) as client:
+        started = time.monotonic()
+        response = client.post(
+            "/v1/chat/completions", json={"model": "m", "stream": True}
+        )
+        elapsed = time.monotonic() - started
+
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "byom_deadline"
+    assert elapsed < 10
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "esperado"),
+    [
+        ("chat/completions", b'{"stream": true}', True),
+        ("chat/completions", b'{"stream": false}', False),
+        ("chat/completions", b'{"model": "m"}', False),
+        ("completions", b'{"stream": true}', True),
+        ("completions", b'{"prompt": "x"}', False),
+        # Imagem e listagem de modelos nunca são stream, mesmo com a chave.
+        ("images/generations", b'{"prompt": "x", "stream": true}', False),
+        ("images/edits", b'{"prompt": "x", "stream": true}', False),
+        ("models", b'{"stream": true}', False),
+        # Corpo ilegível: fallback conservador (prazo longo).
+        ("chat/completions", b"not json", False),
+        ("chat/completions", b"[1, 2]", False),
+        ("chat/completions", b'{"stream": "true"}', False),
+    ],
+)
+def test_is_stream_request(path, body, esperado):
+    assert proxy._is_stream_request(path, body) is esperado
+
+
+def test_imagem_non_stream_espera_a_geracao_terminar():
+    """Geração de imagem não é stream: o upstream lento não pode virar 503."""
+    demora = 0.2
+
+    class Lenta(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            async def corpo():
+                await asyncio.sleep(demora)
+                yield json.dumps({"data": [{"url": "http://x/1.png"}]}).encode()
+
+            return httpx.Response(
+                200, content=corpo(), headers={"content-type": "application/json"}
+            )
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr("byom.proxy.NONSTREAM_DEADLINE_S", 5.0)
+    patch.setattr("byom.proxy.FIRST_BYTE_DEADLINE_S", 0.01)
+    try:
+        app = proxy_app_with_transport(make_runtime(), Lenta())
+        with TestClient(app, base_url=PROXY_BASE_URL) as client:
+            response = client.post("/v1/images/generations", json={"prompt": "cat"})
+    finally:
+        patch.undo()
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["url"].endswith(".png")
+
+
+def test_chat_stream_false_espera_a_geracao_terminar():
+    demora = 0.2
+
+    class Lenta(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            async def corpo():
+                await asyncio.sleep(demora)
+                yield json.dumps({"choices": [{"message": {"content": "oi"}}]}).encode()
+
+            return httpx.Response(
+                200, content=corpo(), headers={"content-type": "application/json"}
+            )
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr("byom.proxy.NONSTREAM_DEADLINE_S", 5.0)
+    patch.setattr("byom.proxy.FIRST_BYTE_DEADLINE_S", 0.01)
+    try:
+        app = proxy_app_with_transport(make_runtime(), Lenta())
+        with TestClient(app, base_url=PROXY_BASE_URL) as client:
+            response = client.post(
+                "/v1/chat/completions", json={"model": "m", "stream": False}
+            )
+    finally:
+        patch.undo()
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "oi"
+
+
+def test_chat_stream_true_sobrevive_com_headers_imediatos():
+    transport = sse_transport([b"data: {\"a\": 1}\n\n", b"data: [DONE]\n\n"])
+    app = proxy_app_with_transport(make_runtime(), transport)
+
+    with (
+        TestClient(app, base_url=PROXY_BASE_URL) as client,
+        client.stream(
+            "POST", "/v1/chat/completions", json={"model": "m", "stream": True}
+        ) as response,
+    ):
+        corpo = b"".join(response.iter_raw())
+
+    assert response.status_code == 200
+    assert b"data: [DONE]" in corpo
+
 
 
 async def test_cancelamento_durante_send_fecha_o_async_client():

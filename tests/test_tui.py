@@ -301,7 +301,9 @@ def test_fluxo_simulado_completo_sem_chamadas_reais(monkeypatch, isolated_home):
     monkeypatch.setattr(cli, "_sync_external_configs", lambda cfg, oc, dc: None)
     monkeypatch.setattr(cli, "_bootstrap_worker", lambda cfg, st, cl: None)
     monkeypatch.setattr(cli, "_start_daemon", lambda: 99999)
-    monkeypatch.setattr(cli, "_wait_ready", lambda cfg, t, expected_session=None: {})
+    # Daemon de mentira: o PID 99999 não existe, então a identidade é forjada.
+    monkeypatch.setattr(cli, "_pid_is_byom", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_wait_ready", lambda cfg, t, **kwargs: {})
     monkeypatch.setattr(
         cli,
         "_daemon_status",
@@ -431,7 +433,9 @@ def test_up_tui_nao_configura_harness_automaticamente(monkeypatch, isolated_home
     )
     monkeypatch.setattr(cli, "_bootstrap_worker", lambda c, s, cl: None)
     monkeypatch.setattr(cli, "_start_daemon", lambda: 99999)
-    monkeypatch.setattr(cli, "_wait_ready", lambda c, t, expected_session=None: {})
+    # Daemon de mentira: o PID 99999 não existe, então a identidade é forjada.
+    monkeypatch.setattr(cli, "_pid_is_byom", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_wait_ready", lambda c, t, **kwargs: {})
 
     class FakeRemote:
         def __init__(self, session, cfg):
@@ -479,7 +483,9 @@ def test_aplicar_harness_automatico_opencode_e_dsh(isolated_home):
     assert tui._aplicar_harness_automatico(rec_ok, "dsh", cfg) is True
     assert (isolated_home / ".dsh" / "profiles" / "desktop" / "cordis.patch.yml").is_file()
 
-    # Caso opencode.jsonc possua comentários: não sobrescreve e orienta configuração manual
+    # Só existe opencode.jsonc (com comentários): não sobrescreve e orienta o
+    # caminho .json em vez de apagar comentários.
+    (isolated_home / ".config" / "opencode" / "opencode.json").unlink()
     jsonc = isolated_home / ".config" / "opencode" / "opencode.jsonc"
     jsonc.write_text('{\n  // comentário\n  "mcp": {}\n}\n', encoding="utf-8")
     rec_err = tui.criar_console(width=100, height=30, record=True)
@@ -790,5 +796,5 @@ def test_up_tui_recusa_quando_outro_up_esta_em_andamento(monkeypatch, isolated_h
         tui._executar_up(rec, cli, tui.ler_estado_local())
 
     assert "em andamento" in exc.value.falha
-    assert "não alocou GPU" in exc.value.acao
+    assert "não alterou nada" in exc.value.acao
     assert alocou is False

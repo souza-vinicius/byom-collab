@@ -55,15 +55,85 @@ def test_compatibilidade_com_margem_e_alternativas():
     assert com_folga.fits
     assert com_folga.headroom_gib == pytest.approx(2.0)
 
-    # Em L4 a alternativa q2 (com visão) ainda cabe em 65.536; em T4 nenhuma cabe.
+    # Em L4 a alternativa q2 (com visão) ainda cabe em 65.536; em T4 só o q2 cabe.
     assert "inkling-2-mini:q2" in no_limite.alternatives
     too_big = catalog.check_fit("inkling-2-mini", "q4", "T4", 32768)
     assert not too_big.fits
     assert "GiB" in too_big.reason
-    assert too_big.alternatives == ()
+    assert too_big.alternatives == ("inkling-2-mini:q2",)
 
     with pytest.raises(ValueError):
         catalog.check_fit("modelo-inexistente", "q4", "L4")
+
+
+def test_kv_cache_respeita_o_dtype_do_runtime():
+    """32K de KV custam 2 GiB em f16 e 1 GiB em fp8."""
+    assert catalog.kv_cache_gib(32768, kv_cache_dtype="f16", runtime="vllm") == 2.0
+    assert catalog.kv_cache_gib(32768, kv_cache_dtype="fp8", runtime="vllm") == 1.0
+    assert catalog.kv_cache_gib(262144, kv_cache_dtype="fp8", runtime="vllm") == 8.0
+    # llama-cpp não recebe --cache-type-k/-v: fica em f16 mesmo se declarar fp8.
+    assert catalog.kv_cache_gib(32768, kv_cache_dtype="fp8", runtime="llama-cpp") == 2.0
+    assert catalog.effective_kv_dtype("llama-cpp", "fp8") == "f16"
+    assert catalog.effective_kv_dtype("vllm", "fp8") == "fp8"
+    # Sem declaração em vllm, o argv do worker usa o default fp8.
+    assert catalog.effective_kv_dtype("vllm", None) == "fp8"
+
+
+def test_perfil_vllm_256k_conta_o_kv_em_fp8():
+    """17 pesos + 2 runtime + 8 de KV fp8 = 27 GiB (antes: 35 com KV f16)."""
+    fit = catalog.check_fit(
+        "qwen3.8-27b-awq", "q4-awq", "A100-80", 262144, kv_cache_dtype="fp8"
+    )
+
+    assert fit.required_gib == pytest.approx(27.0)
+    assert fit.fits
+    em_f16 = catalog.check_fit(
+        "qwen3.8-27b-awq", "q4-awq", "A100-80", 262144, kv_cache_dtype="f16"
+    )
+    assert em_f16.required_gib == pytest.approx(35.0)
+
+
+def test_perfil_llama_cpp_conta_o_kv_que_o_argv_usa():
+    """llama-cpp cobra f16 e o argv não emite flag de KV: os dois batem."""
+    import importlib.util
+
+    from byom import cli
+
+    fit = catalog.check_fit("qwen3.8-27b-gguf", "q4", "L4", 32768)
+    variante = catalog.variant_by_id("qwen3.8-27b-gguf", "q4")
+    assert fit.required_gib == pytest.approx(
+        variante.memory_gib + variante.vision_gib + catalog.RUNTIME_RESERVE_GIB + 2.0
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        "byom_build_command_kv", cli._worker_dir() / "build_vllm_command.py"
+    )
+    assert spec is not None and spec.loader is not None
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    cfg = {
+        "runtime": "llama-cpp",
+        "model": "x",
+        "served_model_name": "x",
+        "max_model_len": 32768,
+        "vllm_port": 8000,
+        "worker": {"main_pattern": "x.gguf"},
+    }
+    argv = modulo.build_llama_args(cfg)
+    assert "--kv-cache-dtype" not in argv
+    assert "--cache-type-k" not in argv and "--cache-type-v" not in argv
+
+
+def test_igualdade_no_limite_nao_aprova():
+    """14,0 de required + 1,0 de folga = 15,0 de 15,0 não é aprovação."""
+    fit = catalog.check_fit("gemma-4", "e2b-q4", "T4", 131_072)
+    assert fit.required_gib == pytest.approx(14.0)
+    assert fit.headroom_gib == pytest.approx(1.0)
+    assert fit.required_gib + fit.headroom_gib == pytest.approx(fit.available_gib)
+    assert fit.fits is False
+    assert "margem" in fit.reason
+    # Uma GPU com folga de verdade continua aprovando o mesmo contexto.
+    assert catalog.check_fit("gemma-4", "e2b-q4", "L4", 131_072).fits is True
 
 
 def test_folga_nomeada_e_proporcional_ao_vram():

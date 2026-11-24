@@ -9,11 +9,13 @@ import os
 import secrets
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +24,17 @@ from typing import Annotated, NoReturn
 import httpx
 import typer
 
-from . import catalog, colab, config, dsh, llm_chat, opencode, remote
+from . import (
+    catalog,
+    colab,
+    config,
+    dsh,
+    harness_state,
+    llm_chat,
+    mensagens,
+    opencode,
+    remote,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -75,6 +87,7 @@ WORKER_FILES = (
     "run_runtime.sh",
     "run_gateway.sh",
     "requirements.txt",
+    "requirements.lock",
     "gateway.py",
     "watchdog.py",
 )
@@ -304,6 +317,7 @@ def _build_worker_tar(cfg: config.Config, state: config.State, dest: Path) -> No
             "reasoning_effort": cfg.reasoning_effort,
             "thinking_policy": asdict(model_entry.thinking) if model_entry.thinking else None,
             "generation_defaults": dict(model_entry.generation_defaults) or None,
+            "image_roles": dict(worker_settings.get("image_roles") or {}) or None,
             "idle_timeout_min": cfg.idle_timeout_min,
             "max_job_min": cfg.max_job_min,
             "watchdog_timeout_s": cfg.watchdog_timeout_s,
@@ -378,26 +392,72 @@ def _wait_ready(
     timeout_s: float,
     *,
     expected_session: str | None = None,
+    state: config.State | None = None,
 ) -> dict:
-    """Wait for the gateway to validate the nonce and load the model."""
+    """Wait for the gateway to validate the nonce and load the model.
+
+    Falha rápido (em segundos, não no teto de `bootstrap_timeout_min`) quando não
+    há mais o que esperar: o daemon registrado morreu, o status parou de
+    responder ou o worker já se declarou indisponível por um motivo terminal
+    (túnel com falha permanente, watchdog desistente).
+    """
     deadline = time.monotonic() + timeout_s
     last = ""
+    silences = 0
     while time.monotonic() < deadline:
+        if (
+            state is not None
+            and state.daemon_pid
+            and _pid_is_byom(
+                state.daemon_pid, state.daemon_start_ticks, expected_session or ""
+            )
+            is False
+        ):
+            raise TimeoutError(
+                f"o daemon local (pid {state.daemon_pid}) não existe mais; "
+                f"a porta {cfg.proxy_port} pode estar ocupada — veja "
+                f"{config.config_dir() / 'logs' / 'daemon.log'}"
+            )
         payload = _daemon_status(cfg, expected_session=expected_session)
         if payload is not None:
+            silences = 0
             worker = payload.get("worker", {})
             if worker.get("state") == "ready":
                 return payload
+            tunnel = payload.get("tunnel") or {}
+            watchdog = payload.get("watchdog") or {}
+            motivos = [
+                str(valor)
+                for valor in (
+                    worker.get("error"),
+                    tunnel.get("last_error"),
+                    watchdog.get("last_error"),
+                )
+                if valor
+            ]
+            motivo = " | ".join(motivos) or "sem motivo informado"
+            if worker.get("state") == "unavailable" and (
+                tunnel.get("state") == "failed" or watchdog.get("state") == "gave_up"
+            ):
+                raise TimeoutError(f"worker indisponível: {motivo}")
             current = f"{worker.get('state')}: {worker.get('error') or 'waiting'}"
             if current != last:
                 _say(f"  Worker {current}")
                 last = current
         else:
+            silences += 1
+            if silences >= 3:
+                raise TimeoutError(
+                    f"o daemon local parou de responder em {silences} ciclos "
+                    f"(porta {cfg.proxy_port} ocupada ou processo encerrado); "
+                    f"veja {config.config_dir() / 'logs' / 'daemon.log'}"
+                )
             if last != "daemon":
                 _say("  Waiting for the local daemon to respond")
                 last = "daemon"
-        time.sleep(3)
+        time.sleep(READY_POLL_S)
     raise TimeoutError(f"Worker did not become ready within {int(timeout_s)}s")
+
 
 
 def _orphan_line(line: colab.SessionLine) -> str:
@@ -423,9 +483,34 @@ def _check_orphans() -> None:
         return
     lines = "\n".join(_orphan_line(line) for line in orphans)
     _die(
-        "Sessions still allocated with no record in this byom:\n"
+        f"Sessions still allocated with {mensagens.MARCADOR_SEM_REGISTRO}:\n"
         f"{lines}\n"
         "Stop them as shown above (or with `byom down`) before allocating again."
+    )
+
+
+def _port_free(port: int) -> bool:
+    """True quando ninguém está escutando em `127.0.0.1:<port>`."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _check_proxy_port(cfg: config.Config) -> None:
+    """Recusa alocar GPU quando a porta local do proxy já está ocupada.
+
+    Sem esta checagem o daemon morria no `uvicorn` (porta em uso) e o `up`
+    esperava o modelo por até `bootstrap_timeout_min` com o daemon morto.
+    """
+    if _port_free(cfg.proxy_port):
+        return
+    _die(
+        f"a porta {cfg.proxy_port} do proxy já está em uso por outro processo. "
+        "Encerre o processo que a ocupa (ou rode `byom down`) antes de alocar a GPU."
     )
 
 
@@ -439,15 +524,24 @@ def _prepare_session(
         )
     if force and not _down(cfg):
         _die("Could not confirm shutdown; no new session was created")
+    _check_proxy_port(cfg)
     # Checked on both paths: a corrupted state file may leave a VM allocated
     # with no local record, and that VM keeps consuming compute units.
     _check_orphans()
 
 
+
 def _sync_external_configs(
     cfg: config.Config, opencode_config: Path | None, dsh_config: Path | None
 ) -> None:
-    """Merge agent configs before allocating the GPU."""
+    """Merge agent configs before allocating the GPU.
+
+    Antes de sobrescrever, guarda em `harness_state.json` o modelo padrão que
+    cada harness tinha: é o que o `down` devolve depois.
+    """
+    anteriores = harness_state.capture(opencode_config, dsh_config)
+    if anteriores:
+        harness_state.save(anteriores)
     try:
         opencode_result = opencode.sync_config(cfg, opencode_config)
     except opencode.OpenCodeConfigError as exc:
@@ -500,7 +594,7 @@ def _enrich_endpoint(state: config.State) -> None:
         return
     state.endpoint = line.endpoint
     try:
-        config.update_state(endpoint=line.endpoint)
+        config.update_state(endpoint=line.endpoint, expected_session=state.session)
     except config.StateFileError:  # pragma: no cover - a corrida exigiria escrita externa
         return
 
@@ -528,9 +622,15 @@ def _stop_allocation(name: str) -> bool:
         _say("Unknown: could not confirm deallocation")
         _say("  The VM may still be consuming compute units; run `byom down`")
         return False
-    config.clear_state()
+    try:
+        config.clear_state(expected_session=name)
+    except config.StateFileError as exc:
+        # Alguém registrou outra sessão no meio do caminho: o state alheio fica.
+        _say(f"Warning: {exc}")
+        return False
     # O pin da chave de host vale por sessão: a próxima sessão é outra VM.
     remote.forget_session_host_key(name)
+    _restore_harness(_say)
     _say("Session stopped (confirmed by Colab)")
     return True
 
@@ -561,17 +661,34 @@ def _bootstrap_worker(cfg: config.Config, state: config.State, client: remote.Re
         _say(f"  {lines[-1]}")
 
 
-def _register_daemon(state: config.State) -> None:
-    """Start the daemon and merge its PID and start time into the state.
+def _register_daemon(cfg: config.Config, state: config.State) -> None:
+    """Start the daemon, confirm it survived, and merge its PID into the state.
 
     The start time is read right after `Popen`: `execve` does not change it, so
-    it still identifies the daemon even before it announces itself.
+    it still identifies the daemon even before it announces itself. Se o filho
+    morrer (porta do proxy ocupada, por exemplo), o `up` aborta aqui em vez de
+    esperar o modelo por `bootstrap_timeout_min`.
     """
-    state.daemon_pid = _start_daemon()
-    state.daemon_start_ticks = config.process_start_ticks(state.daemon_pid)
+    pid = _start_daemon()
+    ticks = config.process_start_ticks(pid)
+    for _ in range(DAEMON_CONFIRM_TICKS):
+        if _pid_is_byom(pid, ticks) is True:
+            break
+        time.sleep(DAEMON_CONFIRM_INTERVAL_S)
+    else:
+        raise RuntimeError(
+            f"o daemon local (pid {pid}) morreu logo após iniciar; a porta "
+            f"{cfg.proxy_port} do proxy provavelmente já está em uso — encerre o "
+            f"processo que a ocupa (veja {config.config_dir() / 'logs' / 'daemon.log'})"
+        )
+    state.daemon_pid = pid
+    state.daemon_start_ticks = ticks
     config.update_state(
-        daemon_pid=state.daemon_pid, daemon_start_ticks=state.daemon_start_ticks
+        expected_session=state.session,
+        daemon_pid=state.daemon_pid,
+        daemon_start_ticks=state.daemon_start_ticks,
     )
+
 
 
 #: Expected failures that must tear down an allocated session. Programming
@@ -641,6 +758,7 @@ def _run_up_transaction(
     # connection alive to avoid competing for Colab's single `colab ssh` slot.
     client = remote.Remote(session=name, cfg=cfg)
     allocated = False
+    state: config.State | None = None
     try:
         _create_colab_session(cfg, name)
         allocated = True
@@ -650,15 +768,24 @@ def _run_up_transaction(
         _bootstrap_worker(cfg, state, client)
 
         client.stop()
-        _register_daemon(state)
+        _register_daemon(cfg, state)
 
         _say("Waiting for the model to become ready")
-        _wait_ready(cfg, cfg.bootstrap_timeout_min * 60, expected_session=state.session)
+        _wait_ready(
+            cfg,
+            cfg.bootstrap_timeout_min * 60,
+            expected_session=state.session,
+            state=state,
+        )
     except (KeyboardInterrupt, SystemExit):
         # Ctrl+C (or a nested command aborting) after the VM exists still has
         # to release it; the interruption is propagated after the cleanup.
         if allocated:
             _stop_allocation(name)
+            # O daemon local pode ter subido antes da falha: sem isto ele fica
+            # segurando a porta do proxy e o próximo `up` espera em vão.
+            if state is not None:
+                _terminate_local(state)
         else:
             config.clear_state()
         raise
@@ -668,6 +795,8 @@ def _run_up_transaction(
             # The session name is the only reliable handle here: `state.json`
             # may be unreadable by the time the failure unwinds.
             _stop_allocation(name)
+            if state is not None:
+                _terminate_local(state)
         else:
             config.clear_state()
         raise typer.Exit(1) from exc
@@ -752,6 +881,11 @@ def status() -> None:
             _say(f"Warning: {state_error}")
         else:
             _say("No active session.")
+        if harness_state.load() is None and cfg.profile:
+            _say(
+                "Warning: no harness record to restore; OpenCode/dsh may still point to "
+                "this byom endpoint (127.0.0.1)."
+            )
         raise typer.Exit(0)
 
     _say(f"Session: {state.session}  (created at {state.created_at})")
@@ -811,41 +945,116 @@ def status() -> None:
 # ---------------------------------------------------------------------------
 # down
 # ---------------------------------------------------------------------------
+#: Intervalo entre checagens de `_wait_ready`. Falhas rápidas (daemon morto,
+#: status silencioso, worker indisponível) acontecem em segundos, não no teto de
+#: `bootstrap_timeout_min`; os testes encurtam este valor.
+READY_POLL_S = 3.0
+
+#: Confirmação de que o filho do daemon sobreviveu ao `Popen`: 20 x 0,05 s = 1 s.
+DAEMON_CONFIRM_TICKS = 20
+DAEMON_CONFIRM_INTERVAL_S = 0.05
+
 #: Espera entre SIGTERM e SIGKILL. O daemon fecha o túnel e o `AsyncClient`
 #: antes de sair; 5 s cobrem o caminho normal sem segurar o `down`.
 TERMINATE_GRACE_S = 5.0
 
 
-def _pid_is_byom(pid: int, start_ticks: int | None) -> bool:
-    """True só quando o PID ainda é o processo que o byom registrou.
+def _has_proc() -> bool:
+    """True quando a plataforma expõe `/proc/self/stat` (Linux)."""
+    return Path("/proc/self/stat").exists()
 
-    Depois de um reboot o mesmo número pode pertencer a outro processo do
-    usuário: comparar o instante de início (`/proc/<pid>/stat`, campo 22) evita
-    matar o processo errado.
+
+def _process_argv(pid: int) -> list[str]:
+    """argv do processo: `/proc` quando existe, `ps -p <pid> -o command=` fora dele.
+
+    O macOS não publica `start_ticks`, então a identidade lá tem de vir do argv.
     """
+    if _has_proc():
+        return config.process_cmdline(pid).split()
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return proc.stdout.decode(errors="replace").split()
+
+
+def _has_sequence(argv: list[str], sequence: tuple[str, ...]) -> bool:
+    want = list(sequence)
+    size = len(want)
+    return any(argv[i : i + size] == want for i in range(len(argv) - size + 1))
+
+
+def _structural_kind(argv: list[str], session: str = "") -> str | None:
+    """Classifica o argv como processo do byom: "daemon", "watchdog" ou None.
+
+    Identidade ESTRUTURAL, não a palavra "byom" em qualquer posição: um processo
+    do usuário com "byom" no argv não pode ser confundido com o daemon.
+    """
+    if not argv:
+        return None
+    if _has_sequence(argv, ("-m", "byom", "_daemon")) or (
+        len(argv) >= 2 and Path(argv[0]).name == "byom" and argv[1] == "_daemon"
+    ):
+        return "daemon"
+    # `colab exec -s <sessão> -f .../watchdog.py`: a sessão está no argv.
+    if any(token.endswith("watchdog.py") for token in argv) and (
+        not session or session in argv
+    ):
+        return "watchdog"
+    return None
+
+
+def _pid_is_byom(pid: int, start_ticks: int | None, session: str = "") -> bool | None:
+    """True/False/None: é o processo registrado, não é, ou não dá para saber.
+
+    - Com `/proc`, o instante de início (`campo 22`) é a prova: depois de um
+      reboot o mesmo número pode pertencer a outro processo do usuário.
+    - State antigo sem start time: só aceita com identidade estrutural no argv.
+    - Sem `/proc` (macOS): a decisão vem do argv estrutural via `ps`. Quando
+      nem isso confirma, devolve None — o chamador NÃO sinaliza, limpa o campo
+      e pede que o usuário confira com `ps -p <pid> -o pid,command`.
+    """
+    if pid <= 0:
+        return False
     current = config.process_start_ticks(pid)
-    if current is None:
-        return False  # /proc ausente: o processo já morreu
-    if start_ticks is not None:
-        return current == start_ticks
-    # state.json antigo, sem start time: o cmdline é a única pista disponível.
-    return "byom" in config.process_cmdline(pid)
+    if current is not None:
+        if start_ticks is not None:
+            return current == start_ticks
+        return _structural_kind(_process_argv(pid), session) is not None
+    if _has_proc():
+        return False  # /proc existe e não leu o stat: o processo morreu
+    kind = _structural_kind(_process_argv(pid), session)
+    return None if kind is None else True
 
 
-def _wait_for_exit(pid: int, start_ticks: int | None, timeout_s: float) -> bool:
+def _wait_for_exit(
+    pid: int, start_ticks: int | None, timeout_s: float, session: str = ""
+) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if not _pid_is_byom(pid, start_ticks):
+        if _pid_is_byom(pid, start_ticks, session) is not True:
             return True
         time.sleep(0.1)
-    return not _pid_is_byom(pid, start_ticks)
+    return _pid_is_byom(pid, start_ticks, session) is not True
 
 
-def _clear_pid_fields(values: dict[str, int | None]) -> None:
+
+def _clear_pid_fields(values: dict[str, int | None], expected_session: str) -> None:
+    """Limpa campos de PID só no state da própria sessão.
+
+    `StateFileError` aqui significa que o `state.json` atual é de outra sessão
+    (ou desapareceu): não é meu registro para editar.
+    """
     try:
-        config.update_state(**values)
+        config.update_state(expected_session=expected_session, **values)
     except (config.StateFileError, OSError):
-        return  # state.json já removido: nada a limpar
+        return
 
 
 def _terminate_local(state: config.State) -> None:
@@ -857,12 +1066,27 @@ def _terminate_local(state: config.State) -> None:
     for label, pid, start_ticks in targets:
         if not pid:
             continue
-        if not _pid_is_byom(pid, start_ticks):
+        veredito = _pid_is_byom(pid, start_ticks, state.session)
+        if veredito is None:
+            # Sem start_ticks e sem estrutura reconhecível: não dá para provar
+            # que é o processo do byom, então nada é sinalizado.
+            _say(
+                f"  {label} pid {pid}: identidade não confirmada; nenhum sinal enviado. "
+                f"Confira com `ps -p {pid} -o pid,command`."
+            )
+            _clear_pid_fields(
+                {f"{label}_pid": None, f"{label}_start_ticks": None}, state.session
+            )
+            continue
+        if veredito is False:
             _say(
                 f"  {label} pid {pid} is not the byom process registered in state.json "
-                "(stale state after a reboot?); no signal sent"
+                f"(stale state after a reboot?); no signal sent. "
+                f"Check with `ps -p {pid} -o pid,command`."
             )
-            _clear_pid_fields({f"{label}_pid": None, f"{label}_start_ticks": None})
+            _clear_pid_fields(
+                {f"{label}_pid": None, f"{label}_start_ticks": None}, state.session
+            )
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -871,13 +1095,27 @@ def _terminate_local(state: config.State) -> None:
         except OSError as exc:  # pragma: no cover - system-dependent
             _say(f"Warning: could not stop process {pid}: {exc}")
             continue
-        if _wait_for_exit(pid, start_ticks, TERMINATE_GRACE_S):
+        if _wait_for_exit(pid, start_ticks, TERMINATE_GRACE_S, state.session):
             continue
         _say(f"  {label} pid {pid} ignored SIGTERM for {int(TERMINATE_GRACE_S)}s; sending SIGKILL")
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError as exc:  # pragma: no cover - system-dependent
             _say(f"Warning: could not kill process {pid}: {exc}")
+
+
+def _restore_harness(say: Callable[[str], None]) -> None:
+    """Devolve ao OpenCode/dsh o modelo padrão anterior ou avisa que não há registro."""
+    restaurados, falha = harness_state.restore()
+    if restaurados:
+        say(f"Harness config restored: {', '.join(restaurados)}")
+    if falha:
+        say(f"Warning: could not restore harness config ({falha})")
+    if not restaurados and not falha:
+        say(
+            "Warning: nothing recorded to restore; the harness default may still point "
+            "to this byom endpoint (run `byom up` then `byom down`, or fix it by hand)"
+        )
 
 
 def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
@@ -915,8 +1153,13 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
     remote.Remote(session=state.session, cfg=cfg).stop()
 
     if confirmed:
-        config.clear_state()
+        try:
+            config.clear_state(expected_session=state.session)
+        except config.StateFileError as exc:
+            say(f"Warning: {exc}")
+            return False
         remote.forget_session_host_key(state.session)
+        _restore_harness(say)
         say("Stopped (confirmed by Colab)")
     else:
         say("Unknown: could not confirm deallocation")
@@ -929,7 +1172,14 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
 def down() -> None:
     """Stop the session and verify the result with Colab."""
     cfg = _load_config_or_die()
-    if not _down(cfg):
+    # Mesmo lock do `up`: um `down` lento não pode apagar o state de uma sessão
+    # que outro processo acabou de criar.
+    try:
+        with config.up_lock(holder="down"):
+            confirmed = _down(cfg)
+    except config.ConfigError as exc:
+        _die(str(exc))
+    if not confirmed:
         raise typer.Exit(1)
 
 

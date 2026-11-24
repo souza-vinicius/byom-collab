@@ -51,9 +51,22 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 #: quieto entre eventos, e um read timeout mataria a geração no meio.
 PROXY_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0)
 
-#: Deadline do primeiro byte. Cobre a VM pausada pelo Colab: o `send` espera os
-#: headers e, sem prazo, o request penduraria para sempre.
+#: Deadline do primeiro byte de uma resposta em STREAM. Cobre a VM pausada pelo
+#: Colab: o `send` espera os headers e, sem prazo, o request penduraria para
+#: sempre. Em SSE o primeiro byte chega no começo da geração, então 60 s bastam.
 FIRST_BYTE_DEADLINE_S = 60.0
+
+#: Deadline do primeiro byte de uma resposta NON-STREAM. Aqui os headers só
+#: chegam no fim: o gateway faz `await post(...)` e devolve `JSONResponse`
+#: (`worker/gateway.py:_forward_image`), então o prazo precisa cobrir a geração
+#: inteira. 10 min é teto de paciência local; o limite real de trabalho é
+#: `max_job_min` no worker, que recusa o job antes disso.
+NONSTREAM_DEADLINE_S = 600.0
+
+#: Caminhos que aceitam `"stream": true` no corpo. `/v1/images/*` e
+#: `/v1/models` nunca são stream, qualquer que seja o corpo.
+STREAM_CAPABLE_PATHS = frozenset({"chat/completions", "completions"})
+
 
 
 @dataclass
@@ -237,7 +250,8 @@ def create_app(
                 status_code=503,
                 content={"error": {"message": reason, "type": "byom_unavailable"}},
             )
-        return await _forward(runtime, make_client(), url, request)
+        return await _forward(runtime, make_client(), url, request, path)
+
 
     return app
 
@@ -325,13 +339,39 @@ def _forward_headers(request: Request) -> dict[str, str]:
     return headers
 
 
+def _is_stream_request(path: str, body: bytes) -> bool:
+    """A resposta é SSE? Decide o prazo ANTES de enviar a requisição.
+
+    Em non-stream os headers só chegam no fim da geração (`_forward_image` faz
+    `await post(...)` e devolve `JSONResponse`), então aplicar 60 s ali
+    descartaria trabalho de GPU já feito. O fallback é conservador: corpo
+    ilegível, `stream` que não é `true` ou caminho que não aceita stream usam o
+    prazo longo.
+    """
+    normalized = path.strip("/")
+    if normalized.startswith("v1/"):
+        normalized = normalized[len("v1/") :]
+    if normalized not in STREAM_CAPABLE_PATHS:
+        return False
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return payload.get("stream") is True
+
+
 async def _forward(
     runtime: Runtime,
     client: httpx.AsyncClient,
     url: httpx.URL,
     request: Request,
+    path: str = "",
 ) -> Any:
     body = await request.body()
+    is_stream = _is_stream_request(path, body)
+    deadline = FIRST_BYTE_DEADLINE_S if is_stream else NONSTREAM_DEADLINE_S
     upstream = client.build_request(
         request.method, url, content=body, headers=_forward_headers(request)
     )
@@ -341,15 +381,14 @@ async def _forward(
     try:
         try:
             response = await asyncio.wait_for(
-                client.send(upstream, stream=True), FIRST_BYTE_DEADLINE_S
+                client.send(upstream, stream=True), deadline
             )
         except TimeoutError:
             # `asyncio.TimeoutError` é `TimeoutError` desde o Python 3.11.
-            return _tunnel_unavailable(
-                f"Gateway did not send a first byte within {int(FIRST_BYTE_DEADLINE_S)}s"
-            )
+            return _deadline_expired(deadline)
         except httpx.HTTPError as exc:
             return _tunnel_unavailable(f"Tunnel unavailable: {exc}")
+
 
         if response.status_code != 200:
             payload = await response.aread()
@@ -388,3 +427,25 @@ def _tunnel_unavailable(message: str) -> JSONResponse:
         status_code=503,
         content={"error": {"message": message, "type": "byom_tunnel"}},
     )
+
+
+def _deadline_expired(seconds: float) -> JSONResponse:
+    """503 por prazo de primeira resposta — distinto de falha do túnel.
+
+    Culpar o túnel aqui mandava o usuário depurar SSH quando a causa é uma
+    geração longa em non-stream ou o gateway parado.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "message": (
+                    f"o gateway não respondeu em {int(seconds)}s "
+                    "(prazo de primeira resposta); a geração pode seguir na GPU — "
+                    "confira `byom status` antes de repetir o pedido"
+                ),
+                "type": "byom_deadline",
+            }
+        },
+    )
+

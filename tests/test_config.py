@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -34,13 +38,15 @@ def test_round_trip_do_config():
     assert loaded == cfg
 
 
-def test_chaves_desconhecidas_sao_ignoradas():
+def test_chaves_desconhecidas_sao_ignoradas(capsys):
     path = config.config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('model = "x"\nchave_nova = 1\n', encoding="utf-8")
     cfg = config.load_config()
     assert cfg.model == "x"
     assert not hasattr(cfg, "chave_nova")
+    # Aviso no stderr: não é mais silencioso.
+    assert "chave_nova" in capsys.readouterr().err
 
 
 def test_estado_ausente():
@@ -250,3 +256,226 @@ def test_state_valida_start_ticks_positivos():
             setattr(quebrado, campo, valor)
             with pytest.raises(config.StateFileError):
                 config.validate_state(quebrado)
+
+
+# -- 5.5: max_model_len não pode passar do contexto do catálogo ----------------
+def test_max_model_len_acima_do_catalogo_e_recusado_na_carga():
+    """400.000 num perfil de 256K não pode carregar em silêncio."""
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'profile = "qwen3.8-27b-256k"\nmax_model_len = 400000\n', encoding="utf-8"
+    )
+
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_config()
+
+    mensagem = str(excinfo.value)
+    assert "400000" in mensagem
+    assert "262144" in mensagem
+    assert "qwen3.8-27b-awq:q4-awq" in mensagem
+
+
+def test_max_model_len_igual_ao_catalogo_e_aceito():
+    cfg = config.Config(max_model_len=262_144, profile="qwen3.8-27b-256k")
+    config.validate_context_limit(cfg, "qwen3.8-27b-awq", "q4-awq")
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(config.dumps_config(cfg), encoding="utf-8")
+    assert config.load_config().max_model_len == 262_144
+
+
+def test_validacao_de_contexto_ignora_variante_sem_contexto_documentado():
+    """Imagem não tem janela autoregressiva: sentinela 1 não é limitada."""
+    cfg = config.Config(max_model_len=1, profile="qwen-image-2.1-q4km")
+    config.validate_context_limit(cfg, "qwen-image-2.1", "q4km")
+    assert catalog.context_limit("qwen-image-2.1", "q4km") == 0
+
+
+def test_perfis_embarcados_respeitam_o_contexto_do_catalogo():
+    for profile in config.available_profiles():
+        if not profile.catalog_model:
+            continue
+        limite = catalog.context_limit(profile.catalog_model, profile.catalog_variant)
+        assert not limite or profile.settings["max_model_len"] <= limite, profile.id
+
+
+# -- 5.8: escrita atômica preserva symlink e não cruza sistemas de arquivos ---
+def test_atomic_write_preserva_symlink_de_dotfile(tmp_path):
+    real = tmp_path / "dotfiles" / "config.toml"
+    real.parent.mkdir()
+    real.write_text("antigo\n", encoding="utf-8")
+    real.chmod(0o640)
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+
+    config.atomic_write_text(link, "novo\n")
+
+    assert link.is_symlink(), "o link do dotfile não pode virar arquivo comum"
+    assert os.readlink(link) == str(real)
+    assert real.read_text(encoding="utf-8") == "novo\n"
+    assert stat.S_IMODE(real.stat().st_mode) == 0o640
+
+
+def test_atomic_write_cria_tmp_no_diretorio_real_do_alvo(tmp_path, monkeypatch):
+    real = tmp_path / "dotfiles" / "arquivo.txt"
+    real.parent.mkdir()
+    real.write_text("x", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+    vistos: list[str] = []
+    original = tempfile.mkstemp
+
+    def fake_mkstemp(*args, **kwargs):
+        vistos.append(kwargs.get("dir"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(config.tempfile, "mkstemp", fake_mkstemp)
+
+    config.atomic_write_text(link, "y")
+
+    assert vistos == [str(real.parent)]
+
+
+def test_atomic_write_em_alvo_de_outro_sistema_de_arquivos(tmp_path):
+    """Link para outro FS não pode falhar com EXDEV."""
+    outro = Path("/dev/shm")
+    if not outro.is_dir() or not os.access(outro, os.W_OK):
+        pytest.skip("/dev/shm indisponível neste ambiente")
+    try:
+        pasta = Path(tempfile.mkdtemp(dir=str(outro)))
+    except OSError:  # pragma: no cover - ambiente sem tmpfs gravável
+        pytest.skip("sem tmpfs gravável para simular outro FS")
+    try:
+        if os.stat(pasta).st_dev == os.stat(tmp_path).st_dev:
+            pytest.skip("/dev/shm está no mesmo dispositivo")
+        alvo = pasta / "config.toml"
+        alvo.write_text("antigo\n", encoding="utf-8")
+        link = tmp_path / "config.toml"
+        link.symlink_to(alvo)
+
+        config.atomic_write_text(link, "novo\n")
+
+        assert alvo.read_text(encoding="utf-8") == "novo\n"
+        assert link.is_symlink()
+    finally:
+        for item in pasta.iterdir():
+            item.unlink()
+        pasta.rmdir()
+
+
+# -- 5.10: chave desconhecida é avisada e preservada, não apagada ------------
+def test_round_trip_preserva_chaves_desconhecidas(capsys):
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'model = "x"\nmax_model_len = 16384\nchave_nova = 1\n'
+        'outra = "valor"\nlista = ["a", "b"]\n',
+        encoding="utf-8",
+    )
+    cfg = config.load_config()
+    aviso = capsys.readouterr().err
+    assert "chave_nova, lista, outra" in aviso
+    assert "preservadas" in aviso
+
+    cfg.proxy_port = 4123
+    config.save_config(cfg)
+    texto = path.read_text(encoding="utf-8")
+
+    assert 'chave_nova = 1' in texto
+    assert 'outra = "valor"' in texto
+    assert 'lista = ["a", "b"]' in texto
+    assert "proxy_port = 4123" in texto
+    # E o round-trip continua estável: recarregar não perde nada.
+    recarregado = config.load_config()
+    assert recarregado.proxy_port == 4123
+    assert 'chave_nova = 1' in config.dumps_config(recarregado)
+
+
+def test_chave_desconhecida_em_tabela_recusa_a_gravacao():
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('model = "x"\n[custom]\nflag = true\n', encoding="utf-8")
+    cfg = config.load_config()
+
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.save_config(cfg)
+
+    assert "custom" in str(excinfo.value)
+    assert "não reescreve tabelas" in str(excinfo.value)
+
+
+def test_tui_mostra_o_aviso_das_chaves_desconhecidas():
+    from byom import tui
+
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('model = "x"\nchave_nova = 1\n', encoding="utf-8")
+    con = tui.criar_console(width=100, height=30, record=True)
+
+    cfg = tui._carregar_config(con)
+
+    assert cfg.model == "x"
+    assert "chave_nova" in con.export_text()
+
+
+# -- 5.11: BYOM_HOME/XDG_CONFIG_HOME têm de ser absolutos --------------------
+def test_byom_home_relativo_e_recusado(monkeypatch):
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("BYOM_HOME", "relativo/byom")
+
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.byom_home()
+
+    assert "BYOM_HOME" in str(excinfo.value)
+    assert "absolute" in str(excinfo.value)
+
+
+def test_byom_home_com_til_e_guardado_absoluto(monkeypatch, isolated_home):
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("BYOM_HOME", "~/byom-home")
+
+    caminho = config.byom_home()
+
+    assert caminho.is_absolute()
+    assert caminho == isolated_home / "byom-home"
+
+
+def test_xdg_relativo_e_recusado(monkeypatch):
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("BYOM_HOME", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relativo")
+
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.byom_home(platform="linux")
+
+    assert "XDG_CONFIG_HOME" in str(excinfo.value)
+
+
+def test_byom_home_vazio_e_recusado(monkeypatch):
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("BYOM_HOME", "   ")
+
+    with pytest.raises(config.ConfigError):
+        config.byom_home()
+
+
+def test_uninstall_recusa_alvo_relativo():
+    from byom import llm_chat
+
+    with pytest.raises(llm_chat.LlmChatError) as excinfo:
+        llm_chat.validate_safe_byom_dir(Path("byom-relativo"))
+
+    assert "relativo" in str(excinfo.value)
+
+
+def test_byom_home_symlink_nao_e_resolvido(tmp_path, monkeypatch):
+    """O `uninstall` recusa symlink; resolver aqui esconderia esse caso."""
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    alvo = tmp_path / "real"
+    alvo.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(alvo)
+    monkeypatch.setenv("BYOM_HOME", str(link))
+
+    assert config.byom_home().is_symlink()

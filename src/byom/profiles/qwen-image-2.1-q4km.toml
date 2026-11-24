@@ -1,5 +1,5 @@
-name = "Qwen-Image-2.1 (GGUF Q4_K_M)"
-description = "Geração de imagens em L4 (24 GB); POST /v1/images/generations, não chat."
+name = "Qwen-Image-2.1 (GGUF Q4_K)"
+description = "Geração de imagens em T4 (15 GiB); POST /v1/images/generations, não chat."
 opencode_output_limit = 8192
 runtime = "image"
 catalog_model = "qwen-image-2.1"
@@ -9,13 +9,12 @@ catalog_variant = "q4km"
 model = "qwen-image-2.1"
 served_model_name = "qwen-image-2.1"
 max_model_len = 1
-gpu = "L4"
+gpu = "T4"
 gpu_high_mem = false
 vllm_spec = "vllm"
 vllm_enforce_eager = false
 vllm_language_model_only = true
 gpu_memory_utilization = 0.92
-kv_cache_dtype = "fp8"
 enable_auto_tool_choice = false
 tool_call_parser = ""
 reasoning_parser = ""
@@ -24,12 +23,16 @@ reasoning_parser = ""
 binary_url = "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1106-532d2c1/sd-master-532d2c1-bin-Linux-Ubuntu-26.04-x86_64.zip"
 binary_sha256 = "0a02f7f51feb0691128f60cf6ff1c686ec23089561cfe7c3b72645f446646e13"
 binary_dir = "sdcpp"
-model_patterns = ["leejet/Qwen-Image-2.1-GGUF::*Q4_K_M*", "Comfy-Org/Qwen-Image-2.1::vae/qwen_image_2.1_vae_bf16.safetensors", "Qwen/Qwen3-VL-8B-Instruct-GGUF::Qwen3VL-8B-Instruct-Q4_K_M.gguf"]
+model_patterns = ["leejet/Qwen-Image-2.1-GGUF::qwen_image_2.1-Q4_K.gguf", "Comfy-Org/Qwen-Image-2.1::vae/qwen_image_2.1_vae_bf16.safetensors", "Qwen/Qwen3-VL-8B-Instruct-GGUF::Qwen3VL-8B-Instruct-Q4_K_M.gguf", "Qwen/Qwen3-VL-8B-Instruct-GGUF::mmproj-Qwen3VL-8B-Instruct-F16.gguf"]
 
 # Papéis explícitos: cada um vira uma flag do sd-server confirmada em
 # https://github.com/leejet/stable-diffusion.cpp/blob/532d2c1/docs/models/qwen_image_2.1.md
 # (consultado em 2026-11-24): --diffusion-model, --vae, --llm.
+# O repo publica `qwen_image_2.1-Q4_K.gguf` (4,20 GB); NÃO existe Q4_K_M.
 [worker.image_roles]
-diffusion = "leejet/Qwen-Image-2.1-GGUF::*Q4_K_M*"
+diffusion = "leejet/Qwen-Image-2.1-GGUF::qwen_image_2.1-Q4_K.gguf"
 vae = "Comfy-Org/Qwen-Image-2.1::vae/qwen_image_2.1_vae_bf16.safetensors"
 text_encoder = "Qwen/Qwen3-VL-8B-Instruct-GGUF::Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+# Edição de imagem: a doc da build fixada exige o projetor de visão do
+# Qwen3-VL em `--llm_vision` (mmproj-Qwen3VL-8B-Instruct-F16.gguf, 1,16 GB).
+vision = "Qwen/Qwen3-VL-8B-Instruct-GGUF::mmproj-Qwen3VL-8B-Instruct-F16.gguf"

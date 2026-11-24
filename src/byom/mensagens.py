@@ -16,6 +16,10 @@ TITULO = "byom"
 SUBTITULO = "Modelos de código no Google Colab com API local em 127.0.0.1:4000/v1"
 
 SOMENTE_LEITURA = "Somente leitura: não altera arquivos locais nem aloca GPU."
+NADA_GRAVADO_ATE_CONFIRMAR = "Nada é gravado até você confirmar."
+#: Trecho da mensagem da CLI (`cli._check_orphans`) que indica sessão alocada sem
+#: registro local. A TUI compara com esta constante em vez de repetir o texto.
+MARCADOR_SEM_REGISTRO = "no record in this byom"
 AVISO_CANCELAR = "Pressione Ctrl+C a qualquer momento para cancelar."
 ENTER_VOLTAR = "Pressione Enter para voltar ao menu..."
 DICA_PAGINACAO = (

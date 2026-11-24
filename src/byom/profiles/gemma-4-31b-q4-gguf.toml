@@ -15,7 +15,6 @@ vllm_spec = "vllm"
 vllm_enforce_eager = false
 vllm_language_model_only = true
 gpu_memory_utilization = 0.92
-kv_cache_dtype = "fp8"
 enable_auto_tool_choice = true
 tool_call_parser = "qwen3_coder"
 reasoning_parser = "qwen3"

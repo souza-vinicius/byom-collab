@@ -30,17 +30,29 @@ _INFO_PREFIX = "[colab]"
 #: Prefix that `cli._new_session_name` gives every session created by byom.
 BYOM_SESSION_PREFIX = "byom-"
 
-SESSION_LINE_RE = re.compile(
-    r"""
-    ^\[(?P<name>[^\]]*)\]\s+
-    (?P<endpoint>\S+)\s+\|\s+
-    Hardware:\s*(?P<hardware>[^|]*?)\s+\|\s+
-    Shape:\s*(?P<shape>[^|]*?)\s+\|\s+
-    Variant:\s*(?P<variant>[^|]*?)
-    (?:\s+\|\s+Status:\s*(?P<status>.*?))?
-    \s*$
-    """,
-    re.VERBOSE,
+#: Escape ANSI (cores, cursor) que a CLI emite quando o stdout é um TTY.
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+#: Campos rotulados de uma linha de sessão. A linha é reconhecida por ter
+#: `Hardware:`, `Shape:` e `Variant:` em qualquer posição — não por começar com
+#: `[` —, e colunas extras (antes ou depois) são ignoradas em vez de derrubar o
+#: parse: tratá-las como "sem sessão" fazia `down` apagar o state com a VM viva.
+FIELD_RE = re.compile(r"(?P<key>[A-Za-z][A-Za-z _-]*?):\s*(?P<value>[^|]*)")
+REQUIRED_FIELDS = ("hardware", "shape", "variant")
+
+#: Palavras aceitas num cabeçalho de tabela (stdout sem sessões).
+HEADER_WORDS = frozenset(
+    {
+        "name",
+        "id",
+        "session",
+        "sessions",
+        "endpoint",
+        "hardware",
+        "shape",
+        "variant",
+        "status",
+    }
 )
 
 
@@ -134,34 +146,92 @@ def version() -> str:
     return _text(run(["version"])).strip()
 
 
+def strip_ansi(text: str) -> str:
+    """Remove escapes ANSI: a CLI colore a saída quando o stdout é um TTY."""
+    return ANSI_RE.sub("", text)
+
+
+def _split_prefix(prefix: str) -> tuple[str | None, str]:
+    """Separa `[nome] endpoint` (ou só o endpoint) que antecede os campos."""
+    cleaned = prefix.strip().rstrip("|").strip()
+    if cleaned.startswith("[") and "]" in cleaned:
+        end = cleaned.index("]")
+        name = cleaned[1:end].strip()
+        endpoint = cleaned[end + 1 :].strip()
+        return (None if name in {"", "?"} else name), endpoint
+    parts = cleaned.split()
+    return None, (parts[-1] if parts else "")
+
+
+def _parse_line(line: str) -> SessionLine | None:
+    """Interpreta uma linha de sessão; None quando ela não é uma."""
+    marker = line.find("Hardware:")
+    if marker <= 0:
+        return None
+    fields = {
+        match.group("key").strip().lower(): match.group("value").strip()
+        for match in FIELD_RE.finditer(line[marker:])
+    }
+    if any(key not in fields for key in REQUIRED_FIELDS):
+        return None
+    name, endpoint = _split_prefix(line[:marker])
+    if not endpoint:
+        return None
+    return SessionLine(
+        name=name,
+        endpoint=endpoint,
+        hardware=fields["hardware"],
+        shape=fields["shape"],
+        variant=fields["variant"],
+        status=fields.get("status") or None,
+    )
+
+
 def parse_session_lines(text: str) -> list[SessionLine]:
     """Extract session lines, ignoring informational messages."""
     lines: list[SessionLine] = []
-    for raw in text.splitlines():
+    for raw in strip_ansi(text).splitlines():
         line = raw.strip()
         if not line or line.startswith(_INFO_PREFIX):
             continue
-        match = SESSION_LINE_RE.match(line)
-        if not match:
-            continue
-        groups = match.groupdict()
-        name = groups["name"].strip()
-        lines.append(
-            SessionLine(
-                name=None if name in {"", "?"} else name,
-                endpoint=groups["endpoint"],
-                hardware=groups["hardware"],
-                shape=groups["shape"],
-                variant=groups["variant"],
-                status=(groups["status"] or "").strip() or None,
-            )
-        )
+        parsed = _parse_line(line)
+        if parsed is not None:
+            lines.append(parsed)
     return lines
 
 
+def _is_recognized_empty_line(line: str) -> bool:
+    """Linha que não é sessão mas também não indica formato desconhecido."""
+    if line.startswith(_INFO_PREFIX):
+        return True
+    if line.endswith(":"):
+        return True  # cabeçalho de tabela ("Sessions:")
+    words = [word.strip("[]") for word in re.split(r"[\s|]+", line.lower()) if word.strip("[]")]
+    return bool(words) and all(word in HEADER_WORDS for word in words)
+
+
 def sessions() -> list[SessionLine]:
-    """Return active backend sessions from `colab sessions`."""
-    return parse_session_lines(_text(run(["sessions"])))
+    """Return active backend sessions from `colab sessions`.
+
+    Distinguir "não há sessão" de "não entendi a saída" é obrigatório: tratar
+    formato desconhecido como lista vazia fazia `down` apagar o state com a VM
+    viva e `up` alocar uma segunda GPU.
+    """
+    text = strip_ansi(_text(run(["sessions"])))
+    found = parse_session_lines(text)
+    if found:
+        return found
+    leftover = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not _is_recognized_empty_line(line.strip())
+    ]
+    if leftover:
+        raise ColabCliError(
+            f"formato do `colab sessions` não reconhecido: {leftover[0]}"
+        )
+    return []
+
 
 
 def status_line(name: str) -> SessionLine | None:

@@ -348,7 +348,7 @@ def _carregar_config(con: Console) -> config.Config:
     diz o caminho e a ação, e o menu volta a ser desenhado.
     """
     try:
-        return config.load_config()
+        cfg = config.load_config()
     except config.ConfigError as exc:
         raise _ErroEtapa(
             "O arquivo config.toml não pôde ser lido.",
@@ -357,6 +357,11 @@ def _carregar_config(con: Console) -> config.Config:
             "Nada foi alocado nem gravado nesta tentativa.",
             detalhes_tecnicos=str(exc),
         ) from exc
+    aviso = config.describe_extra_keys(cfg)
+    if aviso:
+        # Chave desconhecida não some em silêncio: é preservada, mas o usuário vê.
+        con.print(f"[yellow]{aviso}[/yellow]")
+    return cfg
 
 
 def _ler_estado_ou_erro() -> tuple[config.State | None, str]:
@@ -447,28 +452,44 @@ def _opcoes_down() -> dict[str, Any]:
 
 
 @contextlib.contextmanager
-def _guarda_up() -> Iterator[None]:
-    """Segura o lock exclusivo de `up` e traduz a recusa em painel de erro.
+def _guarda_transacao(holder: str) -> Iterator[None]:
+    """Segura o lock exclusivo de `up`/`down` e traduz a recusa em painel.
 
-    Dois `up` simultâneos alocariam duas GPUs. O lock da CLI é o mesmo arquivo,
-    então a TUI não abre uma janela própria de alocação concorrente.
+    Dois `up` simultâneos alocariam duas GPUs; um `down` lento apagaria o state
+    de uma sessão nova. O lock da CLI é o mesmo arquivo, então a TUI não abre
+    uma janela própria de alocação concorrente.
     """
     try:
-        with config.up_lock():
+        with config.up_lock(holder):
             yield
     except config.ConfigError as exc:
+        motivo = (
+            "Já existe um `byom up` em andamento."
+            if holder == "up"
+            else "Um `up`/`down` está em andamento."
+        )
         raise _ErroEtapa(
-            "Já existe um `byom up` em andamento.",
+            motivo,
             str(exc),
-            "Aguarde a outra execução terminar; esta tentativa não alocou GPU.",
+            "Aguarde a outra execução terminar; esta tentativa não alterou nada.",
         ) from exc
+
+
+@contextlib.contextmanager
+def _guarda_up() -> Iterator[None]:
+    """Compatibilidade: `up` usa `_guarda_transacao("up")`."""
+    with _guarda_transacao("up"):
+        yield
+
 
 
 def _opcoes_up() -> dict[str, Any]:
     try:
         state = config.load_state()
     except config.StateFileError as exc:
-        raise ValueError(_erro("caminho", caminho=str(exc))) from exc
+        # `state.json` ilegível pode significar GPU alocada sem registro:
+        # o painel de estado ilegível diz o que fazer, o de caminho não.
+        raise _ErroEtapa(*_partes_erro_estado(str(exc)), detalhes_tecnicos=str(exc)) from exc
     chave = "up_force" if state is not None else "up"
     if not _confirmar(chave, default=False):
         raise KeyboardInterrupt
@@ -712,6 +733,7 @@ class PerfilView:
     visao_gib: float
     runtime_gib: float
     kv_gib: float
+    kv_dtype: str
     total_gib: float
     cabe_gpu_atual: bool
     motivo_contexto: str
@@ -758,19 +780,38 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
 
         ctx_servido = int(p.settings.get("max_model_len", 0))
         ctx_doc = variant.context_doc if variant else ctx_servido
-        gpu_min = variant.min_gpu if variant else str(p.settings.get("gpu", "L4"))
+        if variant and p.catalog_model:
+            # No contexto DESTE perfil, não no mínimo calibrado da variante.
+            gpu_min = catalog.min_gpu_for(p.catalog_model, p.catalog_variant, ctx_servido)
+        else:
+            gpu_min = str(p.settings.get("gpu", "L4"))
         pesos = variant.memory_gib if variant else 0.0
         visao_gib = variant.vision_gib if variant else 0.0
         runtime_gib = catalog.RUNTIME_RESERVE_GIB
-        kv_gib = 0.0 if p.runtime == "image" else catalog.kv_cache_gib(ctx_servido)
+        kv_dtype = catalog.effective_kv_dtype(p.runtime, p.settings.get("kv_cache_dtype"))
+        kv_gib = (
+            0.0
+            if p.runtime == "image"
+            else catalog.kv_cache_gib(
+                ctx_servido, kv_cache_dtype=p.settings.get("kv_cache_dtype"), runtime=p.runtime
+            )
+        )
         total_gib = (
-            catalog.required_vram_gib(variant, ctx_servido, p.runtime)
+            catalog.required_vram_gib(
+                variant, ctx_servido, p.runtime, kv_cache_dtype=p.settings.get("kv_cache_dtype")
+            )
             if variant
             else pesos + runtime_gib + kv_gib
         )
 
         fit_atual = (
-            catalog.check_fit(p.catalog_model, p.catalog_variant, gpu_ref, ctx_servido)
+            catalog.check_fit(
+                p.catalog_model,
+                p.catalog_variant,
+                gpu_ref,
+                ctx_servido,
+                kv_cache_dtype=p.settings.get("kv_cache_dtype"),
+            )
             if p.catalog_model and p.catalog_variant
             else None
         )
@@ -812,6 +853,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 visao_gib=visao_gib,
                 runtime_gib=runtime_gib,
                 kv_gib=kv_gib,
+                kv_dtype=kv_dtype,
                 total_gib=total_gib,
                 cabe_gpu_atual=cabe,
                 motivo_contexto=motivo,
@@ -1288,6 +1330,7 @@ def _escolher_gpu(con: Console, estado: EstadoLocal) -> str:
         )
         for gv in views
     ]
+    escolhas.append(questionary.Choice(title="Voltar ao menu principal", value="__voltar__"))
     escolha = questionary.select(
         M.SELECAO_GPU,
         choices=escolhas,
@@ -1671,7 +1714,7 @@ def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView)
         memoria += f" + visão {M.formatar_gib(item.visao_gib)}"
     memoria += f" + motor {M.formatar_gib(item.runtime_gib)}"
     if item.profile.runtime != "image":
-        memoria += f" + cache KV {M.formatar_gib(item.kv_gib)}"
+        memoria += f" + cache KV {M.formatar_gib(item.kv_gib)} ({item.kv_dtype})"
 
     corpo = Text()
     corpo.append("GPU: ", style="bold cyan")
@@ -1697,7 +1740,7 @@ def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) ->
     gpu = catalog.gpu_by_id(gpu_id)
     while True:
         renderizar_cabecalho(con, estado, subtela=f"Modelos compatíveis com {gpu.id}")
-        con.print(M.SOMENTE_LEITURA, style="dim")
+        con.print(M.NADA_GRAVADO_ATE_CONFIRMAR, style="dim")
         con.print()
         selection, perfis_por_id = renderizar_modelos_por_gpu(con, gpu.id, estado)
         con.print()
@@ -1720,7 +1763,19 @@ def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) ->
                 "As variantes que cabem nesta GPU não têm perfil em config.available_profiles().",
                 "Escolha outra GPU ou selecione um perfil de modelo.",
             )
-            _aguardar_enter(con)
+            con.print()
+            escolha_vazio = questionary.select(
+                "E agora?",
+                choices=[
+                    questionary.Choice(title="Escolher outra GPU", value="outra_gpu"),
+                    questionary.Choice(title="Voltar ao menu principal", value="menu"),
+                ],
+                use_jk_keys=False,
+                style=_estilo_select(),
+                instruction=M.TECLAS_DETALHE,
+            ).ask()
+            if escolha_vazio is None or escolha_vazio == "menu":
+                return "menu"
             return "outra_gpu"
 
         escolhas.append(questionary.Choice(title="Escolher outra GPU", value="__outra_gpu__"))
@@ -1778,13 +1833,16 @@ def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
 
     while True:
         renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
-        con.print(M.SOMENTE_LEITURA, style="dim")
+        # Esta tela termina gravando o par GPU + modelo: não é somente leitura.
+        con.print(M.NADA_GRAVADO_ATE_CONFIRMAR, style="dim")
         con.print()
         renderizar_gpus(con, estado)
         con.print()
         try:
             gpu_id = _escolher_gpu(con, estado)
         except KeyboardInterrupt:
+            return "menu"
+        if gpu_id == "__voltar__":
             return "menu"
         destino = _escolher_modelo_para_gpu(con, ler_estado_local(), gpu_id)
         if destino == "outra_gpu":
@@ -2303,6 +2361,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
     ]
 
     allocated = False
+    state: config.State | None = None
     name = cli._new_session_name()
     client = cli.remote.Remote(session=name, cfg=cfg)
     buf = io.StringIO()
@@ -2359,8 +2418,13 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                 dica="Carregando o modelo na GPU. Quando terminar, a API responde sozinha.",
             )
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                cli._register_daemon(state)
-                cli._wait_ready(cfg, cfg.bootstrap_timeout_min * 60, expected_session=state.session)
+                cli._register_daemon(cfg, state)
+                cli._wait_ready(
+                    cfg,
+                    cfg.bootstrap_timeout_min * 60,
+                    expected_session=state.session,
+                    state=state,
+                )
             exec_etapas.concluir(4, "API respondendo")
         except KeyboardInterrupt:
             exec_etapas.registrar_log(buf.getvalue())
@@ -2369,6 +2433,8 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                 # state.json e é idempotente para uma sessão inexistente.
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                     cli._stop_allocation(name)
+                    if state is not None:
+                        cli._terminate_local(state)
             else:
                 config.clear_state()
             raise
@@ -2381,6 +2447,8 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
             if allocated:
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                     cli._stop_allocation(name)
+                    if state is not None:
+                        cli._terminate_local(state)
             else:
                 config.clear_state()
             raise _ErroEtapa(
@@ -2398,7 +2466,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                     exec_etapas.falhar(idx, "interrompido")
             causa = "Uma verificação prévia impediu a alocação da GPU."
             acao = "Confira os detalhes técnicos ou execute `byom status`."
-            if "Orphaned Colab sessions" in det_bruto:
+            if M.MARCADOR_SEM_REGISTRO in det_bruto:
                 causa = "Foram encontradas sessões órfãs no Colab sem registro local."
                 acao = "Encerre as sessões órfãs no Colab antes de iniciar uma nova."
             elif "already registered" in det_bruto:
@@ -2551,7 +2619,7 @@ def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
         "Confirmando liberação da GPU",
         "Encerrando processos locais",
     ]
-    with ExecutorEtapas(con, etapas) as exec_etapas:
+    with _guarda_transacao("down"), ExecutorEtapas(con, etapas) as exec_etapas:
         exec_etapas.iniciar(0)
         try:
             state = config.load_state()
@@ -2600,7 +2668,14 @@ def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
         cli._terminate_local(state)
         cli.remote.Remote(session=state.session, cfg=cfg).stop()
         if confirmed:
-            config.clear_state()
+            try:
+                config.clear_state(expected_session=state.session)
+            except config.StateFileError as exc:
+                exec_etapas.registrar_log(str(exc))
+                confirmed = False
+        if confirmed:
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli._restore_harness(lambda _msg: None)
             exec_etapas.concluir(3, "estado limpo")
         else:
             exec_etapas.concluir(3, "registro local mantido por segurança", aviso=True)

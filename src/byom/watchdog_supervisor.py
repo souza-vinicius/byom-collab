@@ -107,7 +107,11 @@ class WatchdogSupervisor:
                         await config.sleep_or_stop(stop, backoff)
                         backoff = min(RESTART_BACKOFF_MAX_S, backoff * 2)
                         continue
-                    self._save_pid(self.process.pid)
+                    if not self._save_pid(self.process.pid):
+                        log.error("State.json is not this session's anymore; stopping watchdog")
+                        await self._stop_process()
+                        self.status.state = "stopped"
+                        return
                     self.status.pid = self.process.pid
                     self.status.state = "running"
                     log.info("Watchdog started (pid %s)", self.process.pid)
@@ -231,18 +235,37 @@ class WatchdogSupervisor:
                 return
             await asyncio.to_thread(process.wait)
 
-    def _save_pid(self, pid: int | None) -> None:
+    def _save_pid(self, pid: int | None) -> bool:
+        """Grava o PID só no state da própria sessão; False = sessão morreu."""
         try:
             if pid is None:
-                current = config.update_state(watchdog_pid=None, watchdog_start_ticks=None)
+                current = config.update_state(
+                    expected_session=self.state.session,
+                    watchdog_pid=None,
+                    watchdog_start_ticks=None,
+                )
             else:
                 # O start time identifica o PID mesmo depois de reciclado.
                 current = config.update_state(
+                    expected_session=self.state.session,
                     watchdog_pid=pid,
                     watchdog_start_ticks=config.process_start_ticks(pid),
                 )
         except (config.StateFileError, OSError) as exc:
+            # `StateFileError` pode ser "state de outra sessão" (minha sessão
+            # morreu) ou arquivo ausente: nos dois casos não há o que salvar.
             log.warning("Could not save watchdog PID: %s", exc)
-            return
+            return pid is None or not self._owns_state()
         if current.session != self.state.session:
             log.warning("State session changed while saving watchdog PID")
+            return False
+        return True
+
+    def _owns_state(self) -> bool:
+        """True quando o `state.json` ainda é desta sessão."""
+        try:
+            current = config.load_state()
+        except config.StateFileError:
+            return False
+        return current is not None and current.session == self.state.session
+
