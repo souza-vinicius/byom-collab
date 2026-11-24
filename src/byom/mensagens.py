@@ -261,6 +261,11 @@ ROTULOS_VARIANTES: dict[tuple[str, str], str] = {
     ("inkling-2-mini", "q2"): "2 bits (GGUF)",
     ("inkling-2-mini", "q4"): "4 bits (GGUF)",
     ("inkling-2-mini", "q8"): "8 bits (GGUF)",
+    # Receita AD da AtomicChat: o prefixo diz de quem é a quantização, porque o
+    # mesmo modelo também tem GGUFs da Unsloth.
+    ("inkling-2-mini", "ad-q6k"): "AD-Q6_K • 6 bits",
+    ("inkling-2-mini", "ad-q4k"): "AD-Q4_K • 4 bits",
+    ("inkling-2-mini", "ad-iq2xxs"): "AD-IQ2_XXS • 2 bits",
     ("gemma-4", "e2b-q4"): "E2B • 4 bits",
     ("gemma-4", "e4b-q4"): "E4B • 4 bits",
     ("gemma-4", "12b-q4"): "12B • 4 bits",

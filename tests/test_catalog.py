@@ -269,8 +269,11 @@ def test_contexto_documentado_servido_e_motivo():
     assert served["inkling-2-mini-q4-gguf"] == 65_536
     assert served["qwen3.8-27b-32k"] == 32_768
     assert served["qwen3.8-27b-256k"] == 262_144
+    assert served["inkling-2-mini-ad-q6k"] == 131_072
+    assert served["inkling-2-mini-ad-q4k"] == 32_768
+    assert served["inkling-2-mini-ad-iq2xxs"] == 16_384
     assert all(item.reason for item in catalog.PROFILE_CONTEXTS)
-    assert len(served) == 15
+    assert len(served) == 18
 
 
 def test_compatibilidade_continua_usando_contexto_servido():
@@ -284,3 +287,71 @@ def test_compatibilidade_continua_usando_contexto_servido():
     assert ref.context_doc == 1_000_000
     with pytest.raises(ValueError):
         catalog.profile_context("perfil-inexistente")
+
+
+# ---------------------------------------------------------------------------
+# Variantes AD da AtomicChat (mesmo modelo, publicador e receita diferentes)
+# ---------------------------------------------------------------------------
+
+
+def test_variantes_atomicchat_entram_no_modelo_existente_do_inkling():
+    model = catalog.model_by_id("inkling-2-mini")
+    assert {variant.id for variant in model.variants} == {
+        "q2",
+        "q4",
+        "q8",
+        "ad-q6k",
+        "ad-q4k",
+        "ad-iq2xxs",
+    }
+    # Um ModelEntry só: as variantes novas não criam família duplicada.
+    assert [entry.id for entry in catalog.MODELS].count("inkling-2-mini") == 1
+
+
+def test_numeros_das_variantes_atomicchat_vem_do_tree_do_hf():
+    # Bytes do tree da API do HF em 2026-11-24, convertidos para GiB (2^30):
+    # AD-Q6_K 23.787.472.864 B = 22,15 GiB; AD-Q4_K 16.525.559.776 B = 15,39 GiB;
+    # AD-IQ2_XXS 10.425.495.136 B = 9,71 GiB; mmproj-F16 639.348.448 B = 0,60 GiB.
+    esperado = {
+        "ad-q6k": (22.15, 131_072, "A100-40"),
+        "ad-q4k": (15.39, 32_768, "L4"),
+        "ad-iq2xxs": (9.71, 16_384, "T4"),
+    }
+    for variant_id, (gib, context, gpu) in esperado.items():
+        variant = catalog.variant_by_id("inkling-2-mini", variant_id)
+        assert variant.memory_gib == gib
+        assert variant.context == context
+        assert variant.min_gpu == gpu
+        assert variant.context_doc == 1_000_000
+        assert variant.context_reason
+        assert variant.vision_gib == 0.65
+        assert all(not variant.needs_custom_build for variant in (variant,))
+        notas = " ".join(variant.notes)
+        assert "AtomicChat/Inkling-2-Mini-GGUF" in notas
+        assert "2026-11-24" in notas
+        # A pegadinha do layout antigo (PR #32695) não pode aparecer como opção.
+        assert "Q4_K_M" not in notas or "não carrega" in notas
+
+
+def test_variantes_atomicchat_nao_oferecem_os_presets_do_layout_antigo():
+    model = catalog.model_by_id("inkling-2-mini")
+    rotulos = " ".join(variant.label for variant in model.variants)
+    assert "Q4_K_M" not in rotulos
+    assert "Q5_K_M" not in rotulos
+    ad = [variant for variant in model.variants if variant.id.startswith("ad-")]
+    assert len(ad) == 3
+    assert all(variant.label.startswith("AD-") for variant in ad)
+
+
+def test_variante_ad_iq2xxs_so_cabe_na_t4_com_contexto_reduzido():
+    # 9,71 + 0,65 visão + 2 runtime + 2 de KV em 32K = 14,36 > 15 - 1,0 de folga.
+    assert not catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "T4", 32_768).fits
+    assert catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "T4", 16_384).fits
+    # Na L4 o mesmo arquivo serviria 32K com folga de 8,4 GiB.
+    assert catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "L4", 32_768).fits
+
+
+def test_variante_ad_q6k_nao_cabe_em_l4_nem_na_t4():
+    assert not catalog.check_fit("inkling-2-mini", "ad-q6k", "T4", 32_768).fits
+    assert not catalog.check_fit("inkling-2-mini", "ad-q6k", "L4", 32_768).fits
+    assert catalog.check_fit("inkling-2-mini", "ad-q6k", "A100-40", 131_072).fits

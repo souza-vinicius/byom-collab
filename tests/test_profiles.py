@@ -18,6 +18,9 @@ PROFILE_IDS = {
     "inkling-2-mini-iq2-gguf",
     "inkling-2-mini-q4-gguf",
     "inkling-2-mini-q8-gguf",
+    "inkling-2-mini-ad-q6k",
+    "inkling-2-mini-ad-q4k",
+    "inkling-2-mini-ad-iq2xxs",
     "qwen3.8-27b-q3-gguf",
     "qwen3.8-27b-q4-gguf",
     "gemma-4-e4b-q4-gguf",
@@ -165,3 +168,52 @@ def test_payload_da_sessao_propagas_propriedades_do_modelo(
             "qwen-image-2.1"
         ).generation_defaults
         assert "steps" not in (payload["worker"] or {})
+
+
+# ---------------------------------------------------------------------------
+# Perfis AD da AtomicChat para o Inkling 2 Mini
+# ---------------------------------------------------------------------------
+
+
+def test_perfis_atomicchat_reaproveitam_build_e_baixam_do_repo_certo():
+    perfis = {profile.id: profile for profile in config.available_profiles()}
+    irmao = perfis["inkling-2-mini-q4-gguf"].worker
+    assert irmao is not None
+    esperado = {
+        "inkling-2-mini-ad-q6k": ("Inkling-2-Mini-AD-Q6_K.gguf", "A100", False, 131_072),
+        "inkling-2-mini-ad-q4k": ("Inkling-2-Mini-AD-Q4_K.gguf", "L4", False, 32_768),
+        "inkling-2-mini-ad-iq2xxs": ("Inkling-2-Mini-AD-IQ2_XXS.gguf", "T4", False, 16_384),
+    }
+    for profile_id, (arquivo, gpu, high_mem, contexto) in esperado.items():
+        profile = perfis[profile_id]
+        assert profile.catalog_model == "inkling-2-mini"
+        assert profile.settings["gpu"] == gpu
+        assert bool(profile.settings["gpu_high_mem"]) is high_mem
+        assert profile.settings["max_model_len"] == contexto
+        worker = profile.worker or {}
+        assert worker["model_repo"] == "AtomicChat/Inkling-2-Mini-GGUF"
+        assert worker["main_pattern"] == arquivo  # nome exato, sem subpasta
+        assert worker["mmproj_pattern"] == "mmproj-Inkling-2-Mini-F16.gguf"
+        assert worker["binary_dir"] == "llama.cpp"
+        assert worker["binary_url"] == irmao["binary_url"]
+        assert worker["binary_sha256"] == irmao["binary_sha256"]
+        assert worker["llama_jinja"] is True
+        # O layout antigo (PR #32695) não carrega em b12611: proibido no perfil.
+        assert "Q4_K_M" not in arquivo and "Q5_K_M" not in arquivo
+        # reasoning_effort herda do catálogo (o gateway injeta em
+        # chat_template_kwargs), como nos perfis irmãos da Unsloth.
+        assert "reasoning_effort" not in profile.settings
+        cfg = config.Config()
+        config.apply_profile(cfg, profile_id)
+        fit = config.check_compatibility(cfg)
+        assert fit.fits, (profile_id, fit.reason)
+        assert fit.available_gib - fit.required_gib >= fit.headroom_gib
+
+
+def test_perfis_atomicchat_nao_alteram_os_perfis_unsloth():
+    perfis = {profile.id: profile for profile in config.available_profiles()}
+    unsloth = perfis["inkling-2-mini-iq2-gguf"]
+    assert unsloth.worker is not None
+    assert unsloth.worker["model_repo"] == "unsloth/Inkling-2-Mini-GGUF"
+    assert unsloth.worker["main_pattern"] == "Mainline_Support/Inkling-2-Mini-UD-IQ2_XXS.gguf_file"
+    assert unsloth.settings["gpu"] == "T4"

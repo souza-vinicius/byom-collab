@@ -171,3 +171,17 @@ def test_cli_models_mostra_fornecedor_e_pacote():
     assert "Fornecedor" in res.output
     assert "Pacote" in res.output
     assert "Unsloth" in res.output
+
+
+def test_perfis_atomicchat_mostram_publicador_nas_duas_listas():
+    estado = tui.ler_estado_local()
+    ad = _perfil("inkling-2-mini-ad-q4k")
+    assert ad.fornecedor == "Thinking Machines Lab"
+    assert ad.pacote == "AtomicChat"
+    assert ad.variante_curta == "AD-Q4_K • 4 bits"
+
+    rec = tui.criar_console(width=140, height=60, record=True)
+    tui.renderizar_perfis(rec, estado)
+    plano = " ".join(rec.export_text(clear=False).split())
+    assert "Thinking Machines Lab · pesos AtomicChat" in plano
+    assert "Thinking Machines Lab · pesos Unsloth" in plano

@@ -334,6 +334,48 @@ MODELS: tuple[ModelEntry, ...] = (
                                    "cabe na A100-40 com 2 GiB de margem.",
                     notes=("Faixa de 8 bit: 24 GB.",),
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
+            # --- Publicador AtomicChat: mesmo modelo, receita AD por tensor ---
+            # Bytes do tree do HF (AtomicChat/Inkling-2-Mini-GGUF, 2026-11-24),
+            # convertidos para GiB dividindo por 2^30.
+            Variant("ad-q6k", "AD-Q6_K (6 bit)", 22.15, 131_072, "A100-40",
+                    context_doc=1_000_000,
+                    context_reason="22,15 GiB pesos + 0,65 visão + 2 runtime + 8 KV em "
+                                   "128K = 32,80 GiB; a A100-40 fica com 5,20 de margem. "
+                                   "Na L4 (24 GiB) nem em 32K: 26,80 + 1,2 de folga.",
+                    notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
+                           "`Inkling-2-Mini-AD-Q6_K.gguf` tem 23.787.472.864 B = 22,15 GiB.",
+                           "Qualidade medida pelo publicador contra o próprio BF16: 97,6% "
+                           "de top-1 e KLD média 0,0037 — qualidade de Q8_0 com 4 GB menos.",
+                           "Requer llama.cpp b12600 ou mais novo, com o layout merged do PR "
+                           "#32694 (o perfil fixa b12611) e `--jinja`."),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
+            Variant("ad-q4k", "AD-Q4_K (4 bit)", 15.39, 32_768, "L4",
+                    context_doc=1_000_000,
+                    context_reason="15,39 GiB pesos + 0,65 visão + 2 runtime + 2 KV em 32K "
+                                   "= 20,04; na L4 (24 GiB) sobram 2,76 GiB além da folga "
+                                   "de 1,2. Na T4 (15 GiB) não cabe nem em 32K.",
+                    notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
+                           "`Inkling-2-Mini-AD-Q4_K.gguf` tem 16.525.559.776 B = 15,39 GiB.",
+                           "Quant recomendado pelo publicador: 96,3% de top-1 e KLD média "
+                           "0,0080 — qualidade de Q5_K_M com 3,3 GB menos.",
+                           "O exemplo de execução do publicador usa `-c 32768`, que é o "
+                           "contexto servido aqui.",
+                           "Requer llama.cpp b12600 ou mais novo, com o layout merged do PR "
+                           "#32694 (o perfil fixa b12611) e `--jinja`."),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
+            Variant("ad-iq2xxs", "AD-IQ2_XXS (2 bit)", 9.71, 16_384, "T4",
+                    context_doc=1_000_000,
+                    context_reason="9,71 GiB pesos + 0,65 visão + 2 runtime + 1 de KV em "
+                                   "16K = 13,36; com a folga de 1,0 GiB dá 14,36 <= 15 GiB "
+                                   "da T4. Em 32K o KV sobe para 2 e passa do limite "
+                                   "(15,36). Na L4 o mesmo arquivo serviria 32K.",
+                    notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
+                           "`Inkling-2-Mini-AD-IQ2_XXS.gguf` tem 10.425.495.136 B = 9,71 GiB.",
+                           "88,5% de top-1 e KLD média 0,084 no mesmo teste do publicador: "
+                           "é o degrau para GPU pequena, com perda visível perto do BF16.",
+                           "Requer llama.cpp b12600 ou mais novo, com o layout merged do PR "
+                           "#32694 (o perfil fixa b12611) e `--jinja`."),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
         ),
         INKLING_SOURCE,
         provider="Thinking Machines Lab",
@@ -541,6 +583,19 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
     ProfileContext("inkling-2-mini-q8-gguf", "inkling-2-mini", "q8", 1_000_000, 131_072,
                    "A100-40", "24 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 34,65 na "
                               "A100-40, com 2 GiB de margem."),
+    ProfileContext("inkling-2-mini-ad-q6k", "inkling-2-mini", "ad-q6k", 1_000_000, 131_072,
+                   "A100-40", "22,15 GiB pesos + 0,65 visão + 2 runtime + 8 KV em 128K = "
+                              "32,80, mais 2,0 de folga = 34,80 <= 40 GiB da A100-40. A L4 "
+                              "não comporta nem em 32K (26,80 + 1,2 de folga > 24)."),
+    ProfileContext("inkling-2-mini-ad-q4k", "inkling-2-mini", "ad-q4k", 1_000_000, 32_768,
+                   "L4", "15,39 GiB pesos + 0,65 visão + 2 runtime + 2 KV em 32K = 20,04, "
+                         "mais 1,2 de folga = 21,24 <= 24 GiB da L4. 32K é o contexto do "
+                         "exemplo de execução do publicador (`-c 32768`)."),
+    ProfileContext("inkling-2-mini-ad-iq2xxs", "inkling-2-mini", "ad-iq2xxs", 1_000_000,
+                   16_384, "T4",
+                   "9,71 GiB pesos + 0,65 visão + 2 runtime + 1 de KV em 16K = 13,36, mais "
+                   "1,0 de folga = 14,36 <= 15 GiB da T4. Em 32K o KV dobra para 2 e o "
+                   "total (15,36) passa dos 15 GiB: por isso o contexto servido é 16K."),
     ProfileContext("qwen3.8-27b-q3-gguf", "qwen3.8-27b-gguf", "q3", 262_144, 32_768,
                    "L4", "12 GiB pesos + 2 runtime + 2 KV = 16 GiB: não cabe nos 15 GiB "
                          "utilizáveis da T4."),
