@@ -22,7 +22,7 @@ from typing import Annotated, NoReturn
 import httpx
 import typer
 
-from . import catalog, colab, config, dsh, opencode, remote
+from . import catalog, colab, config, dsh, llm_chat, opencode, remote
 
 app = typer.Typer(
     add_completion=False,
@@ -162,6 +162,11 @@ def init() -> None:
         cfg.ssh_key_path.chmod(0o600)
         _say(f"Created SSH key at {cfg.ssh_key_path}")
     else:
+        problem = remote.validate_ssh_key(cfg.ssh_key_path)
+        if problem:
+            _die(
+                f"Invalid SSH key: {problem}. Move or delete it and run `byom init` again."
+            )
         _say(f"SSH key already exists at {cfg.ssh_key_path}")
 
     path = config.save_config(cfg)
@@ -536,6 +541,13 @@ def _run_up(
             "Change the profile or the GPU in config.toml; byom will not allocate a different GPU."
         )
 
+    key_problem = remote.validate_ssh_key(cfg.ssh_key_path)
+    if key_problem:
+        _die(
+            f"Cannot start: {key_problem}. "
+            "Move or delete it and run `byom init` to create a new one."
+        )
+
     _prepare_session(cfg, existing, force)
     _sync_external_configs(cfg, opencode_config, dsh_config)
 
@@ -759,6 +771,151 @@ def down() -> None:
     cfg = _load_config_or_die()
     if not _down(cfg):
         raise typer.Exit(1)
+
+
+@app.command()
+def setup(
+    url: Annotated[
+        str | None,
+        typer.Option(
+            "--url",
+            help="URL base da API compatível com OpenAI no Colab/túnel (ex.: http://127.0.0.1:4000/v1).",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help=(
+                "Nome do modelo servido no endpoint remoto "
+                "(padrão: served_model_name do config.toml)."
+            ),
+        ),
+    ] = None,
+    model_id: Annotated[
+        str | None,
+        typer.Option(
+            "--model-id",
+            help="Identificador local do modelo no llm (padrão: byom).",
+        ),
+    ] = None,
+    api_key: Annotated[
+        str | None,
+        typer.Option(
+            "--api-key",
+            help="Chave de API opcional para o endpoint remoto.",
+        ),
+    ] = None,
+) -> None:
+    """Create or update the isolated byom directory and llm chat preferences."""
+    try:
+        result = llm_chat.run_setup(
+            url=url,
+            model_name=model,
+            model_id=model_id,
+            api_key=api_key,
+        )
+    except (llm_chat.LlmChatError, config.ConfigError) as exc:
+        _die(str(exc))
+
+    _say(f"Diretório byom: {result.home}")
+    _say(f"URL da API:     {result.api_base}")
+    _say(f"Modelo remoto:  {result.model_name} (ID local no llm: {result.model_id})")
+    _say(f"Configuração:   {result.extra_models_path}")
+    _say("Setup concluído. Execute `byom chat` para conversar com o modelo.")
+
+
+@app.command()
+def chat(
+    system: Annotated[
+        str | None,
+        typer.Option(
+            "--system",
+            "-s",
+            help="System prompt enviado ao modelo no início da conversa.",
+        ),
+    ] = None,
+    no_history: Annotated[
+        bool,
+        typer.Option(
+            "--no-history",
+            "--no-log",
+            "-n",
+            help="Desliga a gravação do histórico em logs.db nesta sessão.",
+        ),
+    ] = False,
+    continue_last: Annotated[
+        bool,
+        typer.Option(
+            "--continue",
+            "-c",
+            help="Continua a conversa anterior registrada em logs.db.",
+        ),
+    ] = False,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help="ID do modelo configurado no llm (padrão: modelo salvo pelo setup).",
+        ),
+    ] = None,
+) -> None:
+    """Start an interactive `llm chat` session isolated inside BYOM_HOME."""
+    try:
+        result = llm_chat.run_chat(
+            system=system,
+            no_history=no_history,
+            continue_last=continue_last,
+            model_id=model,
+        )
+    except llm_chat.LlmChatError as exc:
+        _die(str(exc))
+    if result.returncode != 0 and not result.aborted:
+        if result.stderr:
+            typer.echo(result.stderr, err=True)
+        raise typer.Exit(result.returncode)
+
+
+@app.command()
+def uninstall(
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Pula a confirmação interativa antes de remover o diretório do byom.",
+        ),
+    ] = False,
+) -> None:
+    """Remove only the isolated byom directory after safety checks."""
+    try:
+        target = llm_chat.inspect_uninstall_target()
+    except llm_chat.LlmChatError as exc:
+        _die(str(exc))
+
+    _say(f"Diretório a remover: {target.home}")
+    if target.entries:
+        _say("Itens encontrados:")
+        for entry in target.entries:
+            suffix = "/" if entry.is_dir() else ""
+            _say(f"  - {entry.name}{suffix}")
+    else:
+        _say("  (diretório vazio)")
+
+    if not yes:
+        confirmed = typer.confirm("Confirmar remoção do diretório do byom?", default=False)
+        if not confirmed:
+            _say("Operação cancelada.")
+            raise typer.Exit(0)
+
+    try:
+        llm_chat.execute_uninstall(target)
+    except llm_chat.LlmChatError as exc:
+        _die(str(exc))
+
+    _say(f"Diretório removido: {target.home}")
+    _say("Para desinstalar o pacote Python, execute: pip uninstall byom")
 
 
 # ---------------------------------------------------------------------------

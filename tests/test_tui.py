@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
-from byom import cli, colab, config, tui
+from byom import cli, colab, config, llm_chat, tui
 from byom import mensagens as M
 
 runner = CliRunner()
@@ -318,7 +318,7 @@ def test_fluxo_simulado_completo_sem_chamadas_reais(monkeypatch, isolated_home):
         def __init__(self, session, cfg):
             self.session = session
 
-        def start(self):
+        def start(self, forwards=(), on_progress=None):
             return None
 
         def stop(self):
@@ -433,7 +433,7 @@ def test_up_tui_nao_configura_harness_automaticamente(monkeypatch, isolated_home
         def __init__(self, session, cfg):
             self.session = session
 
-        def start(self):
+        def start(self, forwards=(), on_progress=None):
             return None
 
         def stop(self):
@@ -484,3 +484,195 @@ def test_aplicar_harness_automatico_opencode_e_dsh(isolated_home):
     assert "O que aconteceu:" in saida_err
     assert "opencode.jsonc" in saida_err
     assert "Detalhes técnicos" in saida_err
+
+
+def test_executor_etapas_mostra_spinner_tempo_e_dica():
+    from rich.console import Console
+    from rich.spinner import Spinner
+
+    con = Console(width=100, record=True, force_terminal=False)
+    ex = tui.ExecutorEtapas(con, ["Etapa longa", "Etapa seguinte"])
+    ex.iniciar(0, "tentativa 2 de 6", dica="Pode levar alguns minutos.")
+    ex.etapas[0].inicio -= 5
+    grade = ex._render()
+    celulas = list(grade.columns[0].cells)
+    assert isinstance(celulas[0], Spinner)
+    con.print(grade)
+    texto = con.export_text()
+    assert "tentativa 2 de 6" in texto
+    assert "(5s)" in texto
+    assert "Pode levar alguns minutos." in texto
+    ex.concluir(0, "ok")
+    con.export_text(clear=True)
+    con.print(ex._render())
+    assert "Pode levar alguns minutos." not in con.export_text()
+
+
+def test_init_tui_recusa_chave_ssh_invalida(monkeypatch, isolated_home):
+    from byom import remote
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/ssh")
+    monkeypatch.setattr(cli.colab, "version", lambda: "Version: 0.7.5")
+    monkeypatch.setattr(
+        cli.colab,
+        "run",
+        lambda args, check=False: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    cfg = config.Config()
+    cfg.ssh_key_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.ssh_key_path.write_text("ssh-ed25519 AAAA test", encoding="utf-8")
+    monkeypatch.setattr(
+        remote, "validate_ssh_key", lambda p: "o arquivo x não é uma chave privada SSH válida (y)"
+    )
+    monkeypatch.setattr(tui, "_confirmar", lambda *a, **k: True)
+    con = tui.Console(width=100, record=True, force_terminal=False)
+    with pytest.raises(tui._ErroEtapa) as exc:
+        tui._executar_init(con, cli, tui.ler_estado_local())
+    assert "chave SSH" in exc.value.falha
+
+
+def test_spinner_continua_escrevendo_no_terminal_durante_redirect_stdout(monkeypatch):
+    """Regressão: o refresh em thread seguia o stdout redirecionado e o spinner parava."""
+    import contextlib
+    import io
+    import sys
+    import time
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    terminal = Terminal()
+    # Console sem `file` fixo, como o do byom: segue `sys.stdout` a cada escrita.
+    monkeypatch.setattr(sys, "stdout", terminal)
+    con = tui.Console(force_terminal=True, width=100, _environ={"TERM": "xterm-256color"})
+    capturado = io.StringIO()
+    with tui.ExecutorEtapas(con, ["Etapa longa"]) as ex:
+        ex.iniciar(0)
+        with contextlib.redirect_stdout(capturado):
+            inicio = len(terminal.getvalue())
+            time.sleep(0.8)
+            durante = terminal.getvalue()[inicio:]
+    quadros = set(durante) & set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    assert len(quadros) >= 2, f"spinner não animou durante o redirect: {quadros}"
+    assert capturado.getvalue() == ""
+
+
+def test_proximo_passo_apos_up_oferece_chat_primeiro(monkeypatch):
+    import questionary
+
+    estado = tui.EstadoLocal(
+        config_existe=True,
+        chave_ssh_existe=True,
+        ambiente_configurado=True,
+        perfil_id="inkling-2-mini-q4-gguf",
+        perfil_nome="Inkling 2 Mini (4 bit, GGUF)",
+        gpu_id="L4",
+        gpu_rotulo="L4",
+        sessao_ativa=True,
+        sessao_nome="byom-1234",
+        sessao_criada_em="2026-01-01T00:00:00",
+    )
+    capturadas = []
+
+    class Pergunta:
+        def ask(self):
+            return "menu"
+
+    def fake_select(mensagem, *, choices, **kwargs):
+        capturadas.extend(choices)
+        return Pergunta()
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+
+    assert tui._perguntar_proximo_passo("up", estado) == "menu"
+    primeira = next(c for c in capturadas if not isinstance(c, questionary.Separator))
+    assert primeira.title == M.ACOES["chat"][0]
+    assert primeira.value == "acao:chat"
+
+
+def test_menu_tem_chat_ao_final_com_atalho_unico():
+    grupos = [g for g, _ in M.GRUPOS_MENU]
+    assert grupos[-1] == "Conversar"
+    assert M.GRUPOS_MENU[-1][1] == ("chat",)
+    assert len(set(M.ATALHOS_MENU.values())) == len(M.ATALHOS_MENU)
+    assert "chat" in M.ACOES and "chat" in M.PROXIMO_ACAO
+
+
+def test_chat_tui_sem_sessao_oferece_iniciar_sessao(monkeypatch, isolated_home):
+    monkeypatch.setattr(tui, "_confirmar", lambda *a, **k: True)
+    con = tui.Console(width=100, record=True, force_terminal=False)
+    destino = tui._executar_chat(con, cli, tui.ler_estado_local())
+    assert destino == "acao:up"
+
+
+def test_chat_tui_com_sessao_configura_e_executa_llm_chat(monkeypatch, tmp_path, isolated_home):
+    import questionary
+
+    monkeypatch.setenv("BYOM_HOME", str(tmp_path / "byom-chat"))
+    config.save_state(
+        config.State(session="byom-x", endpoint="e", nonce="n" * 32, created_at="2026-01-01")
+    )
+
+    class Pergunta:
+        def __init__(self, valor):
+            self.valor = valor
+
+        def ask(self):
+            return self.valor
+
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: Pergunta("sem"))
+    chamadas = []
+    monkeypatch.setattr(
+        tui.llm_chat, "run_chat", lambda **kw: chamadas.append(kw) or llm_chat.ChatResult(0)
+    )
+    monkeypatch.setattr(tui, "_perguntar_proximo_passo", lambda *a, **k: "menu")
+    con = tui.Console(width=100, record=True, force_terminal=False)
+
+    destino = tui._executar_chat(con, cli, tui.ler_estado_local())
+
+    assert destino == "menu"
+    assert chamadas == [{"no_history": True}]
+    assert (tmp_path / "byom-chat" / ".byom-managed").is_file()
+    assert "Conversa encerrada" in con.export_text()
+
+
+def _executar_chat_com_resultado(monkeypatch, tmp_path, resultado_chat):
+    import questionary
+
+    monkeypatch.setenv("BYOM_HOME", str(tmp_path / "byom-chat"))
+    config.save_state(
+        config.State(session="byom-x", endpoint="e", nonce="n" * 32, created_at="2026-01-01")
+    )
+
+    class Pergunta:
+        def ask(self):
+            return "sem"
+
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: Pergunta())
+    monkeypatch.setattr(tui.llm_chat, "run_chat", lambda **kw: resultado_chat)
+    monkeypatch.setattr(tui, "_perguntar_proximo_passo", lambda *a, **k: "menu")
+    con = tui.Console(width=100, record=True, force_terminal=False)
+    destino = tui._executar_chat(con, cli, tui.ler_estado_local())
+    return destino, con.export_text()
+
+
+def test_chat_tui_abortado_por_ctrl_c_ou_ctrl_d_mostra_conversa_encerrada(monkeypatch, tmp_path):
+    destino, saida = _executar_chat_com_resultado(
+        monkeypatch, tmp_path, llm_chat.ChatResult(1, "Aborted!\n")
+    )
+
+    assert destino == "menu"
+    assert "Conversa encerrada" in saida
+    assert "terminou com erro" not in saida
+
+
+def test_chat_tui_com_falha_real_mostra_stderr_nos_detalhes_tecnicos(monkeypatch, tmp_path):
+    destino, saida = _executar_chat_com_resultado(
+        monkeypatch, tmp_path, llm_chat.ChatResult(1, "Traceback: boom\n")
+    )
+
+    assert destino == "menu"
+    assert "terminou com erro" in saida
+    assert "Detalhes técnicos" in saida
+    assert "Traceback: boom" in saida

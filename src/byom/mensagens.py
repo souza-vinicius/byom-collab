@@ -23,7 +23,7 @@ DICA_PAGINACAO = (
     "role com ↑↓/PageUp/PageDown ou use os números para abrir um item."
 )
 
-TECLAS_MENU = "↑↓ navegar • atalhos 1–9 / h / q • Enter selecionar • Ctrl+C sair"
+TECLAS_MENU = "↑↓ navegar • atalhos 1–9 / c / h / q • Enter selecionar • Ctrl+C sair"
 TECLAS_SELECAO = "↑↓ navegar • digite para filtrar • Enter selecionar • Ctrl+C voltar"
 TECLAS_LISTA = "↑↓ navegar • Enter abrir • Ctrl+C voltar"
 TECLAS_CONFIRMACAO = "↑↓ ou s/n escolher • Enter confirmar • Ctrl+C cancelar"
@@ -36,8 +36,9 @@ MENU_AJUDA = (
     "  2. Selecionar perfil de modelo — escolhe modelo e GPU padrão.\n"
     "  3. Configurar harness — exibe instruções manuais ou configura OpenCode / dsh.\n"
     "  4. Iniciar sessão no Colab — aloca a GPU e publica a API local.\n"
-    "  5. Verificar estado / Encerrar sessão — acompanha ou libera a GPU.\n\n"
-    "Use as setas (↑↓) ou as teclas de atalho (1–9, h, q) e Enter para confirmar.\n"
+    "  5. Conversar com o modelo — abre o chat no terminal (llm chat) com a API do Colab.\n"
+    "  6. Verificar estado / Encerrar sessão — acompanha ou libera a GPU.\n\n"
+    "Use as setas (↑↓) ou as teclas de atalho (1–9, c, h, q) e Enter para confirmar.\n"
     "As ações de consulta (4, 5 e 6) são somente leitura e não gastam créditos."
 )
 
@@ -46,6 +47,7 @@ GRUPOS_MENU: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Preparar", ("init", "configure", "harness")),
     ("Explorar catálogo", ("profiles", "gpus", "models")),
     ("Usar sessão no Colab", ("up", "status", "down")),
+    ("Conversar", ("chat",)),
 )
 
 ATALHOS_MENU: dict[str, str] = {
@@ -58,6 +60,7 @@ ATALHOS_MENU: dict[str, str] = {
     "up": "7",
     "status": "8",
     "down": "9",
+    "chat": "c",
 }
 
 ACOES: dict[str, tuple[str, str]] = {
@@ -97,6 +100,10 @@ ACOES: dict[str, tuple[str, str]] = {
         "Encerrar sessão no Colab",
         "Desliga a VM remota e confirma a liberação da GPU no Colab.",
     ),
+    "chat": (
+        "Conversar com o modelo (llm chat)",
+        "Abre um chat no terminal com o modelo servido no Colab; histórico fica só no byom.",
+    ),
 }
 
 #: Listas objetivas do que cada ação com efeito colateral/custo executa (D4).
@@ -122,6 +129,10 @@ O_QUE_VAI_ACONTECER: dict[str, tuple[str, ...]] = {
         "Encerra a sessão ativa e libera a GPU no Colab.",
         "Finaliza o daemon local e o túnel SSH.",
         "Arquivos temporários na VM remota serão perdidos; config.toml é mantido.",
+    ),
+    "chat": (
+        "Ajusta o chat para a API local atual (grava só dentro da pasta do byom).",
+        "Abre a conversa no terminal; digite `exit` ou `quit` para voltar ao menu.",
     ),
 }
 
@@ -179,6 +190,7 @@ PROXIMO_ACAO: dict[str, tuple[str, str]] = {
     "up": ("status", "Verificar estado da sessão"),
     "status": ("down", "Encerrar sessão no Colab"),
     "down": ("gpus", "Consultar GPUs do Colab"),
+    "chat": ("down", "Encerrar sessão no Colab"),
 }
 
 #: Mantido para compatibilidade e cobertura textual.
@@ -410,8 +422,7 @@ GLOSSARIO: dict[str, str] = {
     ),
     "GGUF": "Formato de arquivo quantizado usado pelo llama.cpp para rodar modelos com menos VRAM.",
     "AWQ": (
-        "Técnica de quantização de 4 bits otimizada para rodar "
-        "rápido em placas NVIDIA via vLLM."
+        "Técnica de quantização de 4 bits otimizada para rodar rápido em placas NVIDIA via vLLM."
     ),
     "VRAM (~)": "Memória dedicada da placa de vídeo; o símbolo ~ indica valor aproximado.",
     "bf16": (

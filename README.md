@@ -35,8 +35,11 @@ uv run byom models                                 # solicita uma GPU e lista os
 uv run byom models --gpu L4                        # lista modelos compatíveis com L4, sem prompt
 uv run byom configure --profile qwen3.8-27b-32k    # seleciona um perfil de modelo
 uv run byom up                                     # aloca a GPU e inicia o endpoint local
+uv run byom setup                                  # configura o chat isolado (`llm`) apontando para o endpoint local
+uv run byom chat                                   # conversa no terminal com o modelo remoto (histórico isolado em logs.db)
 uv run byom status                                 # mostra sessão, worker, túnel e uso da conta
 uv run byom down                                   # encerra a sessão
+uv run byom uninstall                              # remove apenas o diretório exclusivo do byom
 ```
 
 * `byom` sem subcomandos em um terminal interativo (TTY) abre o menu em PT-BR
@@ -44,7 +47,9 @@ uv run byom down                                   # encerra a sessão
   TUI, a opção **Configurar harness (OpenCode / dsh)** permite escolher o
   cliente, consultar as instruções passo a passo para configuração manual e,
   opcionalmente, aplicar a conexão automaticamente (sem alterar arquivos de
-  harness durante o `Iniciar sessão no Colab`).
+  harness durante o `Iniciar sessão no Colab`). A opção **Conversar com o
+  modelo (llm chat)**, no fim do menu (atalho `c`), abre o chat no terminal com
+  a sessão ativa.
 * `byom profiles` lista todos os perfis; `byom gpus` exibe o catálogo estático
   de GPUs. Encerre a sessão antes de trocar de perfil.
 * `byom models --gpu L4` lista apenas as variantes do catálogo cujo contexto
@@ -64,6 +69,42 @@ uv run byom down                                   # encerra a sessão
   selecionada (ele nunca aloca uma GPU diferente).
 * `byom up --force` encerra a sessão anterior antes de criar uma nova (o modelo
   é carregado do zero).
+
+### Chat no terminal (`byom setup`, `byom chat` e `byom uninstall`)
+
+O `byom` integra o `llm chat` em um diretório exclusivo, sem alterar ou ler a
+configuração global do `llm` no seu sistema:
+
+* **Diretório exclusivo (`BYOM_HOME`)**: por padrão, o `byom` resolve a pasta de
+  acordo com o sistema operacional (`$XDG_CONFIG_HOME/byom` ou `~/.config/byom`
+  no Linux, `~/Library/Application Support/byom` no macOS e `%APPDATA%\byom` no
+  Windows). Você pode sobrescrever esse caminho definindo `BYOM_HOME`.
+* **Configurar e atualizar a URL do túnel (`byom setup`)**: comando idempotente
+  que cria o diretório do `byom`, o arquivo-marcador `.byom-managed`, as
+  preferências (`llm-chat.json`) e o arquivo `extra-openai-models.yaml` (com
+  permissão `0600`). Quando a URL mudar em uma nova sessão ou túnel do Colab,
+  execute novamente apenas alterando `--url` (as demais preferências são
+  preservadas):
+
+  ```bash
+  uv run byom setup --url http://127.0.0.1:4000/v1 --model qwen3.8-27b
+  # Em uma nova sessão/túnel com URL diferente:
+  uv run byom setup --url https://novo-tunel.trycloudflare.com/v1
+  ```
+
+* **Conversar (`byom chat`)**: executa `python -m llm chat` como subprocesso
+  passando `LLM_USER_PATH` apontando para o diretório do `byom` somente no
+  ambiente do subprocesso. O histórico fica salvo em `logs.db` dentro desse
+  diretório. Requer `byom setup` prévio.
+  * `--system` / `-s`: define o system prompt inicial da conversa.
+  * `--no-history` / `--no-log` / `-n`: desliga a gravação em `logs.db` durante a
+    sessão (controlado via arquivo temporário `logs-off` no diretório do `byom`).
+  * `--continue` / `-c`: continua a conversa anterior salva em `logs.db`.
+* **Remover dados locais (`byom uninstall`)**: lista o conteúdo do diretório do
+  `byom`, pede confirmação (use `--yes` para pular), valida o arquivo-marcador
+  `.byom-managed` (recusando remover `HOME`, `/`, caminhos vazios ou symlinks),
+  remove apenas o diretório do `byom` sem tocar no `llm` global e imprime o
+  comando para desinstalar o pacote (`pip uninstall byom`).
 
 ## Catálogos de GPUs e modelos
 
@@ -406,7 +447,8 @@ computação. Use `--enforce-eager` se faltar memória.
 
 ```text
 src/byom/
-  cli.py                  init, profiles, gpus, models, configure, up, status, down
+  cli.py                  init, profiles, gpus, models, configure, up, status, down, setup, chat, uninstall
+  llm_chat.py             setup idempotente, execução isolada de `llm chat` e uninstall seguro
   tui.py                  interface interativa (TUI) com Rich e questionary
   mensagens.py            textos, traduções, glossário e formatadores PT-BR da TUI
   catalog.py              catálogo validado de GPUs/modelos e checagem de compatibilidade

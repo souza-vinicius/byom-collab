@@ -252,3 +252,36 @@ def test_stop_stops_and_removes_the_socket(cfg, fake_ssh):
 def test_stop_without_master_is_noop(cfg, fake_ssh):
     build(cfg).stop()
     assert fake_ssh.calls == []
+
+
+_real_validate_ssh_key = remote.validate_ssh_key
+
+
+def test_validate_ssh_key_rejects_fake_and_accepts_real_key(tmp_path):
+    import shutil
+
+    if shutil.which("ssh-keygen") is None:
+        pytest.skip("ssh-keygen not available")
+    fake = tmp_path / "fake"
+    fake.write_text("ssh-ed25519 AAAA test", encoding="utf-8")
+    fake.chmod(0o600)
+    assert "não é uma chave privada SSH válida" in (_real_validate_ssh_key(fake) or "")
+    assert "não existe" in (_real_validate_ssh_key(tmp_path / "missing") or "")
+
+    real = tmp_path / "real"
+    subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-q", "-f", str(real)], check=True)
+    assert _real_validate_ssh_key(real) is None
+
+
+def test_start_reports_progress_for_each_attempt(cfg, fake_ssh):
+    client = build(cfg)
+    fake_ssh.socket = client.socket
+    fake_ssh.master_returncode = 255
+    messages: list[str] = []
+
+    with pytest.raises(remote.RemoteError):
+        client.start(on_progress=messages.append)
+
+    assert messages[0] == f"tentativa 1 de {remote.START_ATTEMPTS}"
+    assert any("nova tentativa em" in m for m in messages)
+    assert messages[-1] == f"tentativa {remote.START_ATTEMPTS} de {remote.START_ATTEMPTS}"
