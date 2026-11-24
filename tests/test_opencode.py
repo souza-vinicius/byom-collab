@@ -232,3 +232,24 @@ def test_sem_nenhum_arquivo_o_alvo_e_json(tmp_path, monkeypatch, isolated_home):
     assert opencode.resolve_config_path() == (
         isolated_home / ".config" / "opencode" / "opencode.json"
     )
+
+
+def test_config_path_le_jsonc_enquanto_resolve_recusa(isolated_home):
+    """A TUI exibe instruções para um `.jsonc`; só o sync automático recusa.
+
+    Antes, o painel manual usava o resolvedor do sync e a exceção subia como
+    falha interna: o usuário via "erro inesperado" em vez das instruções.
+    """
+    pasta = isolated_home / ".config" / "opencode"
+    pasta.mkdir(parents=True)
+    jsonc = pasta / "opencode.jsonc"
+    original = '{\n  // mantém\n  "model": "x"\n}\n'
+    jsonc.write_text(original, encoding="utf-8")
+
+    assert opencode.config_path() == jsonc
+    with pytest.raises(opencode.OpenCodeConfigError, match="JSONC"):
+        opencode.resolve_config_path()
+    assert jsonc.read_text(encoding="utf-8") == original
+
+    explicito = isolated_home / "outro.jsonc"
+    assert opencode.config_path(explicito) == explicito

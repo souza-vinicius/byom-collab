@@ -2031,7 +2031,9 @@ def renderizar_instrucoes_harness(
     _painel(con, "Dados da conexão local", resumo, estilo="cyan", expand=True)
 
     if harness_id == "opencode":
-        caminho = M.encurtar_caminho(opencode.resolve_config_path())
+        # Caminho para exibir: um `.jsonc` é alvo válido de instrução manual,
+        # mesmo que o sync automático se recuse a reescrevê-lo.
+        caminho = M.encurtar_caminho(opencode.config_path())
         bloco = json.dumps(
             {
                 "model": opencode_model,
@@ -2146,12 +2148,13 @@ def _aplicar_harness_automatico(con: Console, harness_id: str, cfg: config.Confi
             res = opencode.sync_config(cfg)
         except opencode.OpenCodeConfigError as exc:
             err_txt = str(exc)
-            if "valid JSON" in err_txt or "opencode.jsonc" in err_txt:
+            if "JSONC" in err_txt:
                 _renderizar_erro(
                     con,
                     "Não foi possível atualizar o arquivo do OpenCode automaticamente.",
-                    "O arquivo opencode.jsonc contém comentários ou vírgulas finais (JSONC), "
-                    "e o byom não reescreve arquivos JSONC para evitar apagar comentários.",
+                    "O arquivo de configuração do OpenCode está em JSONC (comentários ou "
+                    "vírgulas finais), e o byom não reescreve esse formato para evitar "
+                    "apagar comentários.",
                     "Copie o bloco JSON exibido acima e adicione-o manualmente no arquivo.",
                     detalhes_tecnicos=err_txt,
                 )
