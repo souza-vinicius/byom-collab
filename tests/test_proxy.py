@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from byom import config, proxy
 from byom.proxy import Runtime, WorkerStatus, create_app
+from byom.remote import RemoteError
 from byom.tunnel import TunnelState, TunnelSupervisor
 
 NONCE = "session-nonce"
@@ -651,3 +652,114 @@ async def test_verify_nao_registra_nonce_no_log(caplog, monkeypatch):
     assert runtime.worker.verified is False
     assert NONCE not in caplog.text
     assert "outro-nonce" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Túnel: falha permanente e teto de retentativas
+# ---------------------------------------------------------------------------
+class FakeTunnelRemote:
+    """`Remote` falso: o resultado de cada `start` vem de uma lista."""
+
+    def __init__(self, outcomes: list[str], *, alive_then_dead: bool = False) -> None:
+        self.outcomes = outcomes
+        self.starts = 0
+        self.stops = 0
+        self.text = ""
+        self._alive_left = 1 if alive_then_dead else 0
+
+    def start(self, forwards=()) -> None:
+        self.starts += 1
+        outcome = self.outcomes[min(self.starts - 1, len(self.outcomes) - 1)]
+        if outcome == "fatal":
+            self.text = "bind: Address already in use"
+            raise RemoteError(f"Could not connect to the VM over SSH: {self.text}")
+        if outcome == "error":
+            raise RemoteError("Could not connect to the VM over SSH: no details")
+
+    def alive(self) -> bool:
+        if self._alive_left > 0:
+            self._alive_left -= 1
+            return True
+        return False
+
+    def stop(self) -> None:
+        self.stops += 1
+
+    def log_tail(self, lines: int = 4) -> str:
+        return self.text
+
+
+def _tunnel_with(
+    remote: FakeTunnelRemote,
+    monkeypatch,
+    *,
+    max_failures: int = 3,
+    healthy: dict | None = None,
+) -> TunnelSupervisor:
+    tunnel = TunnelSupervisor(session="byom-t", endpoint="e", cfg=config.Config(), nonce=NONCE)
+    tunnel.remote = remote  # type: ignore[assignment]
+
+    async def allocated() -> bool:
+        return True
+
+    tunnel.session_allocated = allocated  # type: ignore[method-assign]
+    if healthy is not None:
+
+        async def probe() -> dict:
+            return healthy
+
+        tunnel.probe_health = probe  # type: ignore[method-assign]
+    monkeypatch.setattr("byom.tunnel.BACKOFF_MIN_S", 0.001)
+    monkeypatch.setattr("byom.tunnel.BACKOFF_MAX_S", 0.001)
+    monkeypatch.setattr("byom.tunnel.MONITOR_INTERVAL_S", 0.001)
+    monkeypatch.setattr("byom.tunnel.MAX_CONSECUTIVE_FAILURES", max_failures)
+    return tunnel
+
+
+async def test_falha_permanente_marca_failed_e_nao_retenta(monkeypatch):
+    remote = FakeTunnelRemote(["fatal"])
+    tunnel = _tunnel_with(remote, monkeypatch)
+
+    await asyncio.wait_for(tunnel.run(asyncio.Event()), timeout=5)
+
+    assert remote.starts == 1, "uma falha fatal não pode gerar novas tentativas"
+    assert tunnel.status.state == "failed"
+    assert "porta local do túnel já está em uso" in (tunnel.status.last_error or "")
+    assert "Address already in use" in (tunnel.status.last_error or "")
+
+
+async def test_falhas_transitorias_param_no_limite(monkeypatch):
+    remote = FakeTunnelRemote(["error"])
+    tunnel = _tunnel_with(remote, monkeypatch, max_failures=3)
+
+    await asyncio.wait_for(tunnel.run(asyncio.Event()), timeout=5)
+
+    assert remote.starts == 3
+    assert tunnel.status.state == "failed"
+    assert "Desisti após 3 falhas consecutivas" in (tunnel.status.last_error or "")
+    assert "byom down" in (tunnel.status.last_error or "")
+
+
+async def test_health_ok_zera_o_contador_de_falhas(monkeypatch):
+    # falha → conecta (health 200, zera) → falha → falha: desiste no 3º start.
+    remote = FakeTunnelRemote(["error", "ok", "error"], alive_then_dead=True)
+    tunnel = _tunnel_with(remote, monkeypatch, max_failures=2, healthy={"model_ready": True})
+
+    await asyncio.wait_for(tunnel.run(asyncio.Event()), timeout=5)
+
+    assert remote.starts == 3
+    assert "Desisti após 2 falhas" in (tunnel.status.last_error or "")
+
+
+def test_tunel_failed_aparece_no_status_e_recusa_trafego():
+    runtime = make_runtime(verified=False)
+    runtime.tunnel.status = TunnelState(
+        state="failed", last_error="a porta local do túnel já está em uso"
+    )
+    runtime.worker.error = runtime.tunnel.status.last_error
+
+    payload = runtime.status_payload()
+
+    assert payload["tunnel"]["state"] == "failed"
+    assert "já está em uso" in payload["tunnel"]["last_error"]
+    assert runtime.refuse_reason() == "a porta local do túnel já está em uso"

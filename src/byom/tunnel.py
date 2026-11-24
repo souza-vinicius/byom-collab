@@ -35,6 +35,29 @@ CONNECT_TIMEOUT_S = 30.0
 MONITOR_INTERVAL_S = 2.0
 ENDPOINT_RECHECK_S = 5.0
 
+#: Ciclos consecutivos sem nenhum health OK antes de declarar a sessão
+#: indisponível. Sem este teto, uma VM reciclada gera retry eterno — e cada
+#: ciclo `remote.start` tenta 6 vezes em ~95 s, disputando o slot único do
+#: `colab ssh` (HTTP 429).
+MAX_CONSECUTIVE_FAILURES = 10
+
+#: Falhas que não melhoram com retry. Repetir só queima o slot do `colab ssh`.
+FATAL_HINTS = {
+    "address already in use": "a porta local do túnel já está em uso",
+    "cannot listen": "o ssh não conseguiu abrir a porta local do forward",
+    "permission denied": "o ssh foi recusado na autenticação (chave inválida?)",
+    "host key verification failed": "a chave de host da sessão não confere",
+}
+
+
+def _fatal_reason(text: str) -> str | None:
+    """Motivo legível quando a falha é permanente, ou None se é transitória."""
+    lowered = text.lower()
+    for pattern, hint in FATAL_HINTS.items():
+        if pattern in lowered:
+            return hint
+    return None
+
 
 @dataclass
 class TunnelState:
@@ -132,8 +155,15 @@ class TunnelSupervisor:
 
     # -- lifecycle --------------------------------------------------------
     async def run(self, stop: asyncio.Event) -> None:
-        """Supervise the tunnel until `stop` is signaled."""
+        """Supervise the tunnel until `stop` is signaled or the failure is final.
+
+        Fatal failures (port taken, key rejected, host key changed) and a run of
+        transient failures without any health OK end the loop with
+        `state = "failed"` and a readable `last_error`: the daemon stays up so
+        `byom status` can show the cause instead of "reconnecting" forever.
+        """
         backoff = BACKOFF_MIN_S
+        failures = 0
         while not stop.is_set():
             if not await self.session_allocated():
                 self.status.state = "stopped"
@@ -145,32 +175,54 @@ class TunnelSupervisor:
             self.status.state = "connecting" if self.status.reconnects == 0 else "reconnecting"
             self.status.since = time.monotonic()
 
+            fatal: str | None = None
             try:
                 await asyncio.to_thread(self.remote.start, forwards=self.forwards)
             except RemoteError as exc:
                 self.status.last_error = str(exc)
+                fatal = _fatal_reason(f"{exc} {self.remote.log_tail()}")
             else:
                 if await self._wait_healthy(stop):
                     self.status.state = "connected"
                     self.status.last_error = None
                     self.status.since = time.monotonic()
                     backoff = BACKOFF_MIN_S
+                    failures = 0
                 else:
                     detail = self.remote.log_tail()
-                    self.status.last_error = (
+                    message = (
                         f"Tunnel failed to connect: {detail}"
                         if detail
                         else "Gateway did not respond through the tunnel"
                     )
+                    self.status.last_error = message
+                    fatal = _fatal_reason(f"{message} {detail}")
                 await self._monitor(stop)
 
             await asyncio.to_thread(self.remote.stop)
 
             if stop.is_set():
                 break
+            if fatal is not None:
+                self.status.state = "failed"
+                self.status.last_error = (
+                    f"{fatal} ({self.status.last_error}); não haverá nova tentativa"
+                )
+                log.error("SSH tunnel failed permanently: %s", self.status.last_error)
+                return
+
+            failures += 1
             self.status.reconnects += 1
             self.status.state = "reconnecting"
             self.status.since = time.monotonic()
+            if failures >= MAX_CONSECUTIVE_FAILURES:
+                self.status.state = "failed"
+                self.status.last_error = (
+                    f"Desisti após {failures} falhas consecutivas sem health OK: "
+                    f"{self.status.last_error}. Rode `byom down` e `byom up`."
+                )
+                log.error("%s", self.status.last_error)
+                return
             await config.sleep_or_stop(stop, backoff)
             backoff = min(BACKOFF_MAX_S, backoff * 2)
 
