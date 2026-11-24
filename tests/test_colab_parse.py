@@ -208,3 +208,35 @@ def test_exec_popen_isolates_process_and_closes_log_in_parent(monkeypatch, tmp_p
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["stdout"].closed is True
     assert captured["kwargs"]["stderr"].closed is True
+
+
+def test_unregistered_sessions_inclui_byom_sem_registro(monkeypatch):
+    """Sessão `byom-*` sem state.json é órfã tanto quanto as `[?]`.
+
+    O arquivo de sessões é exclusivo do byom, então um nome `byom-` sempre
+    pertence a esta ferramenta: não há falso positivo de terceiros.
+    """
+    texto = (
+        "[?] m-s-x | Hardware: CPU | Shape: Standard | Variant: DEFAULT\n"
+        "[byom-aaaa1111] m-s-y | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+        "[byom-bbbb2222] m-s-z | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+        "[outra-sessao] m-s-w | Hardware: T4 | Shape: STANDARD | Variant: GPU\n"
+    )
+    monkeypatch.setattr(colab, "sessions", lambda: colab.parse_session_lines(texto))
+
+    achadas = colab.unregistered_sessions({"byom-aaaa1111"})
+
+    assert [line.name for line in achadas] == [None, "byom-bbbb2222"]
+    assert [line.endpoint for line in achadas] == ["m-s-x", "m-s-z"]
+
+
+def test_unregistered_sessions_sem_estado_considera_todos_os_byom(monkeypatch):
+    texto = (
+        "[byom-aaaa1111] m-s-y | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+        "[?] m-s-x | Hardware: CPU | Shape: Standard | Variant: DEFAULT\n"
+    )
+    monkeypatch.setattr(colab, "sessions", lambda: colab.parse_session_lines(texto))
+
+    achadas = colab.unregistered_sessions(set())
+
+    assert {line.endpoint for line in achadas} == {"m-s-y", "m-s-x"}

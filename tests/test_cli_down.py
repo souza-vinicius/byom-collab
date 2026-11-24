@@ -77,6 +77,9 @@ class FakeColab:
     def orphan_assignments(self):
         return []
 
+    def unregistered_sessions(self, known=None):
+        return []
+
     def usage(self) -> str:
         return "CCUs: 200"
 
@@ -92,6 +95,7 @@ def install_fake(monkeypatch, fake: FakeColab) -> None:
         "find_by_endpoint",
         "status_line",
         "orphan_assignments",
+        "unregistered_sessions",
         "usage",
     ):
         monkeypatch.setattr(colab, attribute, getattr(fake, attribute))

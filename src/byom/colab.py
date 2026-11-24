@@ -27,6 +27,9 @@ from . import config
 #: Prefix of the CLI's informational messages, which are not session lines.
 _INFO_PREFIX = "[colab]"
 
+#: Prefix that `cli._new_session_name` gives every session created by byom.
+BYOM_SESSION_PREFIX = "byom-"
+
 SESSION_LINE_RE = re.compile(
     r"""
     ^\[(?P<name>[^\]]*)\]\s+
@@ -206,6 +209,23 @@ def orphan_assignments() -> list[SessionLine]:
     cannot stop it because the CLI cannot find it in the local store.
     """
     return [line for line in sessions() if line.name is None]
+
+
+def unregistered_sessions(known: set[str] | None = None) -> list[SessionLine]:
+    """Return backend sessions that no local record accounts for.
+
+    Two shapes are orphaned: the `[?]` lines, which the CLI cannot address by
+    name, and sessions named `byom-*` that are absent from `known` (the
+    session registered in `state.json`). The session file is exclusive to
+    byom, so a `byom-` name is never a third party's session.
+    """
+    known = {name for name in (known or ()) if name}
+    return [
+        line
+        for line in sessions()
+        if line.name is None
+        or (line.name.startswith(BYOM_SESSION_PREFIX) and line.name not in known)
+    ]
 
 
 def new(name: str, gpu: str = "", *, high_mem: bool = False) -> None:

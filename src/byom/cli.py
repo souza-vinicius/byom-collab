@@ -400,18 +400,32 @@ def _wait_ready(
     raise TimeoutError(f"Worker did not become ready within {int(timeout_s)}s")
 
 
+def _orphan_line(line: colab.SessionLine) -> str:
+    """Describe an orphan and how to stop it, with name and endpoint."""
+    endpoint = line.endpoint or "endpoint desconhecido"
+    if line.name:
+        return f"  - {line.name} ({endpoint}) — `colab stop -s {line.name}`"
+    return f"  - [?] ({endpoint}) — only the Colab panel can stop this one"
+
+
 def _check_orphans() -> None:
     """Block allocation while backend sessions have no local record."""
     try:
-        orphans = colab.orphan_assignments()
+        state = config.load_state()
+    except config.StateFileError as exc:
+        _die(f"Cannot check the registered session: {exc}")
+    known = {state.session} if state is not None else set()
+    try:
+        orphans = colab.unregistered_sessions(known)
     except colab.ColabCliError as exc:
         _die(f"Could not check for orphaned Colab sessions: {exc}")
     if not orphans:
         return
-    endpoints = ", ".join(line.endpoint for line in orphans)
+    lines = "\n".join(_orphan_line(line) for line in orphans)
     _die(
-        "Orphaned Colab sessions found "
-        f"({endpoints}); stop them in Colab before creating another session"
+        "Sessions still allocated with no record in this byom:\n"
+        f"{lines}\n"
+        "Stop them as shown above (or with `byom down`) before allocating again."
     )
 
 
@@ -565,6 +579,22 @@ UP_FAILURE_TYPES = (
 
 
 def _run_up(
+    cfg: config.Config,
+    force: bool,
+    opencode_config: Path | None,
+    dsh_config: Path | None,
+) -> None:
+    """Run the `up` transaction under the exclusive allocation lock."""
+    try:
+        with config.up_lock():
+            _run_up_transaction(cfg, force, opencode_config, dsh_config)
+    except config.ConfigError as exc:
+        # O lock é adquirido antes de qualquer efeito colateral: a recusa não
+        # aloca GPU e não toca no state.json da outra execução.
+        _die(str(exc))
+
+
+def _run_up_transaction(
     cfg: config.Config,
     force: bool,
     opencode_config: Path | None,

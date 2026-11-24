@@ -555,6 +555,38 @@ def state_lock() -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def up_lock_path() -> Path:
+    """Arquivo do lock da transação de `up` (exclusivo do byom)."""
+    return config_dir() / "up.lock"
+
+
+@contextlib.contextmanager
+def up_lock() -> Iterator[None]:
+    """Lock exclusivo e não bloqueante de uma transação `byom up`.
+
+    Dois `up` simultâneos alocariam duas GPUs: o segundo processo é recusado
+    com `ConfigError` em vez de esperar. `flock` é liberado pelo kernel quando
+    o processo morre, então uma execução interrompida não deixa lock preso.
+    """
+    if fcntl is None:  # pragma: no cover - non-POSIX platforms
+        yield
+        return
+    path = up_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ConfigError(
+                f"já existe um up em andamento (lock {path} ocupado); "
+                "aguarde a outra execução ou encerre-a antes de tentar de novo"
+            ) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def atomic_write_text(
     path: Path, text: str, *, mode: int | None = None, newline: str | None = None
 ) -> None:

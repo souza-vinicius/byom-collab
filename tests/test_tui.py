@@ -286,6 +286,7 @@ def test_fluxo_simulado_completo_sem_chamadas_reais(monkeypatch, isolated_home):
 
     monkeypatch.setattr(cli.subprocess, "run", fake_ssh_keygen)
     monkeypatch.setattr(cli.colab, "orphan_assignments", lambda: [])
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", lambda known=None: [])
     monkeypatch.setattr(cli.colab, "usage", lambda: "")
     monkeypatch.setattr(cli.colab, "new", lambda *a, **kw: None)
     monkeypatch.setattr(
@@ -419,6 +420,7 @@ def test_up_tui_nao_configura_harness_automaticamente(monkeypatch, isolated_home
 
     monkeypatch.setattr(cli, "_sync_external_configs", proibido_sync)
     monkeypatch.setattr(cli.colab, "orphan_assignments", lambda: [])
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", lambda known=None: [])
     monkeypatch.setattr(cli.colab, "new", lambda *a, **kw: None)
     monkeypatch.setattr(
         cli.colab,
@@ -765,3 +767,28 @@ def test_chat_tui_com_falha_real_mostra_stderr_nos_detalhes_tecnicos(monkeypatch
     assert "terminou com erro" in saida
     assert "Detalhes técnicos" in saida
     assert "Traceback: boom" in saida
+
+
+def test_up_tui_recusa_quando_outro_up_esta_em_andamento(monkeypatch, isolated_home):
+    """Dois `up` simultâneos não podem alocar duas GPUs."""
+    cfg = config.Config()
+    config.apply_profile(cfg, "gemma-4-12b-q4-gguf")
+    cfg.ssh_key_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.ssh_key_path.write_text("PRIVATE", encoding="utf-8")
+    config.save_config(cfg)
+    alocou = False
+
+    def allocate(*args, **kwargs):
+        nonlocal alocou
+        alocou = True
+
+    monkeypatch.setattr(cli.colab, "new", allocate)
+    monkeypatch.setattr(tui, "_confirmar", lambda *a, **kw: True)
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    with config.up_lock(), pytest.raises(tui._ErroEtapa) as exc:
+        tui._executar_up(rec, cli, tui.ler_estado_local())
+
+    assert "em andamento" in exc.value.falha
+    assert "não alocou GPU" in exc.value.acao
+    assert alocou is False

@@ -199,3 +199,19 @@ def test_escrita_atomica_nao_deixa_temporario():
     config.save_config(config.load_config())
     leftovers = list(config.config_dir().glob("*.tmp"))
     assert leftovers == []
+
+
+def test_up_lock_recusa_aquisicao_concorrente_e_libera_no_fim():
+    with config.up_lock(), pytest.raises(config.ConfigError) as exc, config.up_lock():
+        pass
+    assert "já existe um up em andamento" in str(exc.value)
+    # A recusa não pode deixar o lock preso para o próximo `up`.
+    with config.up_lock():
+        pass
+
+
+def test_up_lock_libera_quando_o_corpo_levanta_excecao():
+    with pytest.raises(RuntimeError), config.up_lock():
+        raise RuntimeError("falha simulada")
+    with config.up_lock():
+        pass

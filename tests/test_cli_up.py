@@ -32,7 +32,7 @@ def test_up_force_downs_before_sync_and_new_allocation(tmp_path: Path, monkeypat
         config.clear_state()
         return True
 
-    def orphan_assignments():
+    def unregistered_sessions(known=None):
         events.append("orphans")
         return []
 
@@ -56,7 +56,7 @@ def test_up_force_downs_before_sync_and_new_allocation(tmp_path: Path, monkeypat
             events.append("remote-stop")
 
     monkeypatch.setattr(cli, "_down", down)
-    monkeypatch.setattr(cli.colab, "orphan_assignments", orphan_assignments)
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", unregistered_sessions)
     monkeypatch.setattr(cli.opencode, "sync_config", sync)
     monkeypatch.setattr(cli.colab, "new", allocate)
     monkeypatch.setattr(cli.remote, "Remote", FakeRemote)
@@ -114,7 +114,7 @@ def test_up_force_aborts_if_orphan_assignment_remains(tmp_path: Path, monkeypatc
         config.clear_state()
         return True
 
-    def orphan_assignments():
+    def unregistered_sessions(known=None):
         return [
             cli.colab.SessionLine(
                 name=None,
@@ -135,7 +135,7 @@ def test_up_force_aborts_if_orphan_assignment_remains(tmp_path: Path, monkeypatc
         allocated = True
 
     monkeypatch.setattr(cli, "_down", down)
-    monkeypatch.setattr(cli.colab, "orphan_assignments", orphan_assignments)
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", unregistered_sessions)
     monkeypatch.setattr(cli.opencode, "sync_config", sync)
     monkeypatch.setattr(cli.colab, "new", allocate)
 
@@ -197,7 +197,7 @@ def test_up_sem_force_bloqueia_orfao_antes_de_alocar(tmp_path: Path, monkeypatch
         shape="",
         variant="",
     )
-    monkeypatch.setattr(cli.colab, "orphan_assignments", lambda: [orphan])
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", lambda known=None: [orphan])
     allocated = False
     synced = False
 
@@ -333,3 +333,66 @@ def test_up_encerra_pela_sessao_quando_interrompido(tmp_path, monkeypatch):
     assert len(paradas) == 1
     assert paradas[0].startswith("byom-")
     assert config.load_state() is None
+
+
+def test_up_bloqueia_sessao_byom_sem_registro_local(tmp_path, monkeypatch):
+    """Uma `byom-*` esquecida no backend bloqueia a próxima alocação."""
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    config.save_config(config.Config())
+    orfa = cli.colab.SessionLine(
+        name="byom-orfa", endpoint="m-s-orfa", hardware="L4", shape="STANDARD", variant="GPU"
+    )
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", lambda known=None: [orfa])
+    alocou = False
+
+    def allocate(*args, **kwargs):
+        nonlocal alocou
+        alocou = True
+
+    monkeypatch.setattr(cli.colab, "new", allocate)
+
+    resultado = CliRunner().invoke(cli.app, ["up"])
+
+    assert resultado.exit_code == 1
+    assert "byom-orfa" in resultado.output
+    assert "m-s-orfa" in resultado.output
+    assert "colab stop -s byom-orfa" in resultado.output
+    assert alocou is False
+
+
+def test_check_orphans_usa_a_sessao_registrada_como_conhecida(tmp_path, monkeypatch):
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    config.save_state(
+        config.State(
+            session="byom-atual", endpoint="m-s-atual", nonce="n" * 32, created_at="agora"
+        )
+    )
+    vistos: list[set[str]] = []
+
+    def unregistered(known=None):
+        vistos.append(set(known or ()))
+        return []
+
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", unregistered)
+
+    cli._check_orphans()
+
+    assert vistos == [{"byom-atual"}]
+
+
+def test_up_concorrente_aborta_antes_de_alocar(tmp_path, monkeypatch):
+    """Um segundo `up` não pode alocar uma segunda GPU."""
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    config.save_config(config.Config())
+    alocou: list[tuple] = []
+
+    def allocate(*args, **kwargs):
+        alocou.append(args)
+
+    monkeypatch.setattr(cli.colab, "new", allocate)
+
+    with config.up_lock():
+        resultado = CliRunner().invoke(cli.app, ["up"])
+    assert resultado.exit_code != 0
+    assert "já existe um up em andamento" in resultado.output
+    assert alocou == []

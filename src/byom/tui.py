@@ -13,7 +13,7 @@ import re
 import sys
 import time
 import traceback
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -403,6 +403,24 @@ def _opcoes_down() -> dict[str, Any]:
     if not _confirmar("down", default=False):
         raise KeyboardInterrupt
     return {}
+
+
+@contextlib.contextmanager
+def _guarda_up() -> Iterator[None]:
+    """Segura o lock exclusivo de `up` e traduz a recusa em painel de erro.
+
+    Dois `up` simultâneos alocariam duas GPUs. O lock da CLI é o mesmo arquivo,
+    então a TUI não abre uma janela própria de alocação concorrente.
+    """
+    try:
+        with config.up_lock():
+            yield
+    except config.ConfigError as exc:
+        raise _ErroEtapa(
+            "Já existe um `byom up` em andamento.",
+            str(exc),
+            "Aguarde a outra execução terminar; esta tentativa não alocou GPU.",
+        ) from exc
 
 
 def _opcoes_up() -> dict[str, Any]:
@@ -2204,7 +2222,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
     client = cli.remote.Remote(session=name, cfg=cfg)
     buf = io.StringIO()
 
-    with ExecutorEtapas(con, etapas) as exec_etapas:
+    with _guarda_up(), ExecutorEtapas(con, etapas) as exec_etapas:
         try:
             # 1. Preparar sessão
             exec_etapas.iniciar(0)
