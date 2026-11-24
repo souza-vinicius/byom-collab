@@ -24,12 +24,12 @@
 - **Fix (segurança)**: o proxy recusa **antes** de montar a URL o que poderia escapar de `/v1/`: segmento `.`/`..`, barra invertida, NUL, `%` (dupla codificação) e qualquer caractere fora de `[A-Za-z0-9._~/-]` → 400 `byom_bad_path`; depois da normalização do `httpx.URL` o caminho tem de continuar em `/v1/` (defesa em profundidade). `GET /v1/../internal/state` chegava ao gateway e rearmava o heartbeat do watchdog. A query string do cliente é preservada; headers de entrada seguem allowlist (`accept`, `openai-beta`, `user-agent`) com `accept-encoding: identity`, sem `host`/`authorization`. `Host` fora de `127.0.0.1[:porta]`/`localhost[:porta]` → 403 `byom_bad_host` (DNS rebinding), em `/v1/*` e em `/__byom/status`.
 - **Fix**: cliente do proxy com `httpx.Timeout(connect=5, read=None, write=30, pool=5)` e deadline de 60 s para o primeiro byte (`asyncio.wait_for(client.send(...))`) → 503 `byom_tunnel`; o corpo do stream segue sem read timeout. Todo caminho de saída fecha o `AsyncClient` (inclusive `CancelledError` durante o `send`), sem fechar a resposta que ainda está sendo lida.
 - **Fix (segurança)**: `/health`, `/internal/state` e `/internal/begin-shutdown` exigem `X-BYOM-Nonce` igual ao nonce da sessão (`hmac.compare_digest`), porque o forward `ssh -L` faz todo cliente aparecer como loopback; `_is_loopback` fica como defesa secundária. O nonce não é devolvido em nenhum payload de status nem em log. Chamadores atualizados: `tunnel.probe_health`, `Runtime.verify`, `watchdog_supervisor._probe_heartbeat` e `worker/watchdog.py`.
-- **Fix**: `qwen-image-2.1:q4km` declara `memory_gib = 12,9` (o total documentado é ~14,9 GB com encoder e VAE; o encoder tem offload parcial para RAM) e passa a exigir **L4**. Com runtime de 2 GiB e a folga de 1 GiB, 12,9 + 2 + 1 = 15,9 GiB não cabe nos 15 GiB utilizáveis da T4; `check_fit("qwen-image-2.1", "q4km", "T4", 1)` reprova citando a folga. Perfil `qwen-image-2.1-q4km` movido para `gpu = "L4"`, com `description`, `ProfileContext` e a nota do catálogo atualizados.
+- **Fix (superado pelo item 4.1, ver entrada acima: hoje 9,22 GiB e T4)**: `qwen-image-2.1:q4km` declarava `memory_gib = 12,9` (estimativa da página) e passou a exigir **L4**. Com runtime de 2 GiB e a folga de 1 GiB, 12,9 + 2 + 1 = 15,9 GiB não cabe nos 15 GiB utilizáveis da T4; `check_fit("qwen-image-2.1", "q4km", "T4", 1)` reprova citando a folga. Perfil `qwen-image-2.1-q4km` movido para `gpu = "L4"`, com `description`, `ProfileContext` e a nota do catálogo atualizados.
 - **Fix**: o runtime de imagem monta o argv do `sd-server` a partir do `runtime_manifest.json`. `[worker] image_roles` (`diffusion`, `vae`, `text_encoder`, cada um como `repo::pattern`) é a fonte da verdade; `prepare_runtime` grava `image: {papel: caminho absoluto}` e `build_image_args` emite `--diffusion-model`, `--vae` e `--llm` — flags confirmadas em `leejet/stable-diffusion.cpp` na build fixada `sd-master-532d2c1` (`docs/models/qwen_image_2.1.md` e `examples/server/README.md`, consultados em 2026-11-24). Sem servidor no manifest, servidor ausente ou papel faltando: `runtime de imagem não suportado nesta versão: <motivo>`, código 2, sem subir servidor quebrado. Os dois perfis de imagem declaram os três papéis.
 - **Fix**: `_terminate_local` só envia sinal quando o `(pid, start_ticks)` do `/proc/<pid>/stat` (campo 22) coincide com o registrado; PID reciclado, `/proc` ausente ou state antigo com `cmdline` estranho não são mortos (o campo é limpo e o motivo aparece). Depois do SIGTERM espera ~5 s e promove para SIGKILL, sempre no PID, nunca no grupo.
-- **Fix**: o túnel classifica a falha. `Address already in use`, `cannot listen`, `Permission denied` e `Host key verification failed` são fatais: o loop para, o status fica `failed` com motivo legível e o daemon continua de pé para `byom status` mostrar a causa. Falhas transitórias usam backoff exponencial com teto e limite de 10 ciclos sem health OK; o contador zera a cada health OK.
+- **Fix**: o túnel classifica a falha. `Address already in use`, `cannot listen`, `Permission denied` e `Host key verification failed` são fatais: o loop para, o status fica `failed` com motivo legível e o daemon continua de pé para `byom status` mostrar a causa. Falhas transitórias usam backoff exponencial com teto e limite de 10 ciclos sem health OK; o contador de falhas **consecutivas** zera apenas na reconexão que chega a health OK (um health isolado do `_monitor` não zera), e `reconnects` continua cumulativo.
 - **Fix**: o supervisor do watchdog para de relançar após 5 falhas consecutivas sem heartbeat válido e expõe o motivo no `/__byom/status` (`watchdog.state = "gave_up"`, `last_error`, `failures`); `worker/watchdog.py` trata `session.json` ausente com "VM reciclada: session.json ausente" e sai com código 1, sem traceback.
-- **Fix (segurança)**: a chave de host SSH é fixada por sessão em `<config_dir>/known_hosts_<sessão>` com `HostKeyAlias=byom-<sessão>` — `accept-new` na primeira conexão e `yes` depois, sem `StrictHostKeyChecking=no` nem `/dev/null`. Chave que muda vira erro legível ("possível MITM — rode `byom down` e `byom up`"), sem fallback silencioso. O arquivo é removido no `down`.
+- **Fix (segurança)**: a chave de host SSH é fixada por sessão em `<config_dir>/known_hosts_<sessão>` com `HostKeyAlias=byom-<sessão>` — `accept-new` na primeira conexão e `yes` depois, sem `StrictHostKeyChecking=no` nem `/dev/null`. Chave que muda vira erro legível ("possível MITM — rode `byom down` e `byom up`"), sem fallback silencioso. O arquivo é removido **quando a desalocação é confirmada pelo Colab** (`byom down` com confirmação ou encerramento pelo `up --force`); sem confirmação, o pin fica para a próxima tentativa.
 - **Update**: `daemon.log` usa `RotatingFileHandler` (2 MiB, 2 backups) com `force=True` — antes o `basicConfig` do daemon era no-op depois do `cli.main()` e as linhas INFO nunca chegavam ao arquivo; `watchdog.log` é truncado no início de cada sessão.
 - **Fix**: `up` grava `state.json` imediatamente depois de `colab new` (endpoint vazio) e tenta enriquecer o endpoint em seguida; falha em `colab status` não apaga mais o registro. Qualquer falha posterior — inclusive `Ctrl+C`/`SystemExit` — encerra a VM pelo nome com `colab stop -s <nome>` e confirma com `is_allocated`, sem depender do `state.json`.
 - **Fix**: `colab.unregistered_sessions(known)` devolve as linhas `[?]` e as sessões `byom-*` ausentes do `state.json`; `_check_orphans` lista nome, endpoint e o comando de parada. `config.up_lock()` toma um `flock` não bloqueante em `up.lock` durante todo o `up` (CLI e TUI): o segundo processo aborta com "já existe um up em andamento" antes de alocar GPU.
@@ -58,6 +58,47 @@
 - **Update**: `profiles`, `gpus` e `models` deixam de ser itens de topo e passam ao submenu `Selecionar GPU` (atalho `2`), que oferece perfil pronto ou par GPU + modelo.
 - **Addition**: caminho GPU + modelo grava `cfg.gpu`/`cfg.gpu_high_mem` derivados de `catalog.colab_settings_for_gpu()` e valida com `config.check_compatibility()` antes de salvar; par que não cabe não é gravado.
 - **Update**: `proximo_passo_recomendado()` passa a recomendar `selecionar_gpu` no lugar de `configure`, e `TECLAS_MENU` descreve os atalhos atuais.
+
+### Lotes 4 e 5 — orçamento de VRAM revalidado (2026-11-24)
+
+Números dos bytes publicados no Hugging Face (conferidos em 2026-11-24) e
+folga obrigatória `max(1 GiB, 5% da VRAM)`; `required = pesos + projetor de
+visão + 2 GiB de runtime + KV`, e a checagem exige `required + folga < VRAM`
+(igualdade não aprova). `margem` = VRAM − required − folga.
+
+| perfil | GPU | ctx servido | pesos | visão | required | KV | folga | margem | fits |
+| :--- | :--- | ---: | ---: | ---: | ---: | :--- | ---: | ---: | :--- |
+| `gemma-4-12b-q4-gguf` | T4 | 32.768 | 8,00 | — | 12,00 | f16 | 1,00 | 2,00 | sim |
+| `gemma-4-26b-a4b-q4-gguf` | A100-40 | 32.768 | 18,00 | 1,11 | 23,11 | f16 | 2,00 | 14,89 | sim |
+| `gemma-4-31b-q4-gguf` | A100-40 | 131.072 | 20,00 | 1,12 | 31,12 | f16 | 2,00 | 6,88 | sim |
+| `gemma-4-e4b-q4-gguf` | T4 | 65.536 | 6,00 | — | 12,00 | f16 | 1,00 | 2,00 | sim |
+| `inkling-2-mini-iq2-gguf` | T4 | 32.768 | 7,90 | 0,65 | 12,55 | f16 | 1,00 | 1,45 | sim |
+| `inkling-2-mini-q4-gguf` | A100-40 | 65.536 | 18,00 | 0,65 | 24,65 | f16 | 2,00 | 13,35 | sim |
+| `inkling-2-mini-q8-gguf` | A100-40 | 131.072 | 24,00 | 0,65 | 34,65 | f16 | 2,00 | 3,35 | sim |
+| `muse-glimmer-30b-q2-gguf` | L4 | 32.768 | 12,00 | 3,58 | 19,58 | f16 | 1,20 | 3,22 | sim |
+| `muse-glimmer-30b-q4-gguf` | A100-40 | 65.536 | 17,00 | 3,58 | 26,58 | f16 | 2,00 | 11,42 | sim |
+| `qwen-image-2.1-fp8` | L4 | 1 | 12,07 | 1,08 | 15,15 | — | 1,20 | 7,65 | sim |
+| `qwen-image-2.1-q4km` | T4 | 1 | 9,22 | 1,08 | 12,30 | — | 1,00 | 1,70 | sim |
+| `qwen3.8-27b-256k` | A100-80 | 262.144 | 17,00 | — | 27,00 | fp8 | 4,00 | 49,00 | sim |
+| `qwen3.8-27b-32k` | A100-40 | 32.768 | 17,00 | — | 20,00 | fp8 | 2,00 | 18,00 | sim |
+| `qwen3.8-27b-q3-gguf` | L4 | 32.768 | 12,00 | — | 16,00 | f16 | 1,20 | 6,80 | sim |
+| `qwen3.8-27b-q4-gguf` | L4 | 32.768 | 17,00 | — | 21,00 | f16 | 1,20 | 1,80 | sim |
+
+Mudanças de GPU nos dois lotes (todas por aritmética, nenhuma por preferência):
+
+| perfil | antes | depois | motivo |
+| :--- | :--- | :--- | :--- |
+| `qwen-image-2.1-q4km` | L4 | **T4** | `Q4_K` é 9,22 GiB (não 12,9 estimados): 9,22 + 1,08 + 2 + 1,0 = 13,30 <= 15 |
+| `inkling-2-mini-iq2-gguf` | L4 | **T4** | 8.486.237.632 B = 7,90 GiB: 7,90 + 0,65 + 2 + 2 = 12,55 + 1,0 = 13,55 <= 15 |
+| `gemma-4-26b-a4b-q4-gguf` | L4 | **A100-40** | projetor de visão real é 1,11 GiB (não 0,65): 23,11 + 1,2 = 24,31 > 24 |
+| `qwen-image-2.1-fp8` | L4 | L4 | 12,07 + 1,08 + 2 + 1,0 = 16,15 > 15 (T4 segue fora) |
+| `gemma-4:e2b-q4` (sem perfil) | T4 | **L4** | 14,0 + 1,0 = 15,0 == 15,0: igualdade não aprova mais |
+
+Decisões onde havia escolha: **KV** (5.4) — `llama-cpp` fica em f16 e o campo
+`kv_cache_dtype` saiu dos perfis (em vez de emitir `--cache-type-k/-v`);
+**OpenCode** (5.7) — `.json` tem precedência e `.jsonc` vira erro explicativo (em
+vez de parsear JSONC e perder comentários na escrita); **chaves desconhecidas**
+(5.10) — avisar e preservar no round-trip (tabela desconhecida recusa a gravação).
 
 ## 2026-11-23
 - **Fix**: `byom chat` e a tela `chat` tratam `Ctrl+C`/`Ctrl+D` como encerramento normal (`Conversa encerrada`) e exibem o stderr real do `llm` em `Detalhes técnicos` quando a conversa falha de verdade.
