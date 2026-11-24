@@ -146,9 +146,25 @@ def test_lista_de_modelos_vazia_volta_para_outra_gpu(monkeypatch):
     monkeypatch.setattr(
         tui, "renderizar_modelos_por_gpu", lambda con, gpu_id, estado: (vazio, {})
     )
+    capturadas = _roteirizar(monkeypatch, ["outra_gpu"])
     rec = tui.criar_console(width=100, height=30, record=True)
 
     assert tui._escolher_modelo_para_gpu(rec, tui.ler_estado_local(), "L4") == "outra_gpu"
+    # A tela vazia oferece as duas saídas, não só "outra GPU".
+    titulos = [getattr(c, "title", "") for c in capturadas[0]]
+    assert "Escolher outra GPU" in titulos
+    assert "Voltar ao menu principal" in titulos
+
+
+def test_lista_de_modelos_vazia_permite_voltar_ao_menu(monkeypatch):
+    vazio = catalog.CompatibleSelection("L4", (), 0)
+    monkeypatch.setattr(
+        tui, "renderizar_modelos_por_gpu", lambda con, gpu_id, estado: (vazio, {})
+    )
+    _roteirizar(monkeypatch, ["menu"])
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    assert tui._escolher_modelo_para_gpu(rec, tui.ler_estado_local(), "L4") == "menu"
 
 
 def test_caminho_gpu_modelo_repete_a_lista_de_gpus_quando_pedem_outra(monkeypatch):

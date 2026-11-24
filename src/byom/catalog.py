@@ -541,7 +541,7 @@ def format_models() -> str:
             status = "disponivel" if variant.available else "NAO CABE EM GPU UNICA DO COLAB"
             doc = str(variant.context_doc) if variant.context_doc else "n/a"
             served = ", ".join(str(value) for value in served_contexts_for(model.id, variant.id))
-            if variant.min_gpu == "T4" and model.runtime == "image":
+            if model.runtime == "image":
                 served = "n/a (imagem)"
             lines.append(
                 f"{model.id} | {model.runtime} | {variant.id} ({variant.label}) | "
@@ -686,6 +686,21 @@ def _fits(
         variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype
     )
     return variant.available and required + vram_headroom_gib(gpu.vram_gib) <= gpu.vram_gib
+
+
+def min_gpu_for(model_id: str, variant_id: str, max_model_len: int) -> str:
+    """Menor GPU do catálogo que comporta a variante NO contexto do perfil.
+
+    `Variant.min_gpu` é calibrado no menor contexto servido; exibir esse valor
+    como "GPU mínima" num perfil de 131K produzia "Exige pelo menos L4; não cabe
+    em L4". Quando nenhuma GPU comporta, devolve a maior (o chamador mostra o
+    motivo de `check_fit`).
+    """
+    order = sorted(GPUS, key=lambda gpu: (gpu.vram_gib, gpu.id))
+    for gpu in order:
+        if check_fit(model_id, variant_id, gpu.id, max_model_len).fits:
+            return gpu.id
+    return order[-1].id
 
 
 def check_fit(

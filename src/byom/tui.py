@@ -482,7 +482,9 @@ def _opcoes_up() -> dict[str, Any]:
     try:
         state = config.load_state()
     except config.StateFileError as exc:
-        raise ValueError(_erro("caminho", caminho=str(exc))) from exc
+        # `state.json` ilegível pode significar GPU alocada sem registro:
+        # o painel de estado ilegível diz o que fazer, o de caminho não.
+        raise _ErroEtapa(*_partes_erro_estado(str(exc)), detalhes_tecnicos=str(exc)) from exc
     chave = "up_force" if state is not None else "up"
     if not _confirmar(chave, default=False):
         raise KeyboardInterrupt
@@ -773,7 +775,11 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
 
         ctx_servido = int(p.settings.get("max_model_len", 0))
         ctx_doc = variant.context_doc if variant else ctx_servido
-        gpu_min = variant.min_gpu if variant else str(p.settings.get("gpu", "L4"))
+        if variant and p.catalog_model:
+            # No contexto DESTE perfil, não no mínimo calibrado da variante.
+            gpu_min = catalog.min_gpu_for(p.catalog_model, p.catalog_variant, ctx_servido)
+        else:
+            gpu_min = str(p.settings.get("gpu", "L4"))
         pesos = variant.memory_gib if variant else 0.0
         visao_gib = variant.vision_gib if variant else 0.0
         runtime_gib = catalog.RUNTIME_RESERVE_GIB
@@ -1319,6 +1325,7 @@ def _escolher_gpu(con: Console, estado: EstadoLocal) -> str:
         )
         for gv in views
     ]
+    escolhas.append(questionary.Choice(title="Voltar ao menu principal", value="__voltar__"))
     escolha = questionary.select(
         M.SELECAO_GPU,
         choices=escolhas,
@@ -1728,7 +1735,7 @@ def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) ->
     gpu = catalog.gpu_by_id(gpu_id)
     while True:
         renderizar_cabecalho(con, estado, subtela=f"Modelos compatíveis com {gpu.id}")
-        con.print(M.SOMENTE_LEITURA, style="dim")
+        con.print(M.NADA_GRAVADO_ATE_CONFIRMAR, style="dim")
         con.print()
         selection, perfis_por_id = renderizar_modelos_por_gpu(con, gpu.id, estado)
         con.print()
@@ -1751,7 +1758,19 @@ def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) ->
                 "As variantes que cabem nesta GPU não têm perfil em config.available_profiles().",
                 "Escolha outra GPU ou selecione um perfil de modelo.",
             )
-            _aguardar_enter(con)
+            con.print()
+            escolha_vazio = questionary.select(
+                "E agora?",
+                choices=[
+                    questionary.Choice(title="Escolher outra GPU", value="outra_gpu"),
+                    questionary.Choice(title="Voltar ao menu principal", value="menu"),
+                ],
+                use_jk_keys=False,
+                style=_estilo_select(),
+                instruction=M.TECLAS_DETALHE,
+            ).ask()
+            if escolha_vazio is None or escolha_vazio == "menu":
+                return "menu"
             return "outra_gpu"
 
         escolhas.append(questionary.Choice(title="Escolher outra GPU", value="__outra_gpu__"))
@@ -1816,6 +1835,8 @@ def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
         try:
             gpu_id = _escolher_gpu(con, estado)
         except KeyboardInterrupt:
+            return "menu"
+        if gpu_id == "__voltar__":
             return "menu"
         destino = _escolher_modelo_para_gpu(con, ler_estado_local(), gpu_id)
         if destino == "outra_gpu":
@@ -2439,7 +2460,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                     exec_etapas.falhar(idx, "interrompido")
             causa = "Uma verificação prévia impediu a alocação da GPU."
             acao = "Confira os detalhes técnicos ou execute `byom status`."
-            if "Orphaned Colab sessions" in det_bruto:
+            if M.MARCADOR_SEM_REGISTRO in det_bruto:
                 causa = "Foram encontradas sessões órfãs no Colab sem registro local."
                 acao = "Encerre as sessões órfãs no Colab antes de iniciar uma nova."
             elif "already registered" in det_bruto:

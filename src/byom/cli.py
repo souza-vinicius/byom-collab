@@ -23,7 +23,7 @@ from typing import Annotated, NoReturn
 import httpx
 import typer
 
-from . import catalog, colab, config, dsh, llm_chat, opencode, remote
+from . import catalog, colab, config, dsh, llm_chat, mensagens, opencode, remote
 
 app = typer.Typer(
     add_completion=False,
@@ -471,7 +471,7 @@ def _check_orphans() -> None:
         return
     lines = "\n".join(_orphan_line(line) for line in orphans)
     _die(
-        "Sessions still allocated with no record in this byom:\n"
+        f"Sessions still allocated with {mensagens.MARCADOR_SEM_REGISTRO}:\n"
         f"{lines}\n"
         "Stop them as shown above (or with `byom down`) before allocating again."
     )
