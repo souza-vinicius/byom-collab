@@ -52,12 +52,13 @@ def test_t4_filtra_modelos_grandes():
     selection = catalog.compatible_variants("T4")
     ids = {(row.model_id, row.variant_id) for row in selection.rows}
     assert ("gemma-4", "e2b-q4") in ids
-    assert ("qwen-image-2.1", "q4km") in ids
     for excluded in (
         ("qwen3.8-27b-awq", "q4-awq"),
         ("gemma-4", "31b-q4"),
         ("muse-glimmer-30b", "q6"),
         ("qwen-image-2.1", "fp8-int8"),
+        # 12,9 GiB + 2 de runtime + 1 de folga passam dos 15 GiB utilizáveis.
+        ("qwen-image-2.1", "q4km"),
     ):
         assert excluded not in ids
     assert selection.dropped_for_memory > 0
@@ -106,17 +107,32 @@ def test_contexto_servido_e_perfil_da_gpu_na_filtragem():
 def test_modelo_de_imagem_sem_kv_cache():
     variant = catalog.variant_by_id("qwen-image-2.1", "q4km")
     sentinel = catalog.profile_context("qwen-image-2.1-q4km").context_served
-    fit = catalog.check_fit("qwen-image-2.1", "q4km", "T4", sentinel)
+    fit = catalog.check_fit("qwen-image-2.1", "q4km", "L4", sentinel)
     assert fit.fits
     assert fit.required_gib == variant.memory_gib + catalog.RUNTIME_RESERVE_GIB
 
     row = next(
         row
-        for row in catalog.compatible_variants("T4").rows
+        for row in catalog.compatible_variants("L4").rows
         if (row.model_id, row.variant_id) == ("qwen-image-2.1", "q4km")
     )
     assert row.context_served == sentinel
-    assert "n/a (imagem)" in catalog.format_compatible_models("T4")
+    assert "n/a (imagem)" in catalog.format_compatible_models("L4")
+
+
+def test_q4km_de_imagem_nao_cabe_na_t4_com_folga():
+    """12,9 + 2 de runtime + 1 de folga > 15 GiB utilizáveis da T4."""
+    fit = catalog.check_fit("qwen-image-2.1", "q4km", "T4", 1)
+
+    assert fit.fits is False
+    assert fit.required_gib == 14.9
+    assert fit.headroom_gib == 1.0
+    assert "mais 1.0 GiB de margem" in fit.reason
+    assert "15 GiB utilizáveis" in fit.reason
+    # A variante também não pode aparecer como compatível com a T4.
+    assert ("qwen-image-2.1", "q4km") not in {
+        (row.model_id, row.variant_id) for row in catalog.compatible_variants("T4").rows
+    }
 
 
 def test_modelos_indisponiveis_nunca_aparecem():

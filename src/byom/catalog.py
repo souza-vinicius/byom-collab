@@ -321,9 +321,12 @@ MODELS: tuple[ModelEntry, ...] = (
         (
             Variant("fp8-int8", "FP8 repo / INT8-ConvRot", 20.0, 0, "L4",
                     notes=("GPU com 24 GB ou mais; 7,26 GB de pesos INT8-ConvRot.",)),
-            Variant("q4km", "GGUF Q4_K_M", 12.0, 0, "T4",
-                    notes=("GPU de 12-16 GB com offload parcial para RAM; ~14,9 GB no total "
-                           "com encoder e VAE.",)),
+            Variant("q4km", "GGUF Q4_K_M", 12.9, 0, "L4",
+                    notes=("Pesos + encoder + VAE somam ~14,9 GB na página da Unsloth; "
+                           "o orçamento conta 12,9 GiB residentes na GPU, porque o encoder "
+                           "tem offload parcial para RAM.",
+                           "12,9 GiB + 2 de runtime + 1 de folga não cabe nos 15 GiB "
+                           "utilizáveis da T4; a GPU mínima é L4 (24 GiB).")),
         ),
         IMAGE_SOURCE,
         notes=(
@@ -407,7 +410,7 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "A100-40", "17 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 23,65: não "
                               "cabe em L4 com a folga de 1,2 GiB."),
     ProfileContext("qwen-image-2.1-q4km", "qwen-image-2.1", "q4km", 0, 1,
-                   "T4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela."),
+                   "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela."),
     ProfileContext("qwen-image-2.1-fp8", "qwen-image-2.1", "fp8-int8", 0, 1,
                    "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela."),
 )

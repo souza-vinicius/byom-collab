@@ -1,5 +1,5 @@
 name = "Qwen-Image-2.1 (GGUF Q4_K_M)"
-description = "Geração de imagens em T4/L4; POST /v1/images/generations, não chat."
+description = "Geração de imagens em L4 (24 GB); POST /v1/images/generations, não chat."
 opencode_output_limit = 8192
 runtime = "image"
 catalog_model = "qwen-image-2.1"
@@ -9,7 +9,7 @@ catalog_variant = "q4km"
 model = "qwen-image-2.1"
 served_model_name = "qwen-image-2.1"
 max_model_len = 1
-gpu = "T4"
+gpu = "L4"
 gpu_high_mem = false
 vllm_spec = "vllm"
 vllm_enforce_eager = false

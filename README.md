@@ -222,9 +222,10 @@ deles cabe em uma única GPU do Colab.
   sugere `--steps 20 --cfg-scale 6.0` para o fluxo via sd-cli; este projeto
   adota os padrões documentados da API (25/1) conforme o briefing, não um valor
   inventado para o sd.cpp. `POST /v1/images/edits` usa multipart e mantém os
-  padrões do servidor. Em uma Colab T4 de 15 GB, uma imagem 1024x1024 em 25
-  passos leva cerca de 120 s em fp16; são usados até ~14 GB de memória de GPU e
-  24 GB de RAM do sistema. A T4 não possui bf16, portanto o treino é recusado
+  padrões do servidor. A página documenta cerca de 120 s por imagem 1024x1024
+  em 25 passos numa Colab T4 de 15 GB; os dois perfis de imagem usam L4 porque o
+  custo total (pesos + encoder + VAE + runtime + folga obrigatória) não cabe nos
+  15 GiB utilizáveis da T4. A T4 não possui bf16, portanto o treino é recusado
   pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior. O nome do
   asset Linux fixado não declara seu backend; verifique o uso de GPU na primeira
   execução real. Se for um build de CPU, compile a partir da tag fixada com

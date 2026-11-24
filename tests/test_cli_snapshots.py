@@ -99,7 +99,7 @@ def test_snapshot_cli_profiles():
         'documented)\n'
         '  qwen-image-2.1:q4km — contexto doc 0 / servido 1\n'
         '  Modelo de difusão não tem janela autoregressiva; 1 é sentinela.\n'
-        '  Geração de imagens em T4/L4; POST /v1/images/generations, não chat.\n'
+        '  Geração de imagens em L4 (24 GB); POST /v1/images/generations, não chat.\n'
         'qwen3.8-27b-256k — Qwen3.8 27B (256k) (262,144 tokens servidos; reasoning xhigh)\n'
         '  qwen3.8-27b-awq:q4-awq — contexto doc 262,144 / servido 262,144\n'
         '  Contexto máximo documentado mantido em A100 80 GB (high_mem).\n'
@@ -129,8 +129,7 @@ def test_snapshot_cli_gpus():
     esperado = (
         'GPU | VRAM (GiB) | bf16 | VRAM aproximada | Perfis que cabem\n'
         '\n'
-        'T4 (Tesla T4) | 15 | nao | sim | gemma-4-12b-q4-gguf, gemma-4-e4b-q4-gguf, '
-        'qwen-image-2.1-q4km\n'
+        'T4 (Tesla T4) | 15 | nao | sim | gemma-4-12b-q4-gguf, gemma-4-e4b-q4-gguf\n'
         'L4 (L4) | 24 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, '
         'gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, muse-glimmer-30b-q2-gguf, '
         'qwen-image-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, '
@@ -193,7 +192,7 @@ def test_snapshot_cli_configure():
     assert res_img.exit_code == 0
     assert res_img.output == (
         "Applied profile: qwen-image-2.1-q4km — Qwen-Image-2.1 (GGUF Q4_K_M) (runtime image)\n"
-        "Contexto servido: 1 tokens; GPU: T4 (standard memory)\n"
+        "Contexto servido: 1 tokens; GPU: L4 (standard memory)\n"
         "Contexto documentado: 0 tokens (modelo qwen-image-2.1:q4km); "
         "Modelo de difusão não tem janela autoregressiva; 1 é sentinela.\n"
         "Reasoning padrão do modelo: not documented\n"
