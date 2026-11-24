@@ -16,9 +16,12 @@ explicitamente registrada em `PROFILE_CONTEXTS`.
 from __future__ import annotations
 
 import contextlib
+import math
 from dataclasses import dataclass, field
 
 RUNTIMES = ("vllm", "llama-cpp", "image")
+
+GIB = 2**30
 
 #: União dos valores documentados pelas páginas conferidas em 2026-11-23.
 #: Inkling: blog HF + chat_template.jinja; Qwen3.8 e Muse: páginas Unsloth.
@@ -59,6 +62,9 @@ GENERATION_SOURCE_IMAGE = (
 
 # Margens determinísticas (heurística de engenharia, não valor de documentação):
 # 2 GiB para runtime/processo e 2 GiB por 32K de contexto em f16 (mínimo 1 GiB).
+# O heurístico é o padrão de quem NÃO declarou `ModelEntry.kv_shape`: ele é
+# conservador de propósito (superestima modelos com janela local), não uma
+# medição. Modelo com `kv_shape` sai do heurístico (ver `KvProfile.cache_gib`).
 RUNTIME_RESERVE_GIB = 2.0
 KV_CACHE_GIB_PER_32K = 2.0
 MIN_KV_CACHE_GIB = 1.0
@@ -155,6 +161,53 @@ class Variant:
 
 
 @dataclass(frozen=True)
+class KvProfile:
+    """Forma do KV cache de um modelo híbrido: atenção completa + janela local.
+
+    O heurístico `KV_CACHE_GIB_PER_32K` cobra o mesmo por token em TODAS as
+    camadas e ignora a janela. Isso é conservador para um transformer denso e
+    grosseiramente errado para um modelo de atenção híbrida: as camadas locais
+    param de crescer em `window` tokens. Cada campo abaixo vem do `config.json`
+    oficial do modelo (`source` + `checked_at`, no mesmo formato das outras
+    fontes datadas do catálogo) — nada é inferido do nome do modelo.
+
+    `bytes_per_elem` é o dtype nativo do config (`torch_dtype`); o fator do
+    `kv_cache_dtype` do runtime entra depois, em `cache_gib`.
+    """
+
+    layers_full: int
+    layers_local: int
+    kv_heads: int
+    head_dim: int
+    window: int
+    bytes_per_elem: int = 2
+    source: str = ""
+    checked_at: str = ""
+
+    @property
+    def layers_total(self) -> int:
+        return self.layers_full + self.layers_local
+
+    def bytes_per_token(self, bytes_per_elem: float) -> float:
+        """K + V de uma camada de atenção completa, em bytes por token."""
+        return 2 * self.kv_heads * self.head_dim * bytes_per_elem
+
+    def cache_gib(self, max_model_len: int, dtype_factor: float = 1.0) -> float:
+        """KV em GiB, arredondado PARA CIMA no centésimo.
+
+        `2 (K,V) × kv_heads × head_dim × bytes × (full × ctx + local × min(ctx, janela))`.
+        Arredondar para cima é deliberado: o orçamento nunca pode prometer
+        memória a menos do que o runtime vai alocar.
+        """
+        bytes_per_elem = self.bytes_per_elem * dtype_factor
+        elementos = self.layers_full * max_model_len + self.layers_local * min(
+            max_model_len, self.window
+        )
+        bruto = self.bytes_per_token(bytes_per_elem) * elementos / GIB
+        return math.ceil(bruto * 100) / 100
+
+
+@dataclass(frozen=True)
 class ModelEntry:
     id: str
     name: str
@@ -173,6 +226,9 @@ class ModelEntry:
     thinking: ThinkingPolicy | None = None
     generation_defaults: dict[str, int | float] = field(default_factory=dict)
     generation_source: str = ""
+    #: None = KV pelo heurístico `KV_CACHE_GIB_PER_32K` (não medido).
+    #: Preenchido só com o `config.json` oficial em mãos.
+    kv_shape: KvProfile | None = None
 
 
 @dataclass(frozen=True)
@@ -804,13 +860,25 @@ def effective_kv_dtype(runtime: str, declared: str | None) -> str:
 
 
 def kv_cache_gib(
-    max_model_len: int, *, kv_cache_dtype: str | None = None, runtime: str = "vllm"
+    max_model_len: int,
+    model: ModelEntry | None = None,
+    *,
+    kv_cache_dtype: str | None = None,
+    runtime: str = "vllm",
 ) -> float:
-    """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato."""
+    """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato.
+
+    Com `model.kv_shape` a conta segue a arquitetura (`KvProfile.cache_gib`):
+    só as camadas de atenção completa crescem com o contexto. Sem `kv_shape`,
+    vale o heurístico de `KV_CACHE_GIB_PER_32K` — conservador, não medido.
+    """
     if max_model_len <= 0:
         return MIN_KV_CACHE_GIB
     dtype = effective_kv_dtype(runtime, kv_cache_dtype)
     factor = KV_CACHE_DTYPE_FACTORS.get(dtype, 1.0)
+    shape = getattr(model, "kv_shape", None)
+    if shape is not None:
+        return shape.cache_gib(max_model_len, factor)
     return max(MIN_KV_CACHE_GIB, KV_CACHE_GIB_PER_32K * factor * max_model_len / 32768)
 
 
@@ -819,18 +887,44 @@ def vram_headroom_gib(vram_gib: float) -> float:
     return round(max(VRAM_HEADROOM_MIN_GIB, VRAM_HEADROOM_FRACTION * vram_gib), 2)
 
 
+def kv_shape_note(model: ModelEntry | None) -> str:
+    """Procedência do KV: arquitetura datada do `config.json` ou heurístico.
+
+    O texto é o que a interface usa para dizer de onde veio o número — sem isso
+    um KV de 0,58 GiB parece um chute ao lado do heurístico de 2 GiB.
+    """
+    shape = getattr(model, "kv_shape", None)
+    if shape is None:
+        return (
+            f"heurístico de {KV_CACHE_GIB_PER_32K:g} GiB por 32K (não medido: "
+            "o modelo não tem `kv_shape` no catálogo)"
+        )
+    return (
+        f"arquitetura: {shape.layers_full} camadas de atenção completa + "
+        f"{shape.layers_local} com janela de {shape.window} tokens; "
+        f"fonte {shape.source} ({shape.checked_at})"
+    )
+
+
 def required_vram_gib(
     variant: Variant,
     max_model_len: int,
     runtime: str = "",
     *,
     kv_cache_dtype: str | None = None,
+    model: ModelEntry | None = None,
 ) -> float:
-    """Pesos + projetor de visão + runtime + KV; sem folga (ver `check_fit`)."""
+    """Pesos + projetor de visão + runtime + KV; sem folga (ver `check_fit`).
+
+    `model` é a entrada do catálogo: é dela que sai o `kv_shape` (quando existe)
+    — sem ele a conta cai no heurístico de 2 GiB/32K.
+    """
     kv = (
         0.0
         if runtime == "image"
-        else kv_cache_gib(max_model_len, kv_cache_dtype=kv_cache_dtype, runtime=runtime)
+        else kv_cache_gib(
+            max_model_len, model, kv_cache_dtype=kv_cache_dtype, runtime=runtime
+        )
     )
     return round(
         variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv, 2
@@ -843,10 +937,11 @@ def _fits(
     gpu: Gpu,
     max_model_len: int,
     kv_cache_dtype: str | None = None,
+    model: ModelEntry | None = None,
 ) -> bool:
     """Pesos + visão + runtime + KV precisam caber com a folga da GPU."""
     required = required_vram_gib(
-        variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype
+        variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype, model=model
     )
     # `<` e não `<=`: com igualdade a folga é zero, que é justamente o caso que
     # a folga existe para reprovar.
@@ -879,19 +974,24 @@ def check_fit(
     """Verifique se a variante cabe na GPU declarada, sem realocar nada."""
     variant = variant_by_id(model_id, variant_id)
     gpu = gpu_by_id(gpu_id)
-    runtime = model_by_id(model_id).runtime
+    entry = model_by_id(model_id)
+    runtime = entry.runtime
     required = required_vram_gib(
-        variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype
+        variant,
+        max_model_len,
+        runtime,
+        kv_cache_dtype=kv_cache_dtype,
+        model=entry,
     )
     headroom = vram_headroom_gib(gpu.vram_gib)
     alternatives: list[str] = []
     if variant.available:
-        for other in model_by_id(model_id).variants:
+        for other in entry.variants:
             if other.id == variant.id or not other.available:
                 continue
-            if _fits(other, runtime, gpu, max_model_len, kv_cache_dtype):
+            if _fits(other, runtime, gpu, max_model_len, kv_cache_dtype, entry):
                 alternatives.append(f"{model_id}:{other.id}")
-    fits = _fits(variant, runtime, gpu, max_model_len, kv_cache_dtype)
+    fits = _fits(variant, runtime, gpu, max_model_len, kv_cache_dtype, entry)
     reason = ""
     if not variant.available:
         reason = variant.reason
@@ -900,14 +1000,22 @@ def check_fit(
             0.0
             if runtime == "image"
             else kv_cache_gib(
-                max_model_len, kv_cache_dtype=kv_cache_dtype, runtime=runtime
+                max_model_len,
+                entry,
+                kv_cache_dtype=kv_cache_dtype,
+                runtime=runtime,
             )
         )
         dtype = effective_kv_dtype(runtime, kv_cache_dtype)
-        cache = f"KV ~{kv:.1f} em {dtype}" if dtype else f"KV ~{kv:.1f}"
+        cache = f"KV ~{kv:.2f} GiB em {dtype}" if dtype else f"KV ~{kv:.2f} GiB"
+        if entry.kv_shape is not None:
+            cache += (
+                f" calculado pela arquitetura ({entry.kv_shape.layers_full} camadas "
+                f"de atenção completa, janela de {entry.kv_shape.window})"
+            )
         visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
         reason = (
-            f"{variant.label} precisa de ~{required:.1f} GiB "
+            f"{variant.label} precisa de ~{required:.2f} GiB "
             f"(pesos {variant.memory_gib:g}{visao} + runtime {RUNTIME_RESERVE_GIB:g} + "
             f"{cache}) mais {headroom:.1f} GiB de margem, "
             f"mas {gpu.label} tem {gpu.vram_gib} GiB utilizáveis."
@@ -1105,6 +1213,18 @@ def format_compatible_models(
     return "\n".join(lines)
 
 
+def _check_kv_shape(model_id: str, shape: KvProfile) -> None:
+    """Invariantes do `kv_shape`: números positivos e fonte datada."""
+    if min(shape.kv_heads, shape.head_dim, shape.bytes_per_elem) <= 0:
+        raise ValueError(f"kv_shape inválido (heads/dim/bytes): {model_id}")
+    if shape.layers_full < 0 or shape.layers_local < 0 or not shape.layers_total:
+        raise ValueError(f"kv_shape sem camadas: {model_id}")
+    if shape.layers_local and shape.window <= 0:
+        raise ValueError(f"kv_shape com camadas locais e sem janela: {model_id}")
+    if not shape.source or not shape.checked_at:
+        raise ValueError(f"kv_shape sem fonte datada: {model_id}")
+
+
 def validate_catalog() -> None:
     """Falhe rápido se o catálogo tiver IDs duplicados ou números impossíveis."""
     seen_gpus: set[str] = set()
@@ -1120,6 +1240,8 @@ def validate_catalog() -> None:
             raise ValueError(f"Modelo sem fornecedor declarado: {model.id}")
         if model.id not in PROVIDER_SOURCES:
             raise ValueError(f"Fornecedor sem fonte registrada: {model.id}")
+        if model.kv_shape is not None:
+            _check_kv_shape(model.id, model.kv_shape)
         seen_models.add(model.id)
         if model.reasoning_effort is not None and model.reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"reasoning_effort não documentado: {model.id}")
