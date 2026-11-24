@@ -462,15 +462,61 @@ def _create_colab_session(cfg: config.Config, name: str) -> None:
 
 
 def _record_allocation(name: str) -> config.State:
-    """Persist the session identity as soon as the VM exists."""
+    """Persist the session identity as soon as the VM exists.
+
+    `colab status` only enriches the endpoint: it runs *after* the write, so a
+    slow or failing CLI can never leave an allocated VM without a local record.
+    """
     state = config.State(
         session=name, endpoint="", nonce=secrets.token_hex(16), created_at=_now()
     )
-    line = colab.status_line(name)
-    if line is not None:
-        state.endpoint = line.endpoint
     config.save_state(state)
+    _enrich_endpoint(state)
     return state
+
+
+def _enrich_endpoint(state: config.State) -> None:
+    """Fill `state.endpoint` from the CLI; failure keeps the record as it is."""
+    try:
+        line = colab.status_line(state.session)
+    except colab.ColabCliError as exc:
+        _say(f"  Endpoint not resolved yet ({exc}); the tunnel retries it later")
+        return
+    if line is None or not line.endpoint:
+        return
+    state.endpoint = line.endpoint
+    try:
+        config.update_state(endpoint=line.endpoint)
+    except config.StateFileError:  # pragma: no cover - a corrida exigiria escrita externa
+        return
+
+
+def _stop_allocation(name: str) -> bool:
+    """Stop an allocated session by name and try to confirm the deallocation.
+
+    `colab stop -s <name>` treats an unknown session as a no-op, so calling it
+    is idempotent and does not depend on `state.json`. When the CLI cannot
+    confirm, the local record is kept so `byom down` can try again.
+    """
+    _say(f"Stopping session '{name}'")
+    try:
+        colab.stop(name)
+    except colab.ColabCliError as exc:
+        _say(f"Warning: `colab stop -s {name}` failed ({exc})")
+        _say("  The VM may still be allocated; run `byom down` after fixing the CLI")
+        return False
+    try:
+        confirmed = not colab.is_allocated(name)
+    except colab.ColabCliError as exc:
+        _say(f"Warning: could not confirm shutdown ({exc})")
+        confirmed = False
+    if not confirmed:
+        _say("Unknown: could not confirm deallocation")
+        _say("  The VM may still be consuming compute units; run `byom down`")
+        return False
+    config.clear_state()
+    _say("Session stopped (confirmed by Colab)")
+    return True
 
 
 def _bootstrap_worker(cfg: config.Config, state: config.State, client: remote.Remote) -> None:
@@ -569,11 +615,20 @@ def _run_up(
 
         _say("Waiting for the model to become ready")
         _wait_ready(cfg, cfg.bootstrap_timeout_min * 60, expected_session=state.session)
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C (or a nested command aborting) after the VM exists still has
+        # to release it; the interruption is propagated after the cleanup.
+        if allocated:
+            _stop_allocation(name)
+        else:
+            config.clear_state()
+        raise
     except UP_FAILURE_TYPES as exc:
         _say(f"Failed: {exc}")
         if allocated:
-            _say("Stopping session")
-            _down(cfg, quiet=True)
+            # The session name is the only reliable handle here: `state.json`
+            # may be unreadable by the time the failure unwinds.
+            _stop_allocation(name)
         else:
             config.clear_state()
         raise typer.Exit(1) from exc

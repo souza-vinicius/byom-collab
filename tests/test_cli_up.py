@@ -239,3 +239,97 @@ def test_start_daemon_entrega_pid_ao_filho_antes_do_exec(tmp_path: Path, monkeyp
         scope.setenv("BYOM_DAEMON_EXPECTED_PID", "")
         captured["preexec_fn"]()
         assert os.environ["BYOM_DAEMON_EXPECTED_PID"] == str(os.getpid())
+
+
+class _FakeRemote:
+    """Remote sem SSH: o teste cobre só a contabilidade da alocação."""
+
+    instancias: list[_FakeRemote] = []
+
+    def __init__(self, session, cfg):
+        self.session = session
+        self.cfg = cfg
+        _FakeRemote.instancias.append(self)
+
+    def start(self, forwards=(), on_progress=None):
+        return None
+
+    def stop(self):
+        return None
+
+
+def test_up_registra_estado_antes_do_status_e_encerra_pela_sessao(tmp_path, monkeypatch):
+    """`colab status` só enriquece o endpoint; falhar nele não apaga o registro.
+
+    Com o state.json gravado logo após `colab new`, o teardown consegue encerrar
+    a VM pelo nome mesmo quando o CLI de status está quebrado.
+    """
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    config.save_config(config.Config())
+    eventos: list[str] = []
+    estado_existia_no_status: list[bool] = []
+    paradas: list[str] = []
+
+    def allocate(name, *args, **kwargs):
+        eventos.append("new")
+
+    def status_quebrado(name):
+        estado_existia_no_status.append(config.state_path().exists())
+        raise cli.colab.ColabCliError("timeout no `colab status`")
+
+    def bootstrap(*args, **kwargs):
+        eventos.append("bootstrap")
+        raise RuntimeError("falha simulada depois da alocação")
+
+    monkeypatch.setattr(cli, "_sync_external_configs", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_orphans", lambda: None)
+    monkeypatch.setattr(cli.colab, "new", allocate)
+    monkeypatch.setattr(cli.colab, "status_line", status_quebrado)
+    monkeypatch.setattr(cli.colab, "stop", lambda name: paradas.append(name))
+    # O Colab não confirma a liberação: o registro local precisa sobreviver.
+    monkeypatch.setattr(cli.colab, "is_allocated", lambda name, endpoint="": True)
+    monkeypatch.setattr(cli, "_bootstrap_worker", bootstrap)
+    monkeypatch.setattr(cli.remote, "Remote", _FakeRemote)
+
+    resultado = CliRunner().invoke(cli.app, ["up"])
+
+    assert resultado.exit_code == 1
+    assert estado_existia_no_status == [True]
+    assert paradas and paradas[0].startswith("byom-")
+    estado = config.load_state()
+    assert estado is not None
+    assert estado.session == paradas[0]
+    assert estado.endpoint == ""
+
+
+def test_up_encerra_pela_sessao_quando_interrompido(tmp_path, monkeypatch):
+    """Ctrl+C durante o bootstrap não pode deixar a VM alocada."""
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    config.save_config(config.Config())
+    paradas: list[str] = []
+
+    def bootstrap(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_sync_external_configs", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_orphans", lambda: None)
+    monkeypatch.setattr(cli.colab, "new", lambda name, *a, **k: None)
+    monkeypatch.setattr(
+        cli.colab,
+        "status_line",
+        lambda name: cli.colab.SessionLine(
+            name=name, endpoint="m-s-abc", hardware="L4", shape="STANDARD", variant="GPU"
+        ),
+    )
+    monkeypatch.setattr(cli.colab, "stop", lambda name: paradas.append(name))
+    monkeypatch.setattr(cli.colab, "is_allocated", lambda name, endpoint="": False)
+    monkeypatch.setattr(cli, "_bootstrap_worker", bootstrap)
+    monkeypatch.setattr(cli.remote, "Remote", _FakeRemote)
+
+    resultado = CliRunner().invoke(cli.app, ["up"])
+
+    # O CliRunner converte Ctrl+C em saída != 0; o essencial é a VM encerrada.
+    assert resultado.exit_code != 0
+    assert len(paradas) == 1
+    assert paradas[0].startswith("byom-")
+    assert config.load_state() is None

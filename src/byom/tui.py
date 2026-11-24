@@ -2257,8 +2257,10 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
         except KeyboardInterrupt:
             exec_etapas.registrar_log(buf.getvalue())
             if allocated:
+                # Mesmo teardown da CLI: `colab stop -s <nome>` não depende do
+                # state.json e é idempotente para uma sessão inexistente.
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                    cli._down(cfg, quiet=True)
+                    cli._stop_allocation(name)
             else:
                 config.clear_state()
             raise
@@ -2270,7 +2272,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                     exec_etapas.falhar(idx, "falhou")
             if allocated:
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                    cli._down(cfg, quiet=True)
+                    cli._stop_allocation(name)
             else:
                 config.clear_state()
             raise _ErroEtapa(
