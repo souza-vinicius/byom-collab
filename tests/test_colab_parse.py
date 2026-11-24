@@ -187,6 +187,8 @@ def test_status_line_exige_nome_correspondente(monkeypatch):
 
 
 def test_exec_popen_isolates_process_and_closes_log_in_parent(monkeypatch, tmp_path):
+    # O `colab` não precisa existir no PATH: a suíte roda com PATH mínimo.
+    monkeypatch.setenv("BYOM_COLAB_BIN", "/usr/local/bin/colab")
     captured = {}
 
     class FakeProc:
