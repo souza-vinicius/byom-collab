@@ -31,14 +31,34 @@ class SyncResult:
     changed: bool
 
 
+#: Mensagem única para o arquivo JSONC. O byom edita o JSON como texto
+#: (preservando o resto do arquivo), então reescrever um `.jsonc` apagaria os
+#: comentários: recusar é a opção conservadora.
+JSONC_MESSAGE = (
+    "o byom não reescreve {path}: arquivo JSONC (comentários/vírgulas finais) "
+    "perderia comentários. Use um caminho .json — por exemplo "
+    "`byom up --opencode-config <dir>/opencode.json` ou a variável OPENCODE_CONFIG"
+)
+
+
+def _reject_jsonc(path: Path) -> Path:
+    if path.suffix.lower() == ".jsonc":
+        raise OpenCodeConfigError(JSONC_MESSAGE.format(path=path))
+    return path
+
+
 def resolve_config_path(explicit_path: Path | None = None) -> Path:
-    """Resolve the primary global OpenCode config file without editing project configs."""
+    """Resolve the primary global OpenCode config file without editing project configs.
+
+    `.json` tem precedência; se só existir `.jsonc`, o sync recusa com o caminho
+    e a forma de apontar outro arquivo, em vez de apagar os comentários.
+    """
     if explicit_path is not None:
-        return explicit_path.expanduser()
+        return _reject_jsonc(explicit_path.expanduser())
 
     override = os.environ.get("OPENCODE_CONFIG")
     if override:
-        return Path(override).expanduser()
+        return _reject_jsonc(Path(override).expanduser())
 
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     if xdg_config_home:
@@ -49,10 +69,12 @@ def resolve_config_path(explicit_path: Path | None = None) -> Path:
         config_home = Path.home() / ".config"
 
     opencode_dir = config_home / "opencode"
-    for name in ("opencode.jsonc", "opencode.json"):
+    # `.json` primeiro: é o único formato que o sync pode reescrever sem perder
+    # comentários. `.jsonc` só aparece para virar erro explicativo.
+    for name in ("opencode.json", "opencode.jsonc"):
         candidate = opencode_dir / name
         if candidate.exists():
-            return candidate
+            return _reject_jsonc(candidate)
     return opencode_dir / "opencode.json"
 
 

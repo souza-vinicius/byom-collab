@@ -483,7 +483,9 @@ def test_aplicar_harness_automatico_opencode_e_dsh(isolated_home):
     assert tui._aplicar_harness_automatico(rec_ok, "dsh", cfg) is True
     assert (isolated_home / ".dsh" / "profiles" / "desktop" / "cordis.patch.yml").is_file()
 
-    # Caso opencode.jsonc possua comentários: não sobrescreve e orienta configuração manual
+    # Só existe opencode.jsonc (com comentários): não sobrescreve e orienta o
+    # caminho .json em vez de apagar comentários.
+    (isolated_home / ".config" / "opencode" / "opencode.json").unlink()
     jsonc = isolated_home / ".config" / "opencode" / "opencode.jsonc"
     jsonc.write_text('{\n  // comentário\n  "mcp": {}\n}\n', encoding="utf-8")
     rec_err = tui.criar_console(width=100, height=30, record=True)

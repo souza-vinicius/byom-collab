@@ -129,7 +129,7 @@ def test_sync_rejects_jsonc_without_modifying_it(tmp_path: Path):
     original = '{\n  // keep this comment\n  "model": "mimo/model",\n}\n'
     path.write_text(original, encoding="utf-8")
 
-    with pytest.raises(opencode.OpenCodeConfigError, match="valid JSON"):
+    with pytest.raises(opencode.OpenCodeConfigError, match="JSONC"):
         opencode.sync_config(config.Config(), path)
 
     assert path.read_text(encoding="utf-8") == original
@@ -179,3 +179,56 @@ def test_up_does_not_allocate_gpu_if_opencode_sync_fails(tmp_path: Path, monkeyp
     assert result.exit_code == 1
     assert "before allocating the GPU" in result.output
     assert allocated is False
+
+
+# -- 5.7: `.json` tem precedência e `.jsonc` vira erro explicativo ------------
+def test_json_tem_precedencia_sobre_jsonc(isolated_home):
+    pasta = isolated_home / ".config" / "opencode"
+    pasta.mkdir(parents=True)
+    (pasta / "opencode.json").write_text('{"model": "antigo"}', encoding="utf-8")
+    (pasta / "opencode.jsonc").write_text('{"model": "comentado"}', encoding="utf-8")
+
+    assert opencode.resolve_config_path() == pasta / "opencode.json"
+
+
+def test_apenas_jsonc_recusa_com_caminho_e_como_apontar_outro(isolated_home):
+    pasta = isolated_home / ".config" / "opencode"
+    pasta.mkdir(parents=True)
+    jsonc = pasta / "opencode.jsonc"
+    original = '{\n  // mantém\n  "model": "x"\n}\n'
+    jsonc.write_text(original, encoding="utf-8")
+
+    with pytest.raises(opencode.OpenCodeConfigError) as excinfo:
+        opencode.resolve_config_path()
+
+    mensagem = str(excinfo.value)
+    assert str(jsonc) in mensagem
+    assert "--opencode-config" in mensagem and "OPENCODE_CONFIG" in mensagem
+    assert jsonc.read_text(encoding="utf-8") == original
+
+
+def test_jsonc_explicito_tambem_e_recusado_sem_escrever(tmp_path):
+    jsonc = tmp_path / "config.jsonc"
+    original = '{\n  // mantém\n  "model": "x"\n}\n'
+    jsonc.write_text(original, encoding="utf-8")
+
+    with pytest.raises(opencode.OpenCodeConfigError, match="JSONC"):
+        opencode.sync_config(config.Config(), jsonc)
+
+    assert jsonc.read_text(encoding="utf-8") == original
+
+
+def test_override_por_ambiente_jsonc_e_recusado(tmp_path, monkeypatch):
+    jsonc = tmp_path / "custom.jsonc"
+    jsonc.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("OPENCODE_CONFIG", str(jsonc))
+
+    with pytest.raises(opencode.OpenCodeConfigError, match="JSONC"):
+        opencode.resolve_config_path()
+
+
+def test_sem_nenhum_arquivo_o_alvo_e_json(tmp_path, monkeypatch, isolated_home):
+    monkeypatch.delenv("OPENCODE_CONFIG", raising=False)
+    assert opencode.resolve_config_path() == (
+        isolated_home / ".config" / "opencode" / "opencode.json"
+    )
