@@ -196,3 +196,281 @@ main_pattern = "Ternary-Bonsai-2.5-27B-Q2_0.gguf"
 
     assert esperado in str(excinfo.value)
     assert "invalido.toml" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# `[worker.spec]`: decodificação especulativa generalizada
+# ---------------------------------------------------------------------------
+
+BASE_PERFIL = """
+name = "Spec (teste)"
+runtime = "llama-cpp"
+
+[config]
+model = "ternary-bonsai-2.5-27b"
+served_model_name = "ternary-bonsai-2.5-27b"
+max_model_len = 32768
+gpu = "L4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[worker]
+binary_url = "https://example.invalid/llama.tar.gz"
+binary_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+binary_dir = "llama.cpp"
+model_repo = "prism-ml/Ternary-Bonsai-2.5-27B-GGUF"
+main_pattern = "Ternary-Bonsai-2.5-27B-Q2_0.gguf"
+"""
+
+
+def _perfil(tmp_path: Path, extra: str) -> tuple[Path, config.Profile | None]:
+    pasta = tmp_path / "profiles"
+    pasta.mkdir()
+    (pasta / "spec.toml").write_text(BASE_PERFIL + extra, encoding="utf-8")
+    return pasta, None
+
+
+def test_spec_mtp_emite_as_flags_sem_model_draft(build_module):
+    """MTP carrega a cabeça embutida no próprio arquivo: `-m`, nunca `-md`.
+
+    Valores do preset do publicador (`presets/llama.cpp/mtp-cuda.json`, medido
+    no build `prism-b12128-d7b2896`): n-min 0, n-max 3, p-min 0.1.
+    """
+    argv = build_module.build_llama_args(
+        _cfg(
+            spec={"type": "draft-mtp", "n_min": 0, "n_max": 3, "p_min": 0.1},
+            main_pattern="Ternary-Bonsai-2.5-27B-PTQ1_0-mtp.gguf",
+        )
+    )
+
+    assert _valor(argv, "--spec-type") == "draft-mtp"
+    assert _valor(argv, "--spec-draft-n-min") == "0"
+    assert _valor(argv, "--spec-draft-n-max") == "3"
+    assert _valor(argv, "--spec-draft-p-min") == "0.1"
+    assert "--model-draft" not in argv
+    assert "--n-gpu-layers-draft" not in argv
+    # O modelo principal continua sendo o arquivo `-mtp.gguf`.
+    assert _valor(argv, "--model") == "Ternary-Bonsai-2.5-27B-PTQ1_0-mtp.gguf"
+
+
+def test_spec_com_drafter_pattern_emite_md_e_ngld(build_module):
+    argv = build_module.build_llama_args(
+        _cfg(
+            spec={
+                "type": "draft-dflash",
+                "n_max": 4,
+                "drafter_pattern": "Bonsai-DFlash2-Q8_0.gguf",
+            }
+        )
+    )
+
+    assert _valor(argv, "--model-draft") == "Bonsai-DFlash2-Q8_0.gguf"
+    assert _valor(argv, "--spec-type") == "draft-dflash"
+    assert _valor(argv, "--spec-draft-n-max") == "4"
+    assert _valor(argv, "--n-gpu-layers-draft") == "99"
+
+
+def test_dspark_legado_produz_o_mesmo_argv_de_antes(build_module):
+    """`dspark = true` continua valendo, com o argv idêntico ao da versão antiga."""
+    cfg = _cfg(dspark=True, drafter_pattern="dspark-Inkling-2-Mini-Q8_0.gguf")
+    argv = build_module.build_llama_args(cfg)
+
+    esperado = [
+        "/content/byom/llama.cpp/llama-server",
+        "--model",
+        "Ternary-Bonsai-2.5-27B-Q2_0.gguf",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--ctx-size",
+        "32768",
+        "--alias",
+        "ternary-bonsai-2.5-27b",
+        "--model-draft",
+        "dspark-Inkling-2-Mini-Q8_0.gguf",
+        "--spec-type",
+        "draft-dspark",
+        "--spec-draft-n-max",
+        "3",
+        "--n-gpu-layers-draft",
+        "99",
+    ]
+    assert argv == esperado
+
+
+def test_spec_sem_type_falha_no_load_do_perfil(tmp_path: Path):
+    pasta, _ = _perfil(tmp_path, '\n[worker.spec]\nn_max = 3\n')
+
+    with pytest.raises(ValueError) as excinfo:
+        config.available_profiles(pasta)
+
+    assert "type" in str(excinfo.value)
+    assert "spec.toml" in str(excinfo.value)
+
+
+def test_spec_sem_type_falha_tambem_no_argv(build_module):
+    with pytest.raises(ValueError, match="type"):
+        build_module.build_llama_args(_cfg(spec={"n_max": 3}))
+
+
+def test_dspark_e_spec_juntos_falham(tmp_path: Path):
+    pasta, _ = _perfil(
+        tmp_path,
+        '\ndspark = true\ndrafter_pattern = "d.guf"\n\n[worker.spec]\ntype = "draft-mtp"\n',
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        config.available_profiles(pasta)
+
+    assert "dspark" in str(excinfo.value)
+    assert "spec" in str(excinfo.value)
+
+
+def test_spec_exige_runtime_llama_cpp(tmp_path: Path):
+    pasta = tmp_path / "profiles"
+    pasta.mkdir()
+    (pasta / "spec.toml").write_text(
+        BASE_PERFIL.replace('runtime = "llama-cpp"', 'runtime = "vllm"')
+        + '\n[worker.spec]\ntype = "draft-mtp"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        config.available_profiles(pasta)
+
+    assert "llama-cpp" in str(excinfo.value)
+
+
+def test_spec_de_tipo_sem_cabeca_embutida_exige_drafter(tmp_path: Path):
+    pasta, _ = _perfil(tmp_path, '\n[worker.spec]\ntype = "draft-dspark"\n')
+
+    with pytest.raises(ValueError) as excinfo:
+        config.available_profiles(pasta)
+
+    assert "drafter_pattern" in str(excinfo.value)
+
+
+def test_spec_com_n_min_maior_que_n_max_falha(tmp_path: Path):
+    pasta, _ = _perfil(
+        tmp_path, '\n[worker.spec]\ntype = "draft-mtp"\nn_min = 5\nn_max = 2\n'
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        config.available_profiles(pasta)
+
+    assert "n_min" in str(excinfo.value)
+
+
+def test_spec_recusa_chave_desconhecida(tmp_path: Path):
+    pasta, _ = _perfil(tmp_path, '\n[worker.spec]\ntype = "draft-mtp"\nn_maxx = 3\n')
+
+    with pytest.raises(ValueError) as excinfo:
+        config.available_profiles(pasta)
+
+    assert "n_maxx" in str(excinfo.value)
+
+
+def test_perfil_mtp_temporario_carrega_a_spec(tmp_path: Path):
+    pasta, _ = _perfil(
+        tmp_path,
+        '\nflash_attn = true\n\n[worker.spec]\ntype = "draft-mtp"\nn_min = 0\n'
+        "n_max = 3\np_min = 0.1\n",
+    )
+
+    (perfil,) = config.available_profiles(pasta)
+
+    assert perfil.worker is not None
+    assert perfil.worker["spec"] == {
+        "type": "draft-mtp",
+        "n_min": 0,
+        "n_max": 3,
+        "p_min": 0.1,
+    }
+
+
+@pytest.fixture
+def prepare_module():
+    """`worker/prepare_runtime.py` como módulo (não é pacote)."""
+    spec = importlib.util.spec_from_file_location(
+        "byom_prepare_runtime_llama", WORKER_DIR / "prepare_runtime.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_prepare_carrega_o_mtp_como_modelo_e_nao_como_drafter(
+    tmp_path, monkeypatch, prepare_module
+):
+    """O `-mtp.gguf` vai para `main`; nenhum `drafter` é gravado no manifest."""
+    import hashlib
+    import io
+    import json
+    import tarfile
+
+    arquivos = [
+        "Ternary-Bonsai-2.5-27B-PTQ1_0-mtp.gguf",
+        "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
+    ]
+
+    def _tarball() -> bytes:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            data = b"#!/bin/sh\necho llama-server\n"
+            info = tarfile.TarInfo("llama.cpp/llama-server")
+            info.size = len(data)
+            info.mode = 0o755
+            tar.addfile(info, io.BytesIO(data))
+        return buffer.getvalue()
+
+    tarball = _tarball()
+    byom = tmp_path / "byom"
+    monkeypatch.setattr(prepare_module, "BYOM_DIR", byom)
+    monkeypatch.setattr(prepare_module, "MODEL_DIR", byom / "models")
+    monkeypatch.setattr(prepare_module, "MANIFEST", byom / "runtime_manifest.json")
+    monkeypatch.setattr(prepare_module, "hf_files", lambda repo: arquivos)
+
+    def _download(url: str, destino: Path, sha: str | None = None) -> None:
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        corpo = tarball if url.endswith(".tar.gz") else f"peso:{url}".encode()
+        if sha is not None:
+            assert hashlib.sha256(corpo).hexdigest() == sha
+        destino.write_bytes(corpo)
+
+    monkeypatch.setattr(prepare_module, "download", _download)
+
+    session = tmp_path / "session.json"
+    session.write_text(
+        json.dumps(
+            {
+                "runtime": "llama-cpp",
+                "model": "ternary-bonsai-2.5-27b",
+                "served_model_name": "ternary-bonsai-2.5-27b",
+                "max_model_len": 65536,
+                "vllm_port": 8000,
+                "worker": {
+                    "binary_url": "https://example.invalid/llama.tar.gz",
+                    "binary_sha256": hashlib.sha256(tarball).hexdigest(),
+                    "binary_dir": "llama.cpp",
+                    "model_repo": "prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+                    "main_pattern": "Ternary-Bonsai-2.5-27B-PTQ1_0-mtp.gguf",
+                    "mmproj_pattern": "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
+                    "spec": {"type": "draft-mtp", "n_min": 0, "n_max": 3, "p_min": 0.1},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = prepare_module.prepare(session)
+
+    assert manifest["main"].endswith("PTQ1_0-mtp.gguf")
+    assert "drafter" not in manifest

@@ -80,8 +80,37 @@ def _resolved(key: str, default: str) -> str:
     return str(value) if value else default
 
 
+#: Tipos de spec cuja cabeça de rascunho vem EMBUTIDA no arquivo principal, em
+#: vez de um `-md` separado. O `-mtp.gguf` do Bonsai 2.5 é carregado como
+#: modelo (`-m`), não como drafter: "Load an MTP file instead of the plain one,
+#: not alongside it" (docs.prismml.com/models/bonsai-2-5-27b.md, 2026-11-24).
+#: Os demais tipos (`draft-simple`, `draft-eagle3`, `draft-dflash`,
+#: `draft-dspark`) precisam de `-md <arquivo>`.
+EMBEDDED_DRAFTER_SPEC_TYPES = frozenset({"draft-mtp"})
+
+
+def _spec(worker: dict) -> dict | None:
+    """Tabela de spec efetiva do `[worker]`: `[worker.spec]` ou o `dspark` legado.
+
+    `dspark = true` equivale a `spec.type = "draft-dspark"` com `n_max = 3`, o
+    argv que o perfil DSpark já produzia. Sem spec nenhuma, devolve None.
+    """
+    spec = worker.get("spec")
+    if spec is not None:
+        if not isinstance(spec, dict):
+            raise ValueError("[worker.spec] must be a table")
+        if not isinstance(spec.get("type"), str) or not spec["type"].strip():
+            raise ValueError("[worker.spec] requires a non-empty type (e.g. draft-mtp)")
+        return dict(spec)
+    if worker.get("dspark"):
+        if not worker.get("drafter_pattern"):
+            raise ValueError("dspark requires drafter_pattern in the profile")
+        return {"type": "draft-dspark", "n_max": 3}
+    return None
+
+
 def build_llama_args(cfg: dict) -> list[str]:
-    """Comando llama-server para GGUF, com/mmproj, Jinja e decodificação DSpark."""
+    """Comando llama-server para GGUF, com/mmproj, Jinja, attention e spec."""
     worker = cfg.get("worker") or {}
     sampling = worker.get("sampling") or {}
     args = [
@@ -106,22 +135,27 @@ def build_llama_args(cfg: dict) -> list[str]:
     mmproj = worker.get("mmproj_pattern")
     if mmproj:
         args.extend(["--mmproj", _resolved("mmproj", str(mmproj))])
-    if worker.get("dspark"):
-        drafter = worker.get("drafter_pattern")
-        if not drafter:
-            raise ValueError("dspark requires drafter_pattern in the profile")
-        args.extend(
-            [
-                "--model-draft",
-                _resolved("drafter", str(drafter)),
-                "--spec-type",
-                "draft-dspark",
-                "--spec-draft-n-max",
-                "3",
-                "--n-gpu-layers-draft",
-                "99",
-            ]
-        )
+    spec = _spec(worker)
+    if spec is not None:
+        tipo = str(spec["type"])
+        drafter = spec.get("drafter_pattern") or worker.get("drafter_pattern")
+        if not drafter and tipo not in EMBEDDED_DRAFTER_SPEC_TYPES:
+            raise ValueError(
+                f"spec type {tipo!r} needs drafter_pattern (a separate draft file "
+                "passed as --model-draft); only draft-mtp embeds the head"
+            )
+        if drafter:
+            args.extend(["--model-draft", _resolved("drafter", str(drafter))])
+        args.extend(["--spec-type", tipo])
+        for key, flag in (
+            ("n_min", "--spec-draft-n-min"),
+            ("n_max", "--spec-draft-n-max"),
+            ("p_min", "--spec-draft-p-min"),
+        ):
+            if key in spec:
+                args.extend([flag, str(spec[key])])
+        if drafter:
+            args.extend(["--n-gpu-layers-draft", "99"])
     for key, flag in (
         ("temperature", "--temp"),
         ("top_p", "--top-p"),
