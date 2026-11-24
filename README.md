@@ -409,15 +409,18 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   jobs concorrentes (padrão `4`; valores inválidos voltam para `4`); requisições
   excedentes recebem HTTP 503. Defina a variável de ambiente no ambiente da VM
   para alterá-la; ela não faz parte de `session.json`.
-* **Endpoints internos.** `/internal/state` e `/internal/begin-shutdown` aceitam
-  apenas clientes loopback (HTTP 403 caso contrário). Nenhuma autenticação de
-  cliente foi adicionada porque o gateway escuta em `127.0.0.1` e o proxy local
-  não expõe esses caminhos.
-* **SSH.** `init` define a chave privada com permissão `0600` após a geração.
-  `StrictHostKeyChecking=no` com `UserKnownHostsFile=/dev/null` é intencional: o
-  canal é um túnel efêmero `colab ssh --proxy-mode` com uma nova chave de host
-  a cada VM, e a CLI do Colab não expõe opção de `known_hosts`. Verificar chaves
-  de host exigiria mudança na CLI; reavalie se essa opção passar a existir.
+* **Endpoints internos.** `/health`, `/internal/state` e
+  `/internal/begin-shutdown` exigem `X-BYOM-Nonce` igual ao `nonce` da sessão
+  (comparação em tempo constante, HTTP 403 caso contrário) e continuam aceitando
+  apenas clientes loopback. O header é obrigatório porque o forward é
+  `ssh -L 127.0.0.1:<porta>:127.0.0.1:<porta>`: todo cliente do túnel aparece
+  como loopback. O nonce nunca vai em resposta de status nem em log.
+* **SSH.** `init` define a chave privada com permissão `0600` após a geração. A
+  chave de host é fixada **por sessão** em `<config_dir>/known_hosts_<sessão>`
+  com `HostKeyAlias=byom-<sessão>`: `accept-new` na primeira conexão da sessão e
+  `yes` nas seguintes, sem `/dev/null`. Se a chave mudar, o comando falha com
+  "chave de host da sessão mudou; possível MITM — rode `byom down` e `byom up`"
+  em vez de cair para `no`. O arquivo é removido no `down`.
 * **OpenCode V1/V2.** A configuração gerada permanece no formato V1 (`plugin`,
   `provider`, `npm`, `options`, `tool_call`), que o guia de migração V2 indica
   ser normalizado em memória. O plugin de descoberta é fixado em

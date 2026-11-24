@@ -104,6 +104,32 @@ def socket_path(session: str) -> Path:
     return config.config_dir() / f"cm-{session}.sock"
 
 
+def known_hosts_path(session: str) -> Path:
+    """Per-session `known_hosts`, removed by `byom down` with the rest of state."""
+    return config.config_dir() / f"known_hosts_{session}"
+
+
+def host_key_alias(session: str) -> str:
+    """Alias used in `known_hosts` instead of the ephemeral host name."""
+    return f"byom-{session}"
+
+
+#: Host key changed: either a recycled VM or a MITM. There is no safe fallback
+#: to `no`, so the message tells the user to recreate the session.
+HOST_KEY_CHANGED_MESSAGE = (
+    "Host key verification failed: chave de host da sessão mudou; possível MITM "
+    "— rode `byom down` e `byom up`"
+)
+
+
+def forget_session_host_key(session: str) -> None:
+    """Drop the pinned host key of a finished session. Idempotent."""
+    if not session or Path(session).name != session:
+        return
+    with contextlib.suppress(OSError):
+        known_hosts_path(session).unlink(missing_ok=True)
+
+
 class Remote:
     """Commands and forwards on the VM over an OpenSSH master connection."""
 
@@ -119,6 +145,7 @@ class Remote:
         self.cfg = cfg
         self.ssh_bin = ssh_bin
         self.socket = socket_path(session)
+        self.known_hosts = known_hosts_path(session)
         if log_path is None:
             log_path = config.config_dir() / "logs" / f"ssh-{session}.log"
         self.log_path = log_path
@@ -157,13 +184,7 @@ class Remote:
             f"ProxyCommand={self.proxy_command()}",
             "-o",
             "ExitOnForwardFailure=yes",
-            # The SSH channel is an ephemeral `colab ssh --proxy-mode` tunnel:
-            # the host key changes with every VM, and the Colab CLI offers no
-            # way to pass a known_hosts entry through. Documented in README.
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
+            *self.host_key_options(),
             "-o",
             "BatchMode=yes",
             "-o",
@@ -172,6 +193,33 @@ class Remote:
             "ServerAliveCountMax=3",
             "-S",
             str(self.socket),
+        ]
+
+    def first_connection(self) -> bool:
+        """True while this session has no pinned host key yet."""
+        try:
+            content = self.known_hosts.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return True
+        return host_key_alias(self.session) not in content
+
+    def host_key_options(self) -> list[str]:
+        """Pin the host key of this session in its own `known_hosts` file.
+
+        The Colab CLI does not expose the VM's host key, so the first connection
+        of the session accepts it (`accept-new`) and later ones require the same
+        key (`yes`). A changed key becomes a readable error — never a silent
+        fallback to `no`, which would let a MITM read prompts, `session.json`
+        and the nonce.
+        """
+        mode = "accept-new" if self.first_connection() else "yes"
+        return [
+            "-o",
+            f"StrictHostKeyChecking={mode}",
+            "-o",
+            f"UserKnownHostsFile={self.known_hosts}",
+            "-o",
+            f"HostKeyAlias={host_key_alias(self.session)}",
         ]
 
     def master_command(self, forwards: Sequence[Forward] = ()) -> list[str]:
@@ -198,9 +246,11 @@ class Remote:
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=yes",
             "-o",
-            "UserKnownHostsFile=/dev/null",
+            f"UserKnownHostsFile={self.known_hosts}",
+            "-o",
+            f"HostKeyAlias={host_key_alias(self.session)}",
             "-l",
             "root",
             self.session,
@@ -264,6 +314,10 @@ class Remote:
                     self._forwards = tuple(forwards)
                     return
                 reason = self.log_tail() or f"ssh exited with code {proc.returncode}"
+                if "host key verification failed" in reason.lower():
+                    # Chave trocada não melhora com retry, e aceitar em
+                    # silêncio entregaria o túnel a um MITM.
+                    raise RemoteError(HOST_KEY_CHANGED_MESSAGE)
 
             if attempt < START_ATTEMPTS:
                 if on_progress is not None:

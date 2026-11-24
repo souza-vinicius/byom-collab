@@ -529,6 +529,8 @@ def _stop_allocation(name: str) -> bool:
         _say("  The VM may still be consuming compute units; run `byom down`")
         return False
     config.clear_state()
+    # O pin da chave de host vale por sessão: a próxima sessão é outra VM.
+    remote.forget_session_host_key(name)
     _say("Session stopped (confirmed by Colab)")
     return True
 
@@ -914,6 +916,7 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
 
     if confirmed:
         config.clear_state()
+        remote.forget_session_host_key(state.session)
         say("Stopped (confirmed by Colab)")
     else:
         say("Unknown: could not confirm deallocation")

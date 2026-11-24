@@ -285,3 +285,73 @@ def test_start_reports_progress_for_each_attempt(cfg, fake_ssh):
     assert messages[0] == f"tentativa 1 de {remote.START_ATTEMPTS}"
     assert any("nova tentativa em" in m for m in messages)
     assert messages[-1] == f"tentativa {remote.START_ATTEMPTS} de {remote.START_ATTEMPTS}"
+
+
+# -- pin da chave de host por sessão --------------------------------------
+def _option(command: list[str], name: str) -> str:
+    prefix = f"{name}="
+    return next(item.removeprefix(prefix) for item in command if item.startswith(prefix))
+
+
+def test_primeira_conexao_usa_accept_new_com_arquivo_da_sessao(cfg):
+    client = build(cfg)
+    assert client.known_hosts == config.config_dir() / "known_hosts_byom-x"
+
+    command = client.master_command()
+
+    assert _option(command, "StrictHostKeyChecking") == "accept-new"
+    assert _option(command, "UserKnownHostsFile") == str(client.known_hosts)
+    assert _option(command, "HostKeyAlias") == "byom-byom-x"
+    # Nada de /dev/null: a chave é memorizada, não descartada.
+    assert "/dev/null" not in command
+
+
+def test_segunda_conexao_exige_a_chave_memorizada(cfg):
+    client = build(cfg)
+    client.known_hosts.parent.mkdir(parents=True, exist_ok=True)
+    client.known_hosts.write_text(
+        "byom-byom-x ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\n", encoding="utf-8"
+    )
+
+    command = client.master_command()
+
+    assert _option(command, "StrictHostKeyChecking") == "yes"
+    assert _option(command, "UserKnownHostsFile") == str(client.known_hosts)
+    assert _option(command, "HostKeyAlias") == "byom-byom-x"
+    # O comando de controle usa o mesmo arquivo.
+    assert _option(client.control_command("check"), "UserKnownHostsFile") == str(
+        client.known_hosts
+    )
+
+
+def test_chave_de_host_que_mudou_vira_erro_legivel(cfg, fake_ssh):
+    client = build(cfg)
+    fake_ssh.socket = client.socket
+    fake_ssh.master_returncode = 255
+    fake_ssh.master_log_text = (
+        "@@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED\n"
+        "Host key verification failed.\n"
+    )
+
+    with pytest.raises(remote.RemoteError) as excinfo:
+        client.start()
+
+    mensagem = str(excinfo.value)
+    assert "chave de host da sessão mudou" in mensagem
+    assert "possível MITM" in mensagem
+    assert "byom down" in mensagem
+    # Não insiste: uma chave trocada não melhora com retry.
+    assert len(fake_ssh.master_calls()) == 1
+
+
+def test_down_remove_o_known_hosts_da_sessao(cfg):
+    client = build(cfg)
+    client.known_hosts.parent.mkdir(parents=True, exist_ok=True)
+    client.known_hosts.write_text("byom-byom-x ssh-ed25519 AAAA\n", encoding="utf-8")
+    assert client.known_hosts.exists()
+
+    remote.forget_session_host_key("byom-x")
+    assert not client.known_hosts.exists()
+    # Idempotente e sem escapar do config dir.
+    remote.forget_session_host_key("byom-x")
+    remote.forget_session_host_key("../../etc/passwd")
