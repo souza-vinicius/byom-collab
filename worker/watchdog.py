@@ -69,8 +69,30 @@ def _unassign() -> bool:
     return True
 
 
+def _load_session() -> dict[str, Any] | None:
+    """Leia o `session.json`; ausente significa VM reciclada, não traceback."""
+    path = Path(SESSION_FILE)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _log(
+            "VM reciclada: session.json ausente; nada a supervisionar. "
+            "Rode `byom down` e `byom up`."
+        )
+        return None
+    except (OSError, ValueError) as exc:
+        _log(f"session.json ilegível ({exc}); encerrando sem desalocar")
+        return None
+    if not isinstance(payload, dict):
+        _log("session.json inválido (esperado um objeto JSON); encerrando sem desalocar")
+        return None
+    return payload
+
+
 def main() -> int:
-    cfg = json.loads(Path(SESSION_FILE).read_text(encoding="utf-8"))
+    cfg = _load_session()
+    if cfg is None:
+        return 1
     base = f"http://127.0.0.1:{cfg.get('gateway_port', 8001)}"
     nonce = str(cfg.get("nonce") or "")
     idle_timeout_s = float(cfg.get("idle_timeout_min", 20)) * 60

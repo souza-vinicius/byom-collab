@@ -49,9 +49,9 @@ async def run() -> int:
         nonce=state.nonce,
         log_path=_log_path("tunnel"),
     )
-    runtime = Runtime(state=state, cfg=cfg, tunnel=tunnel)
-    app = create_app(runtime)
     watchdog = WatchdogSupervisor(state=state, cfg=cfg)
+    runtime = Runtime(state=state, cfg=cfg, tunnel=tunnel, watchdog=watchdog.status)
+    app = create_app(runtime)
 
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=cfg.proxy_port, log_level="warning")

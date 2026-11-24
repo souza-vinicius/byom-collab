@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import config
 from .tunnel import TunnelSupervisor
+from .watchdog_supervisor import WatchdogState
 
 log = logging.getLogger("byom.proxy")
 
@@ -103,6 +104,9 @@ class Runtime:
     cfg: config.Config
     tunnel: TunnelSupervisor
     worker: WorkerStatus = field(default_factory=WorkerStatus)
+    #: Estado do supervisor do watchdog, quando o daemon o injeta. Não há
+    #: endpoint novo: ele entra no `/__byom/status` que `byom status` já lê.
+    watchdog: WatchdogState | None = None
 
     @property
     def base_url(self) -> str:
@@ -164,13 +168,16 @@ class Runtime:
                 await asyncio.wait_for(stop.wait(), timeout=VERIFY_INTERVAL_S)
 
     def status_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "session": self.state.session,
             "endpoint": self.state.endpoint,
             "created_at": self.state.created_at,
             "tunnel": self.tunnel.status.to_dict(),
             "worker": self.worker.to_dict(),
         }
+        if self.watchdog is not None:
+            payload["watchdog"] = self.watchdog.to_dict()
+        return payload
 
     def refuse_reason(self) -> str | None:
         if self.worker.error is not None:

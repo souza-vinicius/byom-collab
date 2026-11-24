@@ -763,3 +763,23 @@ def test_tunel_failed_aparece_no_status_e_recusa_trafego():
     assert payload["tunnel"]["state"] == "failed"
     assert "já está em uso" in payload["tunnel"]["last_error"]
     assert runtime.refuse_reason() == "a porta local do túnel já está em uso"
+
+
+def test_status_mostra_watchdog_que_desistiu():
+    """O motivo aparece no `/__byom/status`, sem endpoint novo."""
+    from byom.watchdog_supervisor import WatchdogState
+
+    runtime = make_runtime()
+    runtime.watchdog = WatchdogState(
+        state="gave_up",
+        failures=5,
+        last_error="watchdog desistiu após 5 reinícios: `colab exec` exited with code 1. "
+        "Rode `byom down` e `byom up` para recriar a sessão.",
+    )
+
+    with client_for(runtime, recording_transport([])) as client:
+        payload = client.get("/__byom/status").json()
+
+    assert payload["watchdog"]["state"] == "gave_up"
+    assert payload["watchdog"]["failures"] == 5
+    assert "watchdog desistiu após 5 reinícios" in payload["watchdog"]["last_error"]

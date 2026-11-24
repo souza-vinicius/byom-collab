@@ -790,6 +790,14 @@ def status() -> None:
         )
         if tunnel.get("last_error"):
             _say(f"    Reason: {tunnel['last_error']}")
+        watchdog_state = payload.get("watchdog") or {}
+        if watchdog_state:
+            _say(
+                f"  Watchdog: {watchdog_state.get('state')} "
+                f"(falhas consecutivas: {watchdog_state.get('failures', 0)})"
+            )
+            if watchdog_state.get("last_error"):
+                _say(f"    Reason: {watchdog_state['last_error']}")
 
     usage = colab.usage()
     if usage:

@@ -144,3 +144,14 @@ def test_watchdog_envia_nonce_no_header(watchdog_module, monkeypatch):
     sent = [{k.lower(): v for k, v in request.header_items()} for request in captured]
     assert [item["x-byom-nonce"] for item in sent] == ["n-123", "n-123"]
     assert [request.get_method() for request in captured] == ["GET", "POST"]
+
+
+def test_session_json_ausente_encerra_sem_traceback(watchdog_module, tmp_path, capsys):
+    """VM reciclada: a célula informa e sai com código 1, sem stack trace."""
+    watchdog_module.SESSION_FILE = str(tmp_path / "nao-existe.json")
+
+    assert watchdog_module.main() == 1
+
+    saida = capsys.readouterr().out
+    assert "VM reciclada: session.json ausente" in saida
+    assert "byom up" in saida
