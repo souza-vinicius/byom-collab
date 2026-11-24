@@ -49,6 +49,14 @@ uv run byom uninstall                              # remove apenas o diretório 
   opcionalmente, aplicar a conexão automaticamente (sem alterar arquivos de
   harness durante o `Iniciar sessão no Colab`). A opção **Conversar com o
   modelo (llm chat)** (atalho `c`) abre o chat no terminal com a sessão ativa.
+* Na TUI, a opção **Selecionar GPU** (atalho `2`) concentra a escolha de modelo
+  e oferece dois caminhos: **Selecionar perfil de modelo**, que reusa a lista de
+  perfis prontos e a tela de detalhe, e **Selecionar uma GPU para ver os modelos
+  compatíveis**, que mostra a GPU escolhida, a tabela de modelos que cabem nela e
+  um painel de confirmação com o contexto servido e os valores resultantes de
+  `gpu`/`gpu_high_mem`. **Nada é gravado em `config.toml` antes da confirmação**:
+  voltar para a lista, trocar de GPU ou sair pelo menu não deixa resíduo, e um
+  par GPU + modelo que não cabe é recusado sem escrever nada.
 * `byom profiles` lista todos os perfis; `byom gpus` exibe o catálogo estático
   de GPUs. Encerre a sessão antes de trocar de perfil.
 * `byom models --gpu L4` lista apenas as variantes do catálogo cujo contexto
