@@ -185,3 +185,29 @@ def test_tela_de_gpu_e_modelo_nao_diz_somente_leitura():
     trecho = fonte.split("def _executar_gpu_modelo")[1].split("def _executar_selecionar_gpu")[0]
     assert "M.NADA_GRAVADO_ATE_CONFIRMAR" in trecho
     assert "M.SOMENTE_LEITURA" not in trecho
+
+
+def test_detalhe_do_perfil_cita_o_kv_calculado_e_a_procedencia():
+    """O KV de 0,58 GiB só faz sentido na tela com a fonte que o sustenta."""
+    perfis = {
+        item.profile.id: item
+        for item in tui.listar_perfis_estruturados(tui.ler_estado_local())
+    }
+    inkling = perfis["inkling-2-mini-ad-iq2xxs"]
+    assert inkling.kv_gib == pytest.approx(0.58)
+    assert inkling.total_gib == pytest.approx(12.94)
+    assert "arquitetura" in inkling.kv_fonte
+    assert "config.json" in inkling.kv_fonte
+    assert "2026-11-24" in inkling.kv_fonte
+
+    # Modelo sem kv_shape: a tela diz que o número é heurístico, não medido.
+    gemma = perfis["gemma-4-12b-q4-gguf"]
+    assert gemma.kv_gib == 2.0
+    assert "heurístico" in gemma.kv_fonte
+
+    rec = tui.criar_console(width=100, height=40, record=True)
+    tui.renderizar_detalhe_perfil(rec, inkling, tui.ler_estado_local())
+    texto = rec.export_text(clear=False)
+    assert "Cache KV: 0,6 GiB em f16" in texto
+    assert "arquitetura" in texto
+    assert "thinkingmachines/Inkling-2-Mini" in texto

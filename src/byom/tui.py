@@ -751,6 +751,8 @@ class PerfilView:
     runtime_gib: float
     kv_gib: float
     kv_dtype: str
+    #: De onde veio o KV: arquitetura datada do `config.json` ou heurístico.
+    kv_fonte: str
     total_gib: float
     cabe_gpu_atual: bool
     motivo_contexto: str
@@ -814,12 +816,19 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
             0.0
             if p.runtime == "image"
             else catalog.kv_cache_gib(
-                ctx_servido, kv_cache_dtype=p.settings.get("kv_cache_dtype"), runtime=p.runtime
+                ctx_servido,
+                entry,
+                kv_cache_dtype=p.settings.get("kv_cache_dtype"),
+                runtime=p.runtime,
             )
         )
         total_gib = (
             catalog.required_vram_gib(
-                variant, ctx_servido, p.runtime, kv_cache_dtype=p.settings.get("kv_cache_dtype")
+                variant,
+                ctx_servido,
+                p.runtime,
+                kv_cache_dtype=p.settings.get("kv_cache_dtype"),
+                model=entry,
             )
             if variant
             else pesos + runtime_gib + kv_gib
@@ -879,6 +888,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 runtime_gib=runtime_gib,
                 kv_gib=kv_gib,
                 kv_dtype=kv_dtype,
+                kv_fonte=catalog.kv_shape_note(entry),
                 total_gib=total_gib,
                 cabe_gpu_atual=cabe,
                 motivo_contexto=motivo,
@@ -1120,6 +1130,12 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
             f"({M.formatar_gib(item.pesos_gib)} para os pesos{visao} + "
             f"{M.formatar_gib(item.runtime_gib)} para o motor + "
             f"{M.formatar_gib(item.kv_gib)} para o cache KV).",
+        )
+        # O número do KV muda de ordem de grandeza quando vem da arquitetura;
+        # sem dizer a procedência ele parece erro ao lado do heurístico.
+        add(
+            "Cache KV",
+            f"{M.formatar_gib(item.kv_gib)} em {item.kv_dtype} — {item.kv_fonte}",
         )
         ctx_serv = M.formatar_contexto_detalhe(item.contexto_servido, p.runtime)
         ctx_max = M.formatar_contexto_detalhe(item.contexto_doc, p.runtime)

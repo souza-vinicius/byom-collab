@@ -182,7 +182,7 @@ def test_perfis_atomicchat_reaproveitam_build_e_baixam_do_repo_certo():
     esperado = {
         "inkling-2-mini-ad-q6k": ("Inkling-2-Mini-AD-Q6_K.gguf", "A100", False, 131_072),
         "inkling-2-mini-ad-q4k": ("Inkling-2-Mini-AD-Q4_K.gguf", "L4", False, 32_768),
-        "inkling-2-mini-ad-iq2xxs": ("Inkling-2-Mini-AD-IQ2_XXS.gguf", "T4", False, 16_384),
+        "inkling-2-mini-ad-iq2xxs": ("Inkling-2-Mini-AD-IQ2_XXS.gguf", "T4", False, 32_768),
     }
     for profile_id, (arquivo, gpu, high_mem, contexto) in esperado.items():
         profile = perfis[profile_id]

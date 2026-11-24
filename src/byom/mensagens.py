@@ -306,10 +306,10 @@ DESCRICOES_PERFIS: dict[str, str] = {
         "Modelo compacto E4B de 4 bits; ativa modo de raciocínio automaticamente."
     ),
     "inkling-2-mini-iq2-gguf": (
-        "Quantização de 2 bits com suporte a visão; com o projetor, começa em L4."
+        "Quantização de 2 bits com suporte a visão; cabe na T4 com 32K de contexto."
     ),
     "inkling-2-mini-q4-gguf": (
-        "Quantização recomendada de 4 bits com suporte a visão; requer A100 de 40 GiB."
+        "Quantização recomendada de 4 bits com suporte a visão; cabe na L4 com 64K."
     ),
     "inkling-2-mini-q8-gguf": (
         "Quantização de 8 bits de alta fidelidade com visão; requer A100 de 40 GiB ou mais."
@@ -338,16 +338,18 @@ MOTIVOS_CONTEXTO_PERFIS: dict[str, str] = {
         "há VRAM suficiente para servir todo o contexto de 256K."
     ),
     "inkling-2-mini-iq2-gguf": (
-        "O contexto máximo de 1M exigiria ~64 GiB de cache KV; 11 GiB de pesos + "
-        "0,65 de visão + 2 GiB do motor passam dos 15 GiB da T4, então 32K roda em L4."
+        "7,90 GiB de pesos + 0,65 de visão + 2 GiB do motor + 0,58 GiB de cache KV em "
+        "32K (medido pela arquitetura do modelo) somam 11,13 GiB: com a folga de 1,0 GiB, "
+        "12,13 GiB cabem nos 15 GiB da T4."
     ),
     "inkling-2-mini-q4-gguf": (
-        "18 GiB dos pesos + 0,65 de visão + 2 GiB do motor + 4 GiB de cache KV somam "
-        "24,65 GiB: com a folga de 1,2 GiB, 64K exige A100 de 40 GiB."
+        "18 GiB dos pesos + 0,65 de visão + 2 GiB do motor + 1,08 GiB de cache KV em 64K "
+        "(medido pela arquitetura) somam 21,73 GiB: com a folga de 1,2 GiB, 22,93 GiB "
+        "cabem nos 24 GiB da L4."
     ),
     "inkling-2-mini-q8-gguf": (
-        "Na A100 de 40 GiB, 24 GiB de pesos + 0,65 de visão + 2 GiB do motor + "
-        "8 GiB de cache KV somam 34,65 GiB (128K)."
+        "Na A100 de 40 GiB, 24 GiB de pesos + 0,65 de visão + 2 GiB do motor + 2,08 GiB "
+        "de cache KV em 128K (medido pela arquitetura) somam 28,73 GiB."
     ),
     "qwen3.8-27b-q3-gguf": (
         "12 GiB de pesos + 2 GiB do motor + 2 GiB de cache KV somam 16 GiB, acima dos "
