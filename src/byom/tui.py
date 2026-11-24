@@ -137,6 +137,23 @@ def _modo_layout(con: Console) -> str:
     return "cartoes"
 
 
+def _fornecedor_em_tabela(
+    fornecedor: str, pacote: str, largura: int, *, coluna_propria: bool
+) -> str:
+    """Texto do fornecedor que entra na tabela, conforme a largura disponível.
+
+    Contrato de layout (verificado em `tests/test_provider.py` em 60/80/100/120
+    colunas, sem truncamento): em coluna própria ou a partir de 120 colunas o
+    texto traz "· pesos <publicador>"; abaixo disso fica o nome curto do
+    fornecedor. A tabela de perfis já ocupava 100 colunas inteiras antes deste
+    campo — empurrar o pacote para ela truncaria as colunas vizinhas. O pacote
+    completo continua no detalhe do perfil e na lista de seleção.
+    """
+    if coluna_propria or largura >= 120:
+        return M.fornecedor_resumo(fornecedor, pacote)
+    return M.fornecedor_curto(fornecedor) or (pacote or "").strip()
+
+
 # ---------------------------------------------------------------------------
 # Estado local barato e barra de estado (D2, D3)
 # ---------------------------------------------------------------------------
@@ -738,6 +755,10 @@ class PerfilView:
     cabe_gpu_atual: bool
     motivo_contexto: str
     descricao: str
+    #: Quem desenvolve o modelo (ModelEntry.provider) e quem publica os pesos
+    #: (org do repositório de onde o byom baixa — derivada, não fixa no perfil).
+    fornecedor: str
+    pacote: str
     notas: tuple[str, ...]
     endpoint_aviso: str
 
@@ -835,6 +856,10 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
         endpoint_aviso = (
             "/v1/images/generations" if p.runtime == "image" else "/v1/chat/completions"
         )
+        fornecedor = entry.provider if entry else ""
+        pacote = catalog.package_owner(
+            catalog.package_source(p.worker, str(p.settings.get("model", "")))
+        )
 
         itens_brutos.append(
             PerfilView(
@@ -858,6 +883,8 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 cabe_gpu_atual=cabe,
                 motivo_contexto=motivo,
                 descricao=M.descricao_perfil(p.id, p.description),
+                fornecedor=fornecedor,
+                pacote=pacote,
                 notas=notas,
                 endpoint_aviso=endpoint_aviso,
             )
@@ -934,6 +961,12 @@ def renderizar_perfis(
         return lista
 
     gpu_alvo = estado.gpu_id
+    largura = _largura_terminal(con)
+    # Coluna própria de fornecedor só a partir de 140 colunas (onde o nome
+    # completo com "pesos <publicador>" cabe ao lado das outras colunas). Abaixo
+    # disso o nome entra na segunda linha da célula "Modelo", só com o
+    # fornecedor: o pacote de pesos fica no detalhe do perfil e na seleção.
+    coluna_fornecedor = modo == "completo" and largura >= 160
 
     if modo == "cartoes":
         familia_atual = ""
@@ -947,15 +980,18 @@ def renderizar_perfis(
                 if item.cabe_gpu_atual
                 else f"{sim.erro} exige {item.gpu_minima}"
             )
-            corpo = (
-                f"Variante: {item.variante_curta}  |  Tipo: {item.tipo}\n"
-                f"GPU mínima: {item.gpu_minima}  |  Contexto: {item.contexto_curto}\n"
-                f"Raciocínio: {item.raciocinio}  |  {cabe_txt}"
-            )
+            linhas_corpo = [
+                f"Variante: {item.variante_curta}  |  Tipo: {item.tipo}",
+                f"GPU mínima: {item.gpu_minima}  |  Contexto: {item.contexto_curto}",
+                f"Raciocínio: {item.raciocinio}  |  {cabe_txt}",
+            ]
+            fornecedor_txt = M.fornecedor_resumo(item.fornecedor, item.pacote)
+            if fornecedor_txt:
+                linhas_corpo.insert(0, f"{M.ROTULO_FORNECEDOR}: {fornecedor_txt}")
             _painel(
                 con,
                 f"{item.indice}. {item.familia} — {item.variante_curta}{marca_atual}",
-                corpo,
+                "\n".join(linhas_corpo),
                 estilo="green" if item.profile.id == estado.perfil_id else "cyan",
                 expand=True,
             )
@@ -968,18 +1004,24 @@ def renderizar_perfis(
             expand=False,
         )
         tabela.add_column("#", justify="right", style="dim", min_width=2, no_wrap=True)
-        tabela.add_column("Modelo", no_wrap=True)
+        # "Modelo" é a única coluna que pode quebrar (overflow="fold"): quando o
+        # fornecedor entra na segunda linha, é ela que absorve a falta de espaço
+        # em vez de truncar as colunas vizinhas. `min_width` reserva o tamanho do
+        # maior fornecedor do catálogo para que ele caiba numa linha só.
+        tabela.add_column("Modelo", overflow="fold")
+        if coluna_fornecedor:
+            tabela.add_column(M.COLUNA_FORNECEDOR, no_wrap=True)
         tabela.add_column("Variante", no_wrap=True)
         tabela.add_column("Tipo", no_wrap=True)
         tabela.add_column("GPU mín.", no_wrap=True)
         tabela.add_column("Contexto", no_wrap=True)
         if modo == "completo":
             tabela.add_column("Raciocínio", no_wrap=True)
-            cabe_header = f"Em {gpu_alvo}" if _largura_terminal(con) >= 110 else "Cabe"
+            cabe_header = f"Em {gpu_alvo}" if largura >= 110 else "Cabe"
             tabela.add_column(cabe_header, justify="center", no_wrap=True)
 
         familia_atual = ""
-        apertado_100 = modo == "completo" and _largura_terminal(con) < 110
+        apertado_100 = modo == "completo" and largura < 110
         for idx, item in enumerate(lista):
             if idx > 0 and item.familia != familia_atual:
                 tabela.add_section()
@@ -999,18 +1041,19 @@ def renderizar_perfis(
                 ctx_cell = item.contexto_curto
                 var_cell = item.variante_curta
 
+            fornecedor_txt = _fornecedor_em_tabela(
+                item.fornecedor, item.pacote, largura, coluna_propria=coluna_fornecedor
+            )
             modelo_cell = Text(item.familia)
             if item.profile.id == estado.perfil_id:
                 modelo_cell.append(f" {sim.estrela}", style="green")
+            if not coluna_fornecedor and fornecedor_txt:
+                modelo_cell.append(f"\n{fornecedor_txt}", style="dim")
 
-            linha: list[Any] = [
-                str(item.indice),
-                modelo_cell,
-                var_cell,
-                tipo_cell,
-                item.gpu_minima,
-                ctx_cell,
-            ]
+            linha: list[Any] = [str(item.indice), modelo_cell]
+            if coluna_fornecedor:
+                linha.append(fornecedor_txt or "—")
+            linha.extend([var_cell, tipo_cell, item.gpu_minima, ctx_cell])
             if modo == "completo":
                 linha.append(item.raciocinio)
                 cabe_text = (
@@ -1027,6 +1070,12 @@ def renderizar_perfis(
         termos.append("Visão")
     if modo == "completo" or modo == "cartoes":
         termos.append("Raciocínio")
+    termo_fornecedor = ["Fornecedor"]
+    if any(
+        M.publicador_diverge(item.fornecedor, item.pacote) for item in lista
+    ):
+        termo_fornecedor.insert(0, "Publicado por")
+    termos.extend(termo_fornecedor)
     _renderizar_glossario(con, termos)
     return lista
 
@@ -1046,6 +1095,8 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
 
     add("Modelo", f"{item.familia} ({item.variante_curta})")
     add("Tipo", f"{item.tipo}  {sim.barra}  Motor: {item.runtime_nome}")
+    for rotulo, valor in M.linhas_fornecedor(item.fornecedor, item.pacote):
+        add(rotulo, valor)
     add("Descrição", item.descricao)
 
     if p.runtime == "image":
@@ -1121,6 +1172,7 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
         termos.extend(["Contexto", "Cache KV", "Raciocínio"])
     if "visão" in item.tipo:
         termos.append("Visão")
+    termos.extend(rotulo for rotulo, _ in M.linhas_fornecedor(item.fornecedor, item.pacote))
     _renderizar_glossario(con, termos)
 
 
@@ -1198,6 +1250,10 @@ def renderizar_modelos_por_gpu(
     perfis_por_id = {pv.profile.id: pv for pv in listar_perfis_estruturados(estado)}
     vram_txt = M.formatar_gib(gpu.vram_gib, aproximado=gpu.vram_approximate)
     con.print(f"Modelos compatíveis com {gpu.id} ({gpu.label} — {vram_txt})", style="bold cyan")
+    largura = _largura_terminal(con)
+    # Coluna própria só em terminal muito largo (>=160): abaixo disso o nome do
+    # fornecedor entra como segunda linha da célula "Modelo", sem criar coluna.
+    coluna_fornecedor = modo == "completo" and largura >= 160
 
     if modo == "cartoes":
         for idx, row in enumerate(selection.rows, 1):
@@ -1210,10 +1266,20 @@ def renderizar_modelos_por_gpu(
                 if row.profile_id in perfis_por_id
                 else "sem perfil pronto"
             )
+            fornecedor_txt = M.fornecedor_resumo(
+                catalog.model_by_id(row.model_id).provider,
+                perfis_por_id[row.profile_id].pacote if row.profile_id in perfis_por_id else "",
+            )
+            linhas_corpo = [
+                f"Memória: {mem}  |  Contexto: {ctx}",
+                f"Perfil: {perfil_txt}",
+            ]
+            if fornecedor_txt:
+                linhas_corpo.insert(0, f"{M.ROTULO_FORNECEDOR}: {fornecedor_txt}")
             _painel(
                 con,
                 f"{idx}. {fam} — {var}",
-                f"Memória: {mem}  |  Contexto: {ctx}\nPerfil: {perfil_txt}",
+                "\n".join(linhas_corpo),
                 estilo="cyan",
                 expand=True,
             )
@@ -1226,7 +1292,9 @@ def renderizar_modelos_por_gpu(
             expand=False,
         )
         tabela.add_column("#", justify="right", style="dim", min_width=2, no_wrap=True)
-        tabela.add_column("Modelo", no_wrap=True)
+        tabela.add_column("Modelo", overflow="fold")
+        if coluna_fornecedor:
+            tabela.add_column(M.COLUNA_FORNECEDOR, no_wrap=True)
         tabela.add_column("Variante", no_wrap=True)
         if modo == "completo":
             tabela.add_column("Tipo", no_wrap=True)
@@ -1253,9 +1321,22 @@ def renderizar_modelos_por_gpu(
                 perfil_txt = (
                     f"{sim.ok} disponível" if row.profile_id in perfis_por_id else "sem perfil"
                 )
-            cells: list[Any] = [str(idx), fam, var]
+            entry = catalog.model_by_id(row.model_id)
+            pacote = (
+                perfis_por_id[row.profile_id].pacote if row.profile_id in perfis_por_id else ""
+            )
+            fornecedor_txt = _fornecedor_em_tabela(
+                entry.provider, pacote, largura, coluna_propria=coluna_fornecedor
+            )
+            fam_cell: Any = fam
+            if not coluna_fornecedor and fornecedor_txt:
+                fam_cell = Text(fam)
+                fam_cell.append(f"\n{fornecedor_txt}", style="dim")
+            cells: list[Any] = [str(idx), fam_cell]
+            if coluna_fornecedor:
+                cells.append(fornecedor_txt or "—")
+            cells.append(var)
             if modo == "completo":
-                entry = catalog.model_by_id(row.model_id)
                 tipo = _tipo_modelo(row.model_id, entry.runtime, entry.id in M.MODELOS_COM_VISAO)
                 cells.append(tipo)
             cells.extend([mem, ctx, perfil_txt])
@@ -1267,7 +1348,9 @@ def renderizar_modelos_por_gpu(
         f"{M.formatar_numero(selection.dropped_for_memory)} descartada(s) por falta de VRAM.",
         style="dim",
     )
-    _renderizar_glossario(con, ["VRAM (~)", "Contexto", "GGUF", "AWQ"])
+    _renderizar_glossario(
+        con, ["VRAM (~)", "Contexto", "GGUF", "AWQ", "Fornecedor", "Publicado por"]
+    )
     return selection, perfis_por_id
 
 
@@ -1356,11 +1439,13 @@ def _escolher_perfil(
     escolhas = []
     for item in lista:
         atual = " • atual" if item.profile.id == estado.perfil_id else ""
+        fornecedor_txt = M.fornecedor_resumo(item.fornecedor, item.pacote)
+        sufixo = f" · {fornecedor_txt}" if fornecedor_txt else ""
         escolhas.append(
             questionary.Choice(
                 title=(
                     f"{item.indice:2d}. {item.familia} — {item.variante_curta} "
-                    f"({item.gpu_minima}, {item.contexto_curto}){atual}"
+                    f"({item.gpu_minima}, {item.contexto_curto}){sufixo}{atual}"
                 ),
                 value=item,
             )

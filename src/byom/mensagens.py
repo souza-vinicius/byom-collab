@@ -261,6 +261,11 @@ ROTULOS_VARIANTES: dict[tuple[str, str], str] = {
     ("inkling-2-mini", "q2"): "2 bits (GGUF)",
     ("inkling-2-mini", "q4"): "4 bits (GGUF)",
     ("inkling-2-mini", "q8"): "8 bits (GGUF)",
+    # Receita AD da AtomicChat: o prefixo diz de quem é a quantização, porque o
+    # mesmo modelo também tem GGUFs da Unsloth.
+    ("inkling-2-mini", "ad-q6k"): "AD-Q6_K • 6 bits",
+    ("inkling-2-mini", "ad-q4k"): "AD-Q4_K • 4 bits",
+    ("inkling-2-mini", "ad-iq2xxs"): "AD-IQ2_XXS • 2 bits",
     ("gemma-4", "e2b-q4"): "E2B • 4 bits",
     ("gemma-4", "e4b-q4"): "E4B • 4 bits",
     ("gemma-4", "12b-q4"): "12B • 4 bits",
@@ -432,6 +437,11 @@ GLOSSARIO: dict[str, str] = {
     ),
     "Raciocínio": "Intensidade com que o modelo pensa passo a passo antes de responder.",
     "Visão": "Capacidade de interpretar imagens enviadas na conversa além de texto.",
+    "Fornecedor": "Time ou empresa que desenvolveu o modelo; o catálogo guarda a fonte do nome.",
+    "Publicado por": (
+        "Quem publicou o arquivo quantizado de onde o byom baixa os pesos "
+        "(pode não ser quem desenvolveu o modelo)."
+    ),
 }
 
 
@@ -536,6 +546,54 @@ def traduzir_raciocinio(
 def nome_familia(model_id: str, fallback: str = "") -> str:
     """Nome amigável da família do modelo para agrupamento na TUI."""
     return FAMILIAS_MODELOS.get(model_id, fallback or model_id)
+
+
+#: Rótulos do fornecedor (quem desenvolve) e do publicador dos pesos.
+#: Fonte única: TUI, CLI e testes importam daqui.
+ROTULO_FORNECEDOR = "Fornecedor"
+ROTULO_PUBLICADO_POR = "Publicado por"
+COLUNA_FORNECEDOR = "Fornecedor"
+COLUNA_PACOTE = "Pacote"
+
+
+def publicador_diverge(fornecedor: str, pacote: str) -> bool:
+    """O pacote de pesos vem de outra org? Só nesse caso vale exibir o segundo."""
+    fornecedor = (fornecedor or "").strip()
+    pacote = (pacote or "").strip()
+    return bool(pacote) and pacote != fornecedor
+
+
+def fornecedor_resumo(fornecedor: str, pacote: str = "") -> str:
+    """Linha curta: fornecedor e, apenas quando divergir, quem publicou os pesos."""
+    fornecedor = (fornecedor or "").strip()
+    pacote = (pacote or "").strip()
+    if not publicador_diverge(fornecedor, pacote):
+        return fornecedor or pacote
+    if not fornecedor:
+        return f"pesos {pacote}"
+    return f"{fornecedor} · pesos {pacote}"
+
+
+def fornecedor_curto(fornecedor: str) -> str:
+    """Nome do fornecedor sem o parêntese explicativo, para tabela estreita.
+
+    "Qwen (Alibaba Cloud)" -> "Qwen". A forma completa continua no detalhe, na
+    lista de seleção e na coluna dedicada de terminal largo.
+    """
+    nome = (fornecedor or "").strip()
+    return nome.split(" (", 1)[0].strip() or nome
+
+
+def linhas_fornecedor(fornecedor: str, pacote: str) -> list[tuple[str, str]]:
+    """Pares (rótulo, valor) para o detalhe: uma linha quando não divergem."""
+    fornecedor = (fornecedor or "").strip()
+    pacote = (pacote or "").strip()
+    linhas: list[tuple[str, str]] = []
+    if fornecedor:
+        linhas.append((ROTULO_FORNECEDOR, fornecedor))
+    if publicador_diverge(fornecedor, pacote) or (not fornecedor and pacote):
+        linhas.append((ROTULO_PUBLICADO_POR, pacote))
+    return linhas
 
 
 def rotulo_variante(model_id: str, variant_id: str, fallback: str = "") -> str:

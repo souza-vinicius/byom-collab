@@ -161,6 +161,10 @@ class ModelEntry:
     runtime: str
     variants: tuple[Variant, ...]
     source: str
+    #: Quem DESENVOLVE o modelo (equipe/empresa dona dos pesos originais).
+    #: Não confundir com o publicador da quantização: esse é derivado em tempo
+    #: de render da org do repositório de onde o byom baixa (`package_owner`).
+    provider: str = ""
     notes: tuple[str, ...] = ()
     sampling: dict[str, float | int] = field(default_factory=dict)
     #: None = a página do modelo não documenta reasoning_effort.
@@ -212,6 +216,95 @@ SDCPP_SOURCE = (
     "https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md"
 )
 
+#: Fonte de cada `ModelEntry.provider`: o card/repositório OFICIAL de quem
+#: desenvolve o modelo, todos conferidos em 2026-11-24. Regra do repositório:
+#: nome de empresa entra no catálogo só com fonte datada. Onde o card não cita
+#: a empresa, o valor é o nome de exibição da org do Hugging Face.
+PROVIDER_SOURCES: dict[str, str] = {
+    "inkling-2-mini": (
+        "https://huggingface.co/thinkingmachines/Inkling-2-Mini (2026-11-24): o card "
+        "declara 'Model provider: Thinking Machines Lab, Inc.'"
+    ),
+    "qwen3.8-27b-awq": (
+        "https://huggingface.co/Qwen (2026-11-24): 'the large language model family "
+        "built by Alibaba Cloud'; https://huggingface.co/Qwen/Qwen3.8-27B é o repo oficial"
+    ),
+    "qwen3.8-27b-gguf": (
+        "https://huggingface.co/Qwen (2026-11-24): família Qwen, 'built by Alibaba "
+        "Cloud'; https://huggingface.co/Qwen/Qwen3.8-27B é o repo oficial"
+    ),
+    "gemma-4": (
+        "https://huggingface.co/google/gemma-4-31B-it (2026-11-24): 'built by Google "
+        "DeepMind' no card"
+    ),
+    "muse-glimmer-30b": (
+        "https://huggingface.co/meta-models/Muse-Glimmer-30B (2026-11-24): o card traz "
+        "'Authors: Meta Superintelligence Lab'"
+    ),
+    "qwen-image-2.1": (
+        "https://huggingface.co/Qwen/Qwen-Image-2.1 (2026-11-24) é o repo oficial da "
+        "família Qwen, 'built by Alibaba Cloud' (card da org, mesma data)"
+    ),
+    "minimax-m3.1-flash": (
+        "https://huggingface.co/MiniMaxAI/MiniMax-M3.1-Flash (2026-11-24): repo oficial "
+        "da org MiniMax"
+    ),
+    "glm-5.3-flash": (
+        "https://huggingface.co/zai-org/GLM-5.3-Flash (2026-11-24): repo oficial; a org "
+        "zai-org exibe 'Z.ai' e o card aponta a 'Z.ai API Platform'. 'Zhipu AI' NÃO foi "
+        "localizado nas páginas consultadas — por isso o catálogo não usa esse nome"
+    ),
+    "deepseek-v4.1-flash": (
+        "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash (2026-11-24): repo "
+        "oficial da org DeepSeek"
+    ),
+}
+
+#: Nomes de exibição das orgs de onde o byom BAIXA os pesos. Chave em minúsculas
+#: (o HF não diferencia caixa na org); o valor é o que aparece na interface.
+#: Org fora do mapa é exibida como escrita no repositório — derivar é o padrão,
+#: embelezar é a exceção registrada aqui.
+PACKAGE_OWNER_NAMES: dict[str, str] = {
+    "unsloth": "Unsloth",
+    "atomicchat": "AtomicChat",
+    "qwen": "Qwen (Alibaba Cloud)",
+    "comfy-org": "Comfy-Org",
+    "leejet": "leejet",
+    "philbert440": "philbert440",
+}
+
+
+def package_owner(source: str) -> str:
+    """Nome de exibição do dono do repositório de pesos (`org/repo[::pattern]`)."""
+    spec = (source or "").strip()
+    if not spec:
+        return ""
+    repo = spec.split("::", 1)[0]
+    owner = repo.split("/", 1)[0].strip()
+    if not owner:
+        return ""
+    return PACKAGE_OWNER_NAMES.get(owner.casefold(), owner)
+
+
+def package_source(worker: dict[str, object] | None, model: str = "") -> str:
+    """De onde o byom baixa os pesos: `model_repo`, o papel `diffusion` ou `model`.
+
+    llama-cpp usa `[worker].model_repo`; imagem usa `[worker.image_roles].diffusion`
+    (o repo do modelo de difusão, não VAE nem encoder de texto); vLLM aponta o
+    checkpoint completo em `[config].model`. Recebe dicionários crus para não
+    importar `config` aqui (ciclo de import).
+    """
+    dados = worker or {}
+    repo = dados.get("model_repo")
+    if isinstance(repo, str) and repo.strip():
+        return repo.strip()
+    roles = dados.get("image_roles")
+    if isinstance(roles, dict):
+        diffusion = roles.get("diffusion")
+        if isinstance(diffusion, str) and diffusion.strip():
+            return diffusion.strip()
+    return (model or "").strip()
+
 MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
         "inkling-2-mini", "Inkling 2 Mini", "llama-cpp",
@@ -241,8 +334,51 @@ MODELS: tuple[ModelEntry, ...] = (
                                    "cabe na A100-40 com 2 GiB de margem.",
                     notes=("Faixa de 8 bit: 24 GB.",),
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
+            # --- Publicador AtomicChat: mesmo modelo, receita AD por tensor ---
+            # Bytes do tree do HF (AtomicChat/Inkling-2-Mini-GGUF, 2026-11-24),
+            # convertidos para GiB dividindo por 2^30.
+            Variant("ad-q6k", "AD-Q6_K (6 bit)", 22.15, 131_072, "A100-40",
+                    context_doc=1_000_000,
+                    context_reason="22,15 GiB pesos + 0,65 visão + 2 runtime + 8 KV em "
+                                   "128K = 32,80 GiB; a A100-40 fica com 5,20 de margem. "
+                                   "Na L4 (24 GiB) nem em 32K: 26,80 + 1,2 de folga.",
+                    notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
+                           "`Inkling-2-Mini-AD-Q6_K.gguf` tem 23.787.472.864 B = 22,15 GiB.",
+                           "Qualidade medida pelo publicador contra o próprio BF16: 97,6% "
+                           "de top-1 e KLD média 0,0037 — qualidade de Q8_0 com 4 GB menos.",
+                           "Requer llama.cpp b12600 ou mais novo, com o layout merged do PR "
+                           "#32694 (o perfil fixa b12611) e `--jinja`."),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
+            Variant("ad-q4k", "AD-Q4_K (4 bit)", 15.39, 32_768, "L4",
+                    context_doc=1_000_000,
+                    context_reason="15,39 GiB pesos + 0,65 visão + 2 runtime + 2 KV em 32K "
+                                   "= 20,04; na L4 (24 GiB) sobram 2,76 GiB além da folga "
+                                   "de 1,2. Na T4 (15 GiB) não cabe nem em 32K.",
+                    notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
+                           "`Inkling-2-Mini-AD-Q4_K.gguf` tem 16.525.559.776 B = 15,39 GiB.",
+                           "Quant recomendado pelo publicador: 96,3% de top-1 e KLD média "
+                           "0,0080 — qualidade de Q5_K_M com 3,3 GB menos.",
+                           "O exemplo de execução do publicador usa `-c 32768`, que é o "
+                           "contexto servido aqui.",
+                           "Requer llama.cpp b12600 ou mais novo, com o layout merged do PR "
+                           "#32694 (o perfil fixa b12611) e `--jinja`."),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
+            Variant("ad-iq2xxs", "AD-IQ2_XXS (2 bit)", 9.71, 16_384, "T4",
+                    context_doc=1_000_000,
+                    context_reason="9,71 GiB pesos + 0,65 visão + 2 runtime + 1 de KV em "
+                                   "16K = 13,36; com a folga de 1,0 GiB dá 14,36 <= 15 GiB "
+                                   "da T4. Em 32K o KV sobe para 2 e passa do limite "
+                                   "(15,36). Na L4 o mesmo arquivo serviria 32K.",
+                    notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
+                           "`Inkling-2-Mini-AD-IQ2_XXS.gguf` tem 10.425.495.136 B = 9,71 GiB.",
+                           "88,5% de top-1 e KLD média 0,084 no mesmo teste do publicador: "
+                           "é o degrau para GPU pequena, com perda visível perto do BF16.",
+                           "Requer llama.cpp b12600 ou mais novo, com o layout merged do PR "
+                           "#32694 (o perfil fixa b12611) e `--jinja`."),
+                    vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
         ),
         INKLING_SOURCE,
+        provider="Thinking Machines Lab",
         notes=(
             "26,4B MoE (5,4B ativos), visão, 1M de contexto.",
             "Requer llama.cpp mainline b12611+ com os arquivos Mainline_Support; "
@@ -262,6 +398,7 @@ MODELS: tuple[ModelEntry, ...] = (
                            "Dois perfis servem esta variante: 32K (A100-40) e 256K (A100-80).",)),
         ),
         QWEN38_SOURCE,
+        provider="Qwen (Alibaba Cloud)",
         notes=("Checkpoint atual do repo: philbert440/Qwen3.8-27B-W4A16-AWQ.",),
         sampling={"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0},
         reasoning_effort="xhigh",
@@ -280,6 +417,7 @@ MODELS: tuple[ModelEntry, ...] = (
                     notes=("Faixa 4 bit: 16-19 GB.",)),
         ),
         QWEN38_SOURCE,
+        provider="Qwen (Alibaba Cloud)",
         notes=("Denso 27B, visão, raciocínio, 256K; sampling 1.0/0.95/20/0.0.",),
         sampling={"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0},
         reasoning_effort="xhigh",
@@ -311,6 +449,7 @@ MODELS: tuple[ModelEntry, ...] = (
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["gemma-4-31b"]),
         ),
         GEMMA4_SOURCE,
+        provider="Google DeepMind",
         notes=(
             "Sampling: temperature 1.0, top_p 0.95, top_k 64.",
             "Thinking: token <|think|> no início do system prompt; em mult turno, "
@@ -341,6 +480,7 @@ MODELS: tuple[ModelEntry, ...] = (
                     context_doc=131_072, needs_custom_build=True),
         ),
         MUSE_SOURCE,
+        provider="Meta Superintelligence Lab",
         notes=(
             "Denso 30B com visão; 131.072 de contexto padrão, até 262.144.",
             "Exige llama.cpp com suporte a Muse Glimmer fixado em b12649; "
@@ -380,6 +520,7 @@ MODELS: tuple[ModelEntry, ...] = (
                     vision_gib=IMAGE_VISION_GIB),
         ),
         IMAGE_SOURCE,
+        provider="Qwen (Alibaba Cloud)",
         notes=(
             "Modelo de difusão (7B de imagem + Qwen3-VL 8B), servido por sd-server "
             "em POST /v1/images/generations — NÃO é /v1/chat/completions.",
@@ -397,6 +538,7 @@ MODELS: tuple[ModelEntry, ...] = (
                            "orçamento de 256 GB+ (RAM+VRAM) para 4 bit."),
         ),
         "https://unsloth.ai/docs/models/minimax-m3.1-flash.md",
+        provider="MiniMax",
         notes=("1 bit 129,4 GB; 2 bit 143,9 GB; orçamento 160 GB+ em 2 bit.",),
     ),
     ModelEntry(
@@ -408,6 +550,7 @@ MODELS: tuple[ModelEntry, ...] = (
                            "3 bit; docs recomendam dispositivo de 128 GB."),
         ),
         "https://unsloth.ai/docs/models/glm-5.3-flash.md",
+        provider="Z.ai",
         notes=("1 bit 93,09 GB; 3 bit UD-IQ3_XXS 120,37 GB; 4 bit 199,71 GB.",),
     ),
     ModelEntry(
@@ -419,6 +562,7 @@ MODELS: tuple[ModelEntry, ...] = (
                            "4 bit; tabela das docs indica 305 GB + Engram em SSD."),
         ),
         "https://unsloth.ai/docs/models/deepseek-v4.1-flash.md",
+        provider="DeepSeek",
         notes=("1 bit 128-145 GB; Q8_K_XL 508,4 GB; requer 128 GB+ de RAM.",),
     ),
 )
@@ -439,6 +583,19 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
     ProfileContext("inkling-2-mini-q8-gguf", "inkling-2-mini", "q8", 1_000_000, 131_072,
                    "A100-40", "24 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 34,65 na "
                               "A100-40, com 2 GiB de margem."),
+    ProfileContext("inkling-2-mini-ad-q6k", "inkling-2-mini", "ad-q6k", 1_000_000, 131_072,
+                   "A100-40", "22,15 GiB pesos + 0,65 visão + 2 runtime + 8 KV em 128K = "
+                              "32,80, mais 2,0 de folga = 34,80 <= 40 GiB da A100-40. A L4 "
+                              "não comporta nem em 32K (26,80 + 1,2 de folga > 24)."),
+    ProfileContext("inkling-2-mini-ad-q4k", "inkling-2-mini", "ad-q4k", 1_000_000, 32_768,
+                   "L4", "15,39 GiB pesos + 0,65 visão + 2 runtime + 2 KV em 32K = 20,04, "
+                         "mais 1,2 de folga = 21,24 <= 24 GiB da L4. 32K é o contexto do "
+                         "exemplo de execução do publicador (`-c 32768`)."),
+    ProfileContext("inkling-2-mini-ad-iq2xxs", "inkling-2-mini", "ad-iq2xxs", 1_000_000,
+                   16_384, "T4",
+                   "9,71 GiB pesos + 0,65 visão + 2 runtime + 1 de KV em 16K = 13,36, mais "
+                   "1,0 de folga = 14,36 <= 15 GiB da T4. Em 32K o KV dobra para 2 e o "
+                   "total (15,36) passa dos 15 GiB: por isso o contexto servido é 16K."),
     ProfileContext("qwen3.8-27b-q3-gguf", "qwen3.8-27b-gguf", "q3", 262_144, 32_768,
                    "L4", "12 GiB pesos + 2 runtime + 2 KV = 16 GiB: não cabe nos 15 GiB "
                          "utilizáveis da T4."),
@@ -536,7 +693,7 @@ def served_contexts_for(model_id: str, variant_id: str) -> tuple[int, ...]:
 def format_models() -> str:
     """Mostre contexto documentado E contexto servido — números distintos."""
     header = (
-        "Modelo | Runtime | Variante | Memoria (GiB) | Contexto doc | "
+        "Modelo | Fornecedor | Runtime | Variante | Memoria (GiB) | Contexto doc | "
         "Contexto servido | GPU minima | Status"
     )
     lines = [header, ""]
@@ -548,8 +705,9 @@ def format_models() -> str:
             if model.runtime == "image":
                 served = "n/a (imagem)"
             lines.append(
-                f"{model.id} | {model.runtime} | {variant.id} ({variant.label}) | "
-                f"{variant.memory_gib:g} | {doc} | {served} | {variant.min_gpu} | {status}"
+                f"{model.id} | {model.provider} | {model.runtime} | "
+                f"{variant.id} ({variant.label}) | {variant.memory_gib:g} | {doc} | "
+                f"{served} | {variant.min_gpu} | {status}"
             )
             if variant.context_doc and variant.context_doc > variant.context:
                 lines.append(f"  -> reducao documentada: {variant.context_reason}")
@@ -570,6 +728,7 @@ def format_models() -> str:
                 if m.reasoning_source or m.generation_source
             )
         ),
+        "Fontes de fornecedor: " + ", ".join(PROVIDER_SOURCES[m.id] for m in MODELS),
     ]
     return "\n".join(lines)
 
@@ -883,12 +1042,32 @@ def compatible_variants(gpu_id: str) -> CompatibleSelection:
     return CompatibleSelection(gpu.id, tuple(rows), dropped)
 
 
-def format_compatible_models(gpu_id: str) -> str:
-    """Tabela de compatíveis no mesmo estilo de colunas de `format_models`."""
+def format_compatible_models(
+    gpu_id: str, packages: dict[str, str] | None = None
+) -> str:
+    """Tabela de compatíveis no mesmo estilo de colunas de `format_models`.
+
+    `packages` mapeia profile_id -> publicador dos pesos (derivado do repositório
+    de onde o byom baixa). A coluna "Pacote" só aparece quando algum perfil desta
+    GPU publica os pesos em nome de outra org — repetir a coluna com o mesmo
+    valor do fornecedor seria ruído.
+    """
     selection = compatible_variants(gpu_id)
     gpu = gpu_by_id(gpu_id)
-    header = (
-        "Modelo | Runtime | Variante | Memoria (GiB) | VRAM (GiB) | "
+    pacotes = packages or {}
+    linha_pacote = {
+        row.profile_id: pacotes.get(row.profile_id, "") for row in selection.rows
+    }
+    mostrar_pacote = any(
+        pacote and pacote != model_by_id(row.model_id).provider
+        for row in selection.rows
+        for pacote in (linha_pacote[row.profile_id],)
+    )
+    header = "Modelo | Fornecedor |"
+    if mostrar_pacote:
+        header += " Pacote |"
+    header += (
+        " Runtime | Variante | Memoria (GiB) | VRAM (GiB) | "
         "Contexto doc | Contexto servido | Perfil"
     )
     lines = [
@@ -901,10 +1080,21 @@ def format_compatible_models(gpu_id: str) -> str:
         doc = str(row.context_doc) if row.context_doc else "n/a"
         served = "n/a (imagem)" if row.runtime == "image" else str(row.context_served)
         profile = row.profile_id or "n/a (sem perfil)"
-        lines.append(
-            f"{row.model_id} | {row.runtime} | {row.variant_id} ({row.variant_label}) | "
-            f"{row.required_gib:g} | {row.available_gib:g} | {doc} | {served} | {profile}"
+        celulas = [row.model_id, model_by_id(row.model_id).provider]
+        if mostrar_pacote:
+            celulas.append(linha_pacote[row.profile_id] or "n/a")
+        celulas.extend(
+            [
+                row.runtime,
+                f"{row.variant_id} ({row.variant_label})",
+                f"{row.required_gib:g}",
+                f"{row.available_gib:g}",
+                doc,
+                served,
+                profile,
+            ]
         )
+        lines.append(" | ".join(celulas))
     lines += [
         "",
         f"Summary: {selection.compatible_count} compatible variant(s); "
@@ -926,6 +1116,10 @@ def validate_catalog() -> None:
     for model in MODELS:
         if model.id in seen_models or model.runtime not in RUNTIMES or not model.source:
             raise ValueError(f"Modelo inválido no catálogo: {model.id}")
+        if not model.provider.strip():
+            raise ValueError(f"Modelo sem fornecedor declarado: {model.id}")
+        if model.id not in PROVIDER_SOURCES:
+            raise ValueError(f"Fornecedor sem fonte registrada: {model.id}")
         seen_models.add(model.id)
         if model.reasoning_effort is not None and model.reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"reasoning_effort não documentado: {model.id}")

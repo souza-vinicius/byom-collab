@@ -190,9 +190,25 @@ def init() -> None:
 # ---------------------------------------------------------------------------
 # profiles
 # ---------------------------------------------------------------------------
+def _package_owners() -> dict[str, str]:
+    """profile_id -> publicador dos pesos, derivado do repositório de cada perfil.
+
+    O publicador NÃO é campo do perfil: sai da org do repo de onde o worker baixa
+    (`model_repo`, papel `diffusion` ou o `model` do vLLM), então trocar o repo de
+    um perfil muda o rótulo sem editar dado novo.
+    """
+    return {
+        profile.id: catalog.package_owner(
+            catalog.package_source(profile.worker, str(profile.settings.get("model", "")))
+        )
+        for profile in config.available_profiles()
+    }
+
+
 @app.command()
 def profiles() -> None:
     """List available model profiles with inherited reasoning and both contexts."""
+    pacotes = _package_owners()
     for profile in config.available_profiles():
         context = profile.settings["max_model_len"]
         reasoning = profile.settings.get("reasoning_effort") or (
@@ -203,6 +219,11 @@ def profiles() -> None:
         shown = reasoning if reasoning is not None else "not documented"
         _say(f"{profile.id} — {profile.name} ({context:,} tokens servidos; reasoning {shown})")
         if profile.catalog_model:
+            fornecedor = catalog.model_by_id(profile.catalog_model).provider
+            _say(f"  {mensagens.ROTULO_FORNECEDOR}: {fornecedor}")
+            pacote = pacotes.get(profile.id, "")
+            if mensagens.publicador_diverge(fornecedor, pacote):
+                _say(f"  {mensagens.COLUNA_PACOTE}: {pacote}")
             ref = catalog.profile_context(profile.id)
             _say(
                 f"  {profile.catalog_model}:{profile.catalog_variant} — "
@@ -252,7 +273,7 @@ def models(
         selected = catalog.parse_gpu_choice(gpu)
     except ValueError as exc:
         _die(str(exc))
-    _say(catalog.format_compatible_models(selected.id))
+    _say(catalog.format_compatible_models(selected.id, _package_owners()))
 
 
 @app.command()
