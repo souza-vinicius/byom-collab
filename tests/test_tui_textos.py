@@ -173,3 +173,15 @@ def test_format_models_marca_contexto_de_imagem_como_n_a():
     for linha in linhas_imagem:
         assert "| n/a (imagem) |" in linha
     assert "1 |" not in texto.split("qwen-image-2.1", 1)[1].splitlines()[0]
+
+
+def test_tela_de_gpu_e_modelo_nao_diz_somente_leitura():
+    """O fluxo grava config.toml no fim; o aviso tem de ser o de nada gravado."""
+    from pathlib import Path
+
+    fonte = (Path(__file__).resolve().parent.parent / "src" / "byom" / "tui.py").read_text(
+        encoding="utf-8"
+    )
+    trecho = fonte.split("def _executar_gpu_modelo")[1].split("def _executar_selecionar_gpu")[0]
+    assert "M.NADA_GRAVADO_ATE_CONFIRMAR" in trecho
+    assert "M.SOMENTE_LEITURA" not in trecho

@@ -1833,7 +1833,8 @@ def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
 
     while True:
         renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
-        con.print(M.SOMENTE_LEITURA, style="dim")
+        # Esta tela termina gravando o par GPU + modelo: não é somente leitura.
+        con.print(M.NADA_GRAVADO_ATE_CONFIRMAR, style="dim")
         con.print()
         renderizar_gpus(con, estado)
         con.print()
