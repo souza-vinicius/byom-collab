@@ -336,6 +336,13 @@ def available_profiles() -> list[Profile]:
                 raise ValueError(f"Runtime mismatch in {path.name}: {runtime} != {entry.runtime}")
             if not variant.available:
                 raise ValueError(f"{path.name} references an unavailable catalog variant")
+            limite = catalog.context_limit(catalog_model, catalog_variant)
+            if limite and settings["max_model_len"] > limite:
+                raise ValueError(
+                    f"Invalid values in {path.name}: max_model_len "
+                    f"{settings['max_model_len']} acima do máximo servido por "
+                    f"{catalog_model}:{catalog_variant} ({limite} tokens)"
+                )
         worker = raw.get("worker", {})
         if not isinstance(worker, dict):
             raise ValueError(f"profile {path.name}: [worker] must be a table")
@@ -462,6 +469,16 @@ def dumps_config(cfg: Config) -> str:
     return "\n".join(lines) + "\n"
 
 
+def validate_context_limit(cfg: Config, model_id: str, variant_id: str) -> None:
+    """Recusa `max_model_len` acima do contexto que a variante declara servir."""
+    limite = catalog.context_limit(model_id, variant_id)
+    if limite and cfg.max_model_len > limite:
+        raise ConfigError(
+            f"Invalid max_model_len: {cfg.max_model_len}; o máximo servido por "
+            f"{model_id}:{variant_id} é {limite} tokens"
+        )
+
+
 def load_config() -> Config:
     path = config_path()
     if not path.exists():
@@ -490,6 +507,8 @@ def load_config() -> Config:
             if profile.catalog_model:
                 cfg.reasoning_effort = catalog.model_by_id(profile.catalog_model).reasoning_effort
     validate_config(cfg)
+    model_id, variant_id = active_catalog_ref(cfg)
+    validate_context_limit(cfg, model_id, variant_id)
     return cfg
 
 

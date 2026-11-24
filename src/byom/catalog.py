@@ -505,6 +505,16 @@ def profile_context(profile_id: str) -> ProfileContext:
     raise ValueError(f"Perfil sem contexto registrado no catálogo: {profile_id!r}")
 
 
+def context_limit(model_id: str, variant_id: str) -> int:
+    """Maior contexto que a variante declara servir (0 = sem limite conhecido).
+
+    `context_doc` é o máximo documentado; quando a página não publica um (ou a
+    variante é de imagem), cai em `Variant.context`.
+    """
+    variant = variant_by_id(model_id, variant_id)
+    return variant.context_doc or variant.context
+
+
 def served_contexts_for(model_id: str, variant_id: str) -> tuple[int, ...]:
     """Contextos efetivamente servidos pelos perfis de uma variante."""
     values = tuple(

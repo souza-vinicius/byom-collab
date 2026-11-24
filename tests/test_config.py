@@ -250,3 +250,45 @@ def test_state_valida_start_ticks_positivos():
             setattr(quebrado, campo, valor)
             with pytest.raises(config.StateFileError):
                 config.validate_state(quebrado)
+
+
+# -- 5.5: max_model_len não pode passar do contexto do catálogo ----------------
+def test_max_model_len_acima_do_catalogo_e_recusado_na_carga():
+    """400.000 num perfil de 256K não pode carregar em silêncio."""
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'profile = "qwen3.8-27b-256k"\nmax_model_len = 400000\n', encoding="utf-8"
+    )
+
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_config()
+
+    mensagem = str(excinfo.value)
+    assert "400000" in mensagem
+    assert "262144" in mensagem
+    assert "qwen3.8-27b-awq:q4-awq" in mensagem
+
+
+def test_max_model_len_igual_ao_catalogo_e_aceito():
+    cfg = config.Config(max_model_len=262_144, profile="qwen3.8-27b-256k")
+    config.validate_context_limit(cfg, "qwen3.8-27b-awq", "q4-awq")
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(config.dumps_config(cfg), encoding="utf-8")
+    assert config.load_config().max_model_len == 262_144
+
+
+def test_validacao_de_contexto_ignora_variante_sem_contexto_documentado():
+    """Imagem não tem janela autoregressiva: sentinela 1 não é limitada."""
+    cfg = config.Config(max_model_len=1, profile="qwen-image-2.1-q4km")
+    config.validate_context_limit(cfg, "qwen-image-2.1", "q4km")
+    assert catalog.context_limit("qwen-image-2.1", "q4km") == 0
+
+
+def test_perfis_embarcados_respeitam_o_contexto_do_catalogo():
+    for profile in config.available_profiles():
+        if not profile.catalog_model:
+            continue
+        limite = catalog.context_limit(profile.catalog_model, profile.catalog_variant)
+        assert not limite or profile.settings["max_model_len"] <= limite, profile.id
