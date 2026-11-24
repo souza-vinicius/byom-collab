@@ -465,3 +465,24 @@ def test_pid_ausente_no_proc_nao_recebe_sinal(monkeypatch):
     cli._terminate_local(state)
 
     assert sent == []
+
+
+def test_up_chega_a_worker_ready_com_o_status_do_daemon(monkeypatch):
+    """O `up` continua fechando em "Worker ready" com o probe por header."""
+    install_fake(monkeypatch, FakeColab())
+    monkeypatch.setattr(colab, "new", lambda name, gpu="": None)
+    install_remote(monkeypatch, FakeRemote(session="s", cfg=config.Config()))
+    monkeypatch.setattr(cli, "_start_daemon", lambda: 9876)
+    respostas = iter(
+        [
+            {"session": "byom-x", "worker": {"state": "initializing"}, "tunnel": {}},
+            {"session": "byom-x", "worker": {"state": "ready"}, "tunnel": {}},
+        ]
+    )
+    monkeypatch.setattr(cli, "_daemon_status", lambda cfg, **kwargs: next(respostas))
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+    result = runner.invoke(cli.app, ["up"])
+
+    assert result.exit_code == 0
+    assert "Worker ready" in result.output
