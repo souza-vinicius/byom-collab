@@ -74,6 +74,20 @@ def test_compatibilidade_com_margem_e_alternativas():
         catalog.check_fit("modelo-inexistente", "q4", "L4")
 
 
+def test_kv_cache_sem_runtime_assume_f16_e_nao_subestima():
+    """Chamador que omite o runtime não pode receber a metade do KV.
+
+    O default era `runtime="vllm"`, que com `kv_cache_dtype=None` cai no fp8 do
+    worker e devolve metade do valor — foi o que aconteceu ao conferir o Bonsai
+    à mão (`kv_cache_gib(32768, modelo)` dava 1 GiB contra os 2 GiB reais).
+    """
+    modelo = catalog.model_by_id("ternary-bonsai-2.5-27b")
+    assert catalog.kv_cache_gib(32768, modelo) == 2.0
+    assert catalog.kv_cache_gib(32768, modelo, runtime="llama-cpp") == 2.0
+    assert catalog.kv_cache_gib(32768, modelo, runtime="vllm", kv_cache_dtype="fp8") == 1.0
+    assert catalog.kv_cache_gib(32768) == 2.0  # heurístico, também em f16
+
+
 def test_kv_cache_respeita_o_dtype_do_runtime():
     """32K de KV custam 2 GiB em f16 e 1 GiB em fp8."""
     assert catalog.kv_cache_gib(32768, kv_cache_dtype="f16", runtime="vllm") == 2.0

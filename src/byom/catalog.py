@@ -1056,9 +1056,13 @@ def kv_cache_gib(
     model: ModelEntry | None = None,
     *,
     kv_cache_dtype: str | None = None,
-    runtime: str = "vllm",
+    runtime: str = "",
 ) -> float:
     """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato.
+
+    Sem `runtime` explícito a conta assume **f16** (o mais conservador): um
+    chamador que esqueça o argumento não subestima VRAM. Só `vllm` pode descer
+    para fp8, e apenas quando o perfil declara `kv_cache_dtype`.
 
     Com `model.kv_shape` a conta segue a arquitetura (`KvProfile.cache_gib`):
     só as camadas de atenção completa crescem com o contexto. Sem `kv_shape`,
