@@ -1,10 +1,10 @@
 """Local proxy: stable endpoint used by coding agents.
 
 It listens only on `127.0.0.1:4000` and forwards `/v1/*` through the tunnel
-to the worker gateway. Before forwarding anything, it checks that the
-gateway's `/health` returns the nonce of the session registered in
-`state.json`: this ensures the destination is that session's worker, not some
-other machine.
+to the worker gateway. Nothing is forwarded before the destination proves it is
+this session's worker: the gateway only answers `/health` for a request that
+carries the session nonce in `X-BYOM-Nonce`, and the nonce is never returned in
+a payload.
 
 It also exposes `GET /__byom/status`, used by `byom status`. That endpoint is
 local, does not cross the tunnel, and does not count as activity.

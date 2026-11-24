@@ -229,7 +229,10 @@ deles cabe em uma única GPU do Colab.
   pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior. O nome do
   asset Linux fixado não declara seu backend; verifique o uso de GPU na primeira
   execução real. Se for um build de CPU, compile a partir da tag fixada com
-  `-DSD_CUDA=ON` e aponte `BYOM_SD_SERVER` para o `sd-server` gerado.
+  `-DSD_CUDA=ON` e coloque o binário em `/content/byom/sdcpp/sd-server`: o
+  `runtime_manifest.json` aponta para o symlink `/content/byom/sd-server`, que
+  o `prepare_runtime` cria a partir do diretório `binary_dir` do perfil. Não há
+  variável de ambiente para o caminho do binário — o manifest é a única fonte.
 * Repositórios no Hugging Face e a CLI do Colab são **verificados apenas na
   primeira execução real**: este repositório não os aciona durante os testes
   locais. Confira os arquivos de modelo resolvidos pelos padrões fixados e a GPU
