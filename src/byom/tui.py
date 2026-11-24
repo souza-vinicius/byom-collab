@@ -1738,7 +1738,7 @@ def renderizar_instrucoes_harness(
     estado_sessao = (
         f"{sim.ok} ativa ({estado.sessao_nome})"
         if estado.sessao_ativa
-        else f"{sim.pendente} inativa (inicie pela opção 7 antes de usar)"
+        else f"{sim.pendente} inativa (inicie pela opção {M.ATALHOS_MENU['up']} antes de usar)"
     )
 
     resumo = Text()

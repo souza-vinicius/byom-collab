@@ -48,8 +48,7 @@ uv run byom uninstall                              # remove apenas o diretório 
   cliente, consultar as instruções passo a passo para configuração manual e,
   opcionalmente, aplicar a conexão automaticamente (sem alterar arquivos de
   harness durante o `Iniciar sessão no Colab`). A opção **Conversar com o
-  modelo (llm chat)**, no fim do menu (atalho `c`), abre o chat no terminal com
-  a sessão ativa.
+  modelo (llm chat)** (atalho `c`) abre o chat no terminal com a sessão ativa.
 * `byom profiles` lista todos os perfis; `byom gpus` exibe o catálogo estático
   de GPUs. Encerre a sessão antes de trocar de perfil.
 * `byom models --gpu L4` lista apenas as variantes do catálogo cujo contexto
