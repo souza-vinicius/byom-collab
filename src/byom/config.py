@@ -493,6 +493,46 @@ class State:
     created_at: str
     daemon_pid: int | None = None
     watchdog_pid: int | None = None
+    #: Campo 22 de `/proc/<pid>/stat` no instante em que o PID foi registrado.
+    #: Sem ele, um PID reciclado depois de um reboot seria tratado como byom.
+    daemon_start_ticks: int | None = None
+    watchdog_start_ticks: int | None = None
+
+
+def process_start_ticks(pid: int) -> int | None:
+    """Instante de início do processo (campo 22 de `/proc/<pid>/stat`).
+
+    Devolve None quando o processo não existe mais ou quando a plataforma não
+    tem `/proc`; nesse caso o chamador deve tratar o PID como morto.
+    """
+    if pid <= 0:
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    # O campo 2 (`comm`) pode conter espaços e parênteses: o split começa depois
+    # do último `)`, então `fields[0]` é o campo 3 e o campo 22 é `fields[19]`.
+    _, _, rest = raw.rpartition(")")
+    fields = rest.split()
+    if len(fields) < 20:
+        return None
+    try:
+        value = int(fields[19])
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def process_cmdline(pid: int) -> str:
+    """Linha de comando do processo, usada só quando não há start time."""
+    if pid <= 0:
+        return ""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode(errors="replace").strip()
 
 
 def validate_state(state: State) -> None:
@@ -501,12 +541,14 @@ def validate_state(state: State) -> None:
         value = getattr(state, key)
         if not isinstance(value, str) or (key in {"session", "nonce"} and not value):
             raise StateFileError(f"Invalid {key} in state.json: {value!r}; expected a string")
-    for key in ("daemon_pid", "watchdog_pid"):
+    for key in ("daemon_pid", "watchdog_pid", "daemon_start_ticks", "watchdog_start_ticks"):
         value = getattr(state, key)
         if value is not None and (
             isinstance(value, bool) or not isinstance(value, int) or value <= 0
         ):
-            raise StateFileError(f"Invalid {key} in state.json: {value!r}; expected a positive PID")
+            raise StateFileError(
+                f"Invalid {key} in state.json: {value!r}; expected a positive integer"
+            )
 
 
 def load_state() -> State | None:

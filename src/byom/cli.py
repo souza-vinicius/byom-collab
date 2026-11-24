@@ -560,9 +560,16 @@ def _bootstrap_worker(cfg: config.Config, state: config.State, client: remote.Re
 
 
 def _register_daemon(state: config.State) -> None:
-    """Start the daemon and merge its PID into the existing state."""
+    """Start the daemon and merge its PID and start time into the state.
+
+    The start time is read right after `Popen`: `execve` does not change it, so
+    it still identifies the daemon even before it announces itself.
+    """
     state.daemon_pid = _start_daemon()
-    config.update_state(daemon_pid=state.daemon_pid)
+    state.daemon_start_ticks = config.process_start_ticks(state.daemon_pid)
+    config.update_state(
+        daemon_pid=state.daemon_pid, daemon_start_ticks=state.daemon_start_ticks
+    )
 
 
 #: Expected failures that must tear down an allocated session. Programming
@@ -794,9 +801,58 @@ def status() -> None:
 # ---------------------------------------------------------------------------
 # down
 # ---------------------------------------------------------------------------
+#: Espera entre SIGTERM e SIGKILL. O daemon fecha o túnel e o `AsyncClient`
+#: antes de sair; 5 s cobrem o caminho normal sem segurar o `down`.
+TERMINATE_GRACE_S = 5.0
+
+
+def _pid_is_byom(pid: int, start_ticks: int | None) -> bool:
+    """True só quando o PID ainda é o processo que o byom registrou.
+
+    Depois de um reboot o mesmo número pode pertencer a outro processo do
+    usuário: comparar o instante de início (`/proc/<pid>/stat`, campo 22) evita
+    matar o processo errado.
+    """
+    current = config.process_start_ticks(pid)
+    if current is None:
+        return False  # /proc ausente: o processo já morreu
+    if start_ticks is not None:
+        return current == start_ticks
+    # state.json antigo, sem start time: o cmdline é a única pista disponível.
+    return "byom" in config.process_cmdline(pid)
+
+
+def _wait_for_exit(pid: int, start_ticks: int | None, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _pid_is_byom(pid, start_ticks):
+            return True
+        time.sleep(0.1)
+    return not _pid_is_byom(pid, start_ticks)
+
+
+def _clear_pid_fields(values: dict[str, int | None]) -> None:
+    try:
+        config.update_state(**values)
+    except (config.StateFileError, OSError):
+        return  # state.json já removido: nada a limpar
+
+
 def _terminate_local(state: config.State) -> None:
-    for pid in (state.daemon_pid, state.watchdog_pid):
+    """Stop the local daemon and watchdog, verifying identity first."""
+    targets = (
+        ("daemon", state.daemon_pid, state.daemon_start_ticks),
+        ("watchdog", state.watchdog_pid, state.watchdog_start_ticks),
+    )
+    for label, pid, start_ticks in targets:
         if not pid:
+            continue
+        if not _pid_is_byom(pid, start_ticks):
+            _say(
+                f"  {label} pid {pid} is not the byom process registered in state.json "
+                "(stale state after a reboot?); no signal sent"
+            )
+            _clear_pid_fields({f"{label}_pid": None, f"{label}_start_ticks": None})
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -804,6 +860,14 @@ def _terminate_local(state: config.State) -> None:
             continue
         except OSError as exc:  # pragma: no cover - system-dependent
             _say(f"Warning: could not stop process {pid}: {exc}")
+            continue
+        if _wait_for_exit(pid, start_ticks, TERMINATE_GRACE_S):
+            continue
+        _say(f"  {label} pid {pid} ignored SIGTERM for {int(TERMINATE_GRACE_S)}s; sending SIGKILL")
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError as exc:  # pragma: no cover - system-dependent
+            _say(f"Warning: could not kill process {pid}: {exc}")
 
 
 def _down(cfg: config.Config, *, quiet: bool = False) -> bool:

@@ -160,7 +160,14 @@ class WatchdogSupervisor:
 
     def _save_pid(self, pid: int | None) -> None:
         try:
-            current = config.update_state(watchdog_pid=pid)
+            if pid is None:
+                current = config.update_state(watchdog_pid=None, watchdog_start_ticks=None)
+            else:
+                # O start time identifica o PID mesmo depois de reciclado.
+                current = config.update_state(
+                    watchdog_pid=pid,
+                    watchdog_start_ticks=config.process_start_ticks(pid),
+                )
         except (config.StateFileError, OSError) as exc:
             log.warning("Could not save watchdog PID: %s", exc)
             return

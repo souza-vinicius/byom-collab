@@ -215,3 +215,38 @@ def test_up_lock_libera_quando_o_corpo_levanta_excecao():
         raise RuntimeError("falha simulada")
     with config.up_lock():
         pass
+
+
+# ---------------------------------------------------------------------------
+# Identidade do PID: start time do /proc
+# ---------------------------------------------------------------------------
+def test_process_start_ticks_le_o_processo_atual():
+    import os
+
+    ticks = config.process_start_ticks(os.getpid())
+    assert ticks is not None and ticks > 0
+    # Estável entre leituras: é o que permite detectar PID reciclado.
+    assert config.process_start_ticks(os.getpid()) == ticks
+    assert config.process_start_ticks(2**31 - 1) is None
+    assert config.process_start_ticks(0) is None
+
+
+def test_state_valida_start_ticks_positivos():
+    state = config.State(
+        session="s",
+        endpoint="e",
+        nonce="n",
+        created_at="t",
+        daemon_pid=10,
+        daemon_start_ticks=1234,
+        watchdog_pid=11,
+        watchdog_start_ticks=5678,
+    )
+    config.validate_state(state)
+
+    for campo in ("daemon_start_ticks", "watchdog_start_ticks"):
+        for valor in (0, -1, "123", True):
+            quebrado = config.State(session="s", endpoint="e", nonce="n", created_at="t")
+            setattr(quebrado, campo, valor)
+            with pytest.raises(config.StateFileError):
+                config.validate_state(quebrado)
