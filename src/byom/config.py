@@ -737,12 +737,32 @@ def up_lock(holder: str = "up") -> Iterator[None]:
 
 
 
+def _fsync_dir(directory: Path) -> None:
+    """fsync no diretório: o `os.replace` é durável só depois disto."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:  # pragma: no cover - FS sem suporte a fsync de diretório
+        pass
+    finally:
+        os.close(fd)
+
+
 def atomic_write_text(
     path: Path, text: str, *, mode: int | None = None, newline: str | None = None
 ) -> None:
-    """Write text via temp file + `os.replace`, preserving the target mode."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    target = path.resolve()
+    """Write text via temp file + `os.replace`, preserving the target mode.
+
+    Escreve sempre no alvo REAL do symlink (`os.path.realpath`): assim um
+    dotfile versionado continua sendo um link (o `os.replace` no caminho do
+    link o trocaria por um arquivo comum) e o temporário nasce no mesmo sistema
+    de arquivos do alvo, sem `EXDEV` quando o link aponta para outro FS.
+    """
+    target = Path(os.path.realpath(path))
+    target.parent.mkdir(parents=True, exist_ok=True)
     if mode is None:
         mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else 0o600
     fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
@@ -752,7 +772,8 @@ def atomic_write_text(
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        os.replace(tmp, target)
+        _fsync_dir(target.parent)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

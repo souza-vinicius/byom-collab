@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -292,3 +296,67 @@ def test_perfis_embarcados_respeitam_o_contexto_do_catalogo():
             continue
         limite = catalog.context_limit(profile.catalog_model, profile.catalog_variant)
         assert not limite or profile.settings["max_model_len"] <= limite, profile.id
+
+
+# -- 5.8: escrita atômica preserva symlink e não cruza sistemas de arquivos ---
+def test_atomic_write_preserva_symlink_de_dotfile(tmp_path):
+    real = tmp_path / "dotfiles" / "config.toml"
+    real.parent.mkdir()
+    real.write_text("antigo\n", encoding="utf-8")
+    real.chmod(0o640)
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+
+    config.atomic_write_text(link, "novo\n")
+
+    assert link.is_symlink(), "o link do dotfile não pode virar arquivo comum"
+    assert os.readlink(link) == str(real)
+    assert real.read_text(encoding="utf-8") == "novo\n"
+    assert stat.S_IMODE(real.stat().st_mode) == 0o640
+
+
+def test_atomic_write_cria_tmp_no_diretorio_real_do_alvo(tmp_path, monkeypatch):
+    real = tmp_path / "dotfiles" / "arquivo.txt"
+    real.parent.mkdir()
+    real.write_text("x", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+    vistos: list[str] = []
+    original = tempfile.mkstemp
+
+    def fake_mkstemp(*args, **kwargs):
+        vistos.append(kwargs.get("dir"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(config.tempfile, "mkstemp", fake_mkstemp)
+
+    config.atomic_write_text(link, "y")
+
+    assert vistos == [str(real.parent)]
+
+
+def test_atomic_write_em_alvo_de_outro_sistema_de_arquivos(tmp_path):
+    """Link para outro FS não pode falhar com EXDEV."""
+    outro = Path("/dev/shm")
+    if not outro.is_dir() or not os.access(outro, os.W_OK):
+        pytest.skip("/dev/shm indisponível neste ambiente")
+    try:
+        pasta = Path(tempfile.mkdtemp(dir=str(outro)))
+    except OSError:  # pragma: no cover - ambiente sem tmpfs gravável
+        pytest.skip("sem tmpfs gravável para simular outro FS")
+    try:
+        if os.stat(pasta).st_dev == os.stat(tmp_path).st_dev:
+            pytest.skip("/dev/shm está no mesmo dispositivo")
+        alvo = pasta / "config.toml"
+        alvo.write_text("antigo\n", encoding="utf-8")
+        link = tmp_path / "config.toml"
+        link.symlink_to(alvo)
+
+        config.atomic_write_text(link, "novo\n")
+
+        assert alvo.read_text(encoding="utf-8") == "novo\n"
+        assert link.is_symlink()
+    finally:
+        for item in pasta.iterdir():
+            item.unlink()
+        pasta.rmdir()
