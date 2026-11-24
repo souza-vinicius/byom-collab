@@ -104,6 +104,17 @@ def socket_path(session: str) -> Path:
     return config.config_dir() / f"cm-{session}.sock"
 
 
+def tunnel_socket_path(session: str) -> Path:
+    """Control socket of the daemon's tunnel, kept apart from command masters.
+
+    `byom up` para o próprio master ao terminar a transação. Com um socket
+    compartilhado, esse `ssh -O exit` derrubava o master que o túnel do daemon
+    acabara de abrir, e a API ficava alguns segundos indisponível logo depois
+    do `up` reportar "Worker ready".
+    """
+    return config.config_dir() / f"cm-{session}-tunnel.sock"
+
+
 def known_hosts_path(session: str) -> Path:
     """Per-session `known_hosts`, removed by `byom down` with the rest of state."""
     return config.config_dir() / f"known_hosts_{session}"
@@ -140,11 +151,12 @@ class Remote:
         cfg: config.Config,
         ssh_bin: str = "ssh",
         log_path: Path | None = None,
+        socket: Path | None = None,
     ) -> None:
         self.session = session
         self.cfg = cfg
         self.ssh_bin = ssh_bin
-        self.socket = socket_path(session)
+        self.socket = socket or socket_path(session)
         self.known_hosts = known_hosts_path(session)
         if log_path is None:
             log_path = config.config_dir() / "logs" / f"ssh-{session}.log"

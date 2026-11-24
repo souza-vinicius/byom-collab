@@ -247,7 +247,17 @@ de turnos anteriores do assistente antes de encaminhar. Um cliente que já
 incluiu o token, limpou o histórico ou enviou `enable_thinking: false` mantém
 sua intenção. Todos os binários são baixados de URLs fixadas com SHA-256 dos
 assets de release; repositório do modelo, quantização e padrão de revisão são
-fixos no perfil — sem `@latest`.
+fixos no perfil — sem `@latest`. Os assets CUDA dos perfis `llama-cpp` são os
+builds `cuda-12.8` do upstream (`b12611`/`b12649`) e do fork PrismML (12.8):
+eles trazem SASS para sm_86/sm_89/sm_120 e PTX para sm_75/sm_80/sm_90, então
+L4 (SASS) e T4/A100/H100 (JIT no primeiro load) funcionam. Os assets `cuda-13.x`
+não servem: só têm SASS para sm_86/89/120/121 e PTX novo demais para o driver
+580 do Colab (`CUDA error: the provided PTX was compiled with an unsupported
+toolchain` na T4). O runtime recebe `libcudart.so.12`/`libcublas.so.12` dos
+pacotes `nvidia-*-cu12` que a imagem mantém no Python do kernel, porque o
+`ldconfig` da VM só publica CUDA 13. O bootstrap imprime o fim do log do runtime
+quando ele morre no início, em vez de deixar só o `server exited unexpectedly`
+do tmux.
 
 Fora de escopo (sem perfil executável): MiniMax-M3.1-Flash (1 bit 129,4 GB,
 2 bit 143,9 GB, 4 bit 249,4 GB / orçamento de 256 GB+), GLM-5.3-Flash (1 bit
@@ -362,15 +372,20 @@ Agente --HTTP/SSE--> Proxy :4000 --> Túnel :4001 ==SSH (via colab ssh)==> VM Co
 
 * **Gateway:** todas as requisições de inferência passam por ele, tornando-o a
   fonte de verdade de atividade (`/health` e `/v1/models` não contam como
-  trabalho ativo).
+  trabalho ativo). Ele encaminha para o runtime em `vllm_port`, a porta que vem
+  na `session.json`; não existe URL fixa para a porta do runtime.
 * **Watchdog:** célula de longa duração no kernel que verifica o gateway a cada
   10 segundos e chama `unassign()` após o tempo limite de ociosidade. O daemon
   local a reinicia se a conexão cair.
 * **Desligamento seguro:** a VM só é encerrada após o gateway confirmar que não
   há trabalho em andamento. Se o watchdog ficar sem enviar heartbeats por mais
   de 60 segundos, o gateway interrompe o vLLM.
-* **SSH:** uma única conexão mestre do OpenSSH (`ControlMaster`, usando
-  `colab ssh` como `ProxyCommand`) transporta o túnel e os comandos remotos.
+* **SSH:** uma conexão mestre do OpenSSH (`ControlMaster`, usando
+  `colab ssh` como `ProxyCommand`) por vez. O `up` usa a dele e a encerra ao
+  terminar; o daemon abre a do túnel num socket de controle próprio
+  (`cm-<sessão>-tunnel.sock`), então o `ssh -O exit` do `up` não derruba a
+  conexão que o túnel está usando, e as duas nunca disputam o slot único do
+  `colab ssh`.
 
 ## Configuração
 

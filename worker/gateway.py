@@ -95,7 +95,11 @@ class GatewayConfig:
     runtime: str = "vllm"
     model: str = ""
     served_model_name: str = "qwen3.8-27b"
-    vllm_base_url: str = "http://127.0.0.1:8000"
+    #: Porta em que o runtime (vLLM, llama-server ou sd-server) escuta em
+    #: loopback. `session.json` carrega `vllm_port`, escrita pelo byom; o
+    #: gateway é quem monta a URL, para não existir uma segunda fonte (uma URL
+    #: fixa em 8000 ignorava a porta configurada e o modelo nunca ficava pronto).
+    vllm_port: int = 8000
     vllm_pid_file: str = "/content/byom/vllm.pid"
     gateway_port: int = 8001
     #: None = a página do modelo não documenta reasoning_effort (Gemma 4).
@@ -128,7 +132,7 @@ class GatewayConfig:
         if self.runtime not in RUNTIME_IDS:
             choices = ", ".join(sorted(RUNTIME_IDS))
             raise ValueError(f"Invalid runtime: {self.runtime!r}; expected one of {choices}")
-        for key in ("gateway_port",):
+        for key in ("gateway_port", "vllm_port"):
             value = getattr(self, key)
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
                 raise ValueError(f"Invalid {key}: {value!r}; expected a port between 1 and 65535")
@@ -213,7 +217,7 @@ class Gateway:
     def client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                base_url=self.cfg.vllm_base_url,
+                base_url=f"http://127.0.0.1:{self.cfg.vllm_port}",
                 transport=self.transport,
                 timeout=None,
             )

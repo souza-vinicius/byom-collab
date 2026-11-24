@@ -355,3 +355,23 @@ def test_down_remove_o_known_hosts_da_sessao(cfg):
     # Idempotente e sem escapar do config dir.
     remote.forget_session_host_key("byom-x")
     remote.forget_session_host_key("../../etc/passwd")
+
+
+def test_tunel_tem_socket_de_controle_proprio(cfg):
+    """`byom up` para o master dele; o túnel não pode usar o mesmo socket.
+
+    Com um socket compartilhado, o `ssh -O exit` do fim do `up` derrubava o
+    master que o daemon tinha acabado de abrir, e a API ficava indisponível
+    por alguns segundos depois de "Worker ready".
+    """
+    from byom import tunnel
+
+    supervisor = tunnel.TunnelSupervisor(session="byom-x", endpoint="endpoint", cfg=cfg)
+    comando = supervisor.remote.master_command([(4101, 8001)])
+    socket_do_tunel = Path(comando[comando.index("-S") + 1])
+
+    assert socket_do_tunel == remote.tunnel_socket_path("byom-x")
+    assert socket_do_tunel != remote.socket_path("byom-x")
+    assert socket_do_tunel != build(cfg).socket
+    # O master do `up` continua no socket curto de sempre.
+    assert build(cfg).socket.name == "cm-byom-x.sock"

@@ -170,7 +170,7 @@ def test_gateway_imagem_nao_e_chat(gateway_module):
         return httpx.Response(200, json={"created": 1, "data": [{"b64_json": "QUJD"}]})
 
     cfg = gateway_module.GatewayConfig(
-        nonce="n", runtime="image", vllm_base_url="http://backend"
+        nonce="n", runtime="image", vllm_port=8123
     )
     app = gateway_module.create_app(cfg, transport=httpx.MockTransport(handler))
     with TestClient(app) as client:

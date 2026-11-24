@@ -24,7 +24,7 @@ import httpx
 
 from . import colab, config
 from .config import NONCE_HEADER
-from .remote import Remote, RemoteError
+from .remote import Remote, RemoteError, tunnel_socket_path
 
 log = logging.getLogger("byom.tunnel")
 
@@ -102,6 +102,9 @@ class TunnelSupervisor:
             cfg=cfg,
             ssh_bin=ssh_bin,
             log_path=log_path,
+            # Socket próprio: `byom up` para o master dele no fim da transação
+            # e não pode levar a conexão do túnel junto.
+            socket=tunnel_socket_path(session),
         )
         self.status = TunnelState()
 

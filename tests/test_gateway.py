@@ -435,11 +435,28 @@ def test_gateway_config_load_validates_boundaries(gateway_module, tmp_path):
     for payload in (
         {"nonce": "n", "idle_timeout_min": "20"},
         {"nonce": "n", "gateway_port": 70000},
+        {"nonce": "n", "vllm_port": 70000},
         {"nonce": "n", "reasoning_effort": "bogus"},
     ):
         path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ValueError):
             gateway_module.GatewayConfig.load(path)
+
+
+async def test_gateway_runtime_url_follows_session_vllm_port(gateway_module, tmp_path):
+    """`session.json` traz `vllm_port`; a URL do runtime tem de seguir a porta.
+
+    Com uma URL fixa em 8000, um `vllm_port` diferente deixava o worker em
+    "initializing" para sempre: o servidor escutava na porta configurada e o
+    poll de prontidão batia na 8000.
+    """
+    path = tmp_path / "session.json"
+    path.write_text(json.dumps({"nonce": "n", "vllm_port": 8123}), encoding="utf-8")
+    gateway = gateway_module.Gateway(gateway_module.GatewayConfig.load(path))
+    try:
+        assert gateway.client().base_url.port == 8123
+    finally:
+        await gateway.aclose()
 
 
 def test_invalid_client_kwargs_are_preserved(gateway_module):
