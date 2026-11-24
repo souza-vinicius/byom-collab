@@ -117,8 +117,12 @@ configuração global do `llm` no seu sistema:
 
 `src/byom/catalog.py` é a fonte única de números de GPU/VRAM e
 modelo/quantização; os comandos apenas os renderizam. `byom up` verifica
-`pesos + 2 GiB de runtime + 2 GiB por 32K de contexto` contra a GPU declarada em
-`config.toml`. Modelos de imagem não reservam cache KV autorregressivo.
+`pesos + projetor de visão (0,65 GiB quando o perfil carrega mmproj) + 2 GiB de
+runtime + 2 GiB por 32K de contexto + folga` contra a GPU declarada em
+`config.toml`. A folga é `max(1 GiB, 5% da VRAM)` — driver, contexto CUDA,
+alocadores e fragmentação —, então 100% da VRAM nunca é aprovado (é heurística
+de engenharia, não número de documentação). Modelos de imagem não reservam cache
+KV autorregressivo.
 
 GPUs (a VRAM é **aproximada para o Colab**: a FAQ oficial do Colab afirma que os
 tipos de GPU variam ao longo do tempo e não publica uma tabela de VRAM; os
@@ -127,7 +131,7 @@ comparison chart", consultado em 2026-11-23):
 
 | GPU (ID no catálogo) | VRAM | bf16 | Valor na Colab CLI |
 | :--- | ---: | :--- | :--- |
-| T4 | 16 GiB | não | `T4` |
+| T4 | 15 GiB (utilizáveis no Colab; o datasheet diz 16) | não | `T4` |
 | L4 | 24 GiB | sim | `L4` |
 | A100 40 GB | 40 GiB | sim | `A100`, `gpu_high_mem=false` |
 | A100 80 GB | 80 GiB | sim | `A100`, `gpu_high_mem=true` |
@@ -141,11 +145,11 @@ para filtrar a listagem; ele não altera a GPU declarada:
 
 | Modelo | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| Inkling 2 Mini | llama.cpp | 2 bit / 4 bit (17,6 GB) / 8 bit | 11 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | T4 / L4 / A100 |
+| Inkling 2 Mini | llama.cpp | 2 bit / 4 bit (17,6 GB) / 8 bit | 11 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | L4 / A100 40 (q4 e q8) |
 | Qwen3.8 27B | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | L4 (A100 para 256K) |
-| Qwen3.8 27B | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | T4 / L4 |
+| Qwen3.8 27B | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | L4 |
 | Gemma 4 | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 a A100 |
-| Muse Glimmer 30B | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | T4 a A100 |
+| Muse Glimmer 30B | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
 | Qwen-Image-2.1 | image | INT8-ConvRot / GGUF Q4_K_M | 20 / 12 GiB | n/a | n/a | L4 / T4 |
 
 A redução é dado estruturado, não texto solto: `src/byom/catalog.py` mantém

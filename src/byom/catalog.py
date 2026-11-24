@@ -63,6 +63,18 @@ RUNTIME_RESERVE_GIB = 2.0
 KV_CACHE_GIB_PER_32K = 2.0
 MIN_KV_CACHE_GIB = 1.0
 
+#: Folga obrigatória entre o que o modelo ocupa e a VRAM utilizável da GPU.
+#: HEURÍSTICA, não número de documentação: driver, contexto CUDA, alocadores e
+#: fragmentação consomem memória mesmo com os pesos já residentes. 5% da VRAM
+#: com piso de 1 GiB evita aprovar o limite exato (24,0 de 24,0 GiB).
+VRAM_HEADROOM_FRACTION = 0.05
+VRAM_HEADROOM_MIN_GIB = 1.0
+
+#: Custo do projetor de visão (mmproj) usado pelos perfis que declaram
+#: `mmproj_pattern`. A nota do Inkling no catálogo registra "639 MB"; o valor
+#: arredonda para cima e cobre buffers do projetor.
+VISION_PROJECTOR_GIB = 0.65
+
 GPU_SOURCE = (
     "Google Cloud, Compute Engine > GPU machine types > General comparison chart "
     "(docs.cloud.google.com/compute/docs/gpus), consultado em 2026-11-23"
@@ -109,6 +121,9 @@ class Variant:
     needs_custom_build: bool = False
     notes: tuple[str, ...] = ()
     context_reason: str = ""
+    #: Custo do projetor de visão em GiB; > 0 apenas quando o perfil declara
+    #: `mmproj_pattern` (o catálogo sozinho não carrega o projetor).
+    vision_gib: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -142,8 +157,10 @@ class ProfileContext:
 
 
 GPUS: tuple[Gpu, ...] = (
-    Gpu("T4", "Tesla T4", 16, False, ("T4",), GPU_SOURCE,
-        note="Sem bf16; geração de imagem usa fp16."),
+    Gpu("T4", "Tesla T4", 15, False, ("T4",),
+        GPU_SOURCE + "; VRAM utilizável de 15 GB no Colab (README e nota de "
+        "qwen-image-2.1), não os 16 GiB do datasheet",
+        note="Sem bf16; geração de imagem usa fp16. 15 GiB utilizáveis no Colab."),
     Gpu("L4", "L4", 24, True, ("L4",), GPU_SOURCE),
     Gpu("A100-40", "A100 40 GB", 40, True, ("A100",), GPU_SOURCE,
         note="No CLI do Colab, usar gpu=A100 com high_mem=false."),
@@ -171,20 +188,27 @@ MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
         "inkling-2-mini", "Inkling 2 Mini", "llama-cpp",
         (
-            Variant("q2", "UD-IQ2_XXS (2 bit)", 11.0, 32_768, "T4",
+            Variant("q2", "UD-IQ2_XXS (2 bit)", 11.0, 32_768, "L4",
                     context_doc=1_000_000,
                     needs_custom_build=True,
-                    context_reason="1M cabe apenas com KV muito alto; perfil T4 usa 32K.",
-                    notes=("10-11 GB em 2 bit; build loopado obrigatório nos arquivos da raiz.",)),
-            Variant("q4", "UD-Q4_K_XL (4 bit)", 18.0, 65_536, "L4",
+                    context_reason="1M pediria ~64 GiB de KV; 32K em L4 fica com margem.",
+                    notes=("10-11 GB em 2 bit; build loopado obrigatório nos arquivos da raiz.",
+                           "11 GiB + 0,65 de visão + 2 de runtime = 13,65: não cabe nos "
+                           "15 GiB utilizáveis da T4, então a GPU mínima é L4."),
+                    vision_gib=VISION_PROJECTOR_GIB),
+            Variant("q4", "UD-Q4_K_XL (4 bit)", 18.0, 65_536, "A100-40",
                     context_doc=1_000_000,
                     needs_custom_build=True,
-                    context_reason="18 GiB pesos + 2 GiB runtime + 4 GiB KV = 24 GiB em L4.",
-                    notes=("17,6 GB recomendados; mmproj-F16.gguf adiciona 639 MB.",)),
+                    context_reason="18 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 24,65: "
+                                   "L4 (24 GiB) não comporta com a folga de 1,2 GiB.",
+                    notes=("17,6 GB recomendados; mmproj-F16.gguf adiciona 639 MB.",),
+                    vision_gib=VISION_PROJECTOR_GIB),
             Variant("q8", "UD-Q8_K_XL (8 bit)", 24.0, 131_072, "A100-40",
                     context_doc=1_000_000,
-                    context_reason="24 GiB de pesos deixam margem para 8 GiB de KV na A100-40.",
-                    notes=("Faixa de 8 bit: 24 GB.",)),
+                    context_reason="24 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 34,65: "
+                                   "cabe na A100-40 com 2 GiB de margem.",
+                    notes=("Faixa de 8 bit: 24 GB.",),
+                    vision_gib=VISION_PROJECTOR_GIB),
         ),
         INKLING_SOURCE,
         notes=(
@@ -214,9 +238,10 @@ MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
         "qwen3.8-27b-gguf", "Qwen3.8 27B (GGUF)", "llama-cpp",
         (
-            Variant("q3", "UD-Q3_K_XL (3 bit)", 12.0, 32_768, "T4",
+            Variant("q3", "UD-Q3_K_XL (3 bit)", 12.0, 32_768, "L4",
                     context_doc=262_144,
-                    context_reason="12 GiB de pesos em T4: 2 GiB runtime + 2 GiB KV em 32K."),
+                    context_reason="12 GiB pesos + 2 runtime + 2 KV = 16 GiB; a T4 tem 15 GiB "
+                                   "utilizáveis, então a GPU mínima é L4."),
             Variant("q4", "UD-Q4_K_XL (4 bit)", 17.0, 32_768, "L4",
                     context_doc=262_144,
                     context_reason="17 GiB de pesos em L4: 2 GiB runtime + 2 GiB KV em 32K.",
@@ -240,10 +265,14 @@ MODELS: tuple[ModelEntry, ...] = (
                     context_reason="8 GiB de pesos em T4: 32K mantêm 2 GiB de KV."),
             Variant("26b-a4b-q4", "26B-A4B UD-Q4_K_XL", 18.0, 32_768, "L4",
                     context_doc=262_144,
-                    context_reason="18 GiB de pesos + 2 GiB runtime em L4 limitam o KV."),
+                    context_reason="18 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 22,65: L4 "
+                                   "ainda tem 1,2 GiB de margem em 32K.",
+                    vision_gib=VISION_PROJECTOR_GIB),
             Variant("31b-q4", "31B UD-Q4_K_XL", 20.0, 131_072, "A100-40",
                     context_doc=262_144,
-                    context_reason="20 GiB de pesos na A100-40: 131.072 tokens usam 8 GiB de KV."),
+                    context_reason="20 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 30,65 na "
+                                   "A100-40, com 2 GiB de margem.",
+                    vision_gib=VISION_PROJECTOR_GIB),
         ),
         GEMMA4_SOURCE,
         notes=(
@@ -260,14 +289,18 @@ MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
         "muse-glimmer-30b", "Muse Glimmer 30B", "llama-cpp",
         (
-            Variant("q2", "UD-Q2_K_XL (2 bit)", 12.0, 32_768, "T4",
+            Variant("q2", "UD-Q2_K_XL (2 bit)", 12.0, 32_768, "L4",
                     context_doc=131_072,
                     needs_custom_build=True,
-                    context_reason="12 GiB de pesos em T4: 32K mantêm 2 GiB de KV."),
-            Variant("q4", "UD-Q4_K_XL (4 bit)", 17.0, 65_536, "L4",
+                    context_reason="12 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 16,65: "
+                                   "a T4 (15 GiB utilizáveis) não comporta.",
+                    vision_gib=VISION_PROJECTOR_GIB),
+            Variant("q4", "UD-Q4_K_XL (4 bit)", 17.0, 65_536, "A100-40",
                     context_doc=131_072,
                     needs_custom_build=True,
-                    context_reason="17 GiB de pesos + 2 GiB runtime + 4 GiB KV = 23 GiB em L4."),
+                    context_reason="17 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 23,65: "
+                                   "L4 (24 GiB) não comporta com a folga de 1,2 GiB.",
+                    vision_gib=VISION_PROJECTOR_GIB),
             Variant("q6", "UD-Q6_K_XL (6 bit)", 22.0, 131_072, "A100-40",
                     context_doc=131_072, needs_custom_build=True),
         ),
@@ -344,13 +377,17 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
     ProfileContext("qwen3.8-27b-256k", "qwen3.8-27b-awq", "q4-awq", 262_144, 262_144,
                    "A100-80", "Contexto máximo documentado mantido em A100 80 GB (high_mem)."),
     ProfileContext("inkling-2-mini-iq2-gguf", "inkling-2-mini", "q2", 1_000_000, 32_768,
-                   "T4", "1M pediria ~64 GiB de KV; perfil T4 usa 32K por margem de memória."),
+                   "L4", "11 GiB pesos + 0,65 visão + 2 runtime estouram os 15 GiB "
+                         "utilizáveis da T4; em L4, 32K fica com ~7 GiB de margem."),
     ProfileContext("inkling-2-mini-q4-gguf", "inkling-2-mini", "q4", 1_000_000, 65_536,
-                   "L4", "18 GiB pesos + 2 GiB runtime + 4 GiB KV em 65.536 = 24 GiB em L4."),
+                   "A100-40", "18 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 24,65: não "
+                              "cabe em L4 (24 GiB) com a folga de 1,2 GiB."),
     ProfileContext("inkling-2-mini-q8-gguf", "inkling-2-mini", "q8", 1_000_000, 131_072,
-                   "A100-40", "24 GiB de pesos limitam o KV a 8 GiB na A100-40."),
+                   "A100-40", "24 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 34,65 na "
+                              "A100-40, com 2 GiB de margem."),
     ProfileContext("qwen3.8-27b-q3-gguf", "qwen3.8-27b-gguf", "q3", 262_144, 32_768,
-                   "T4", "12 GiB de pesos em T4: 32K mantém 2 GiB de KV."),
+                   "L4", "12 GiB pesos + 2 runtime + 2 KV = 16 GiB: não cabe nos 15 GiB "
+                         "utilizáveis da T4."),
     ProfileContext("qwen3.8-27b-q4-gguf", "qwen3.8-27b-gguf", "q4", 262_144, 32_768,
                    "L4", "17 GiB de pesos em L4: 32K mantém 2 GiB de KV."),
     ProfileContext("gemma-4-e4b-q4-gguf", "gemma-4", "e4b-q4", 131_072, 65_536,
@@ -358,13 +395,17 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
     ProfileContext("gemma-4-12b-q4-gguf", "gemma-4", "12b-q4", 262_144, 32_768,
                    "T4", "8 GiB de pesos em T4: 32K mantêm 2 GiB de KV."),
     ProfileContext("gemma-4-26b-a4b-q4-gguf", "gemma-4", "26b-a4b-q4", 262_144, 32_768,
-                   "L4", "18 GiB de pesos + 2 GiB runtime em L4 limitam o KV."),
+                   "L4", "18 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 22,65: L4 fica com "
+                         "1,2 GiB de margem em 32K."),
     ProfileContext("gemma-4-31b-q4-gguf", "gemma-4", "31b-q4", 262_144, 131_072,
-                   "A100-40", "20 GiB de pesos na A100-40: 131.072 tokens usam 8 GiB de KV."),
+                   "A100-40", "20 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 30,65 na "
+                              "A100-40, com 2 GiB de margem."),
     ProfileContext("muse-glimmer-30b-q2-gguf", "muse-glimmer-30b", "q2", 131_072, 32_768,
-                   "T4", "12 GiB de pesos em T4: 32K mantêm 2 GiB de KV."),
+                   "L4", "12 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 16,65: a T4 de "
+                         "15 GiB utilizáveis não comporta."),
     ProfileContext("muse-glimmer-30b-q4-gguf", "muse-glimmer-30b", "q4", 131_072, 65_536,
-                   "L4", "17 GiB de pesos + 2 GiB runtime + 4 GiB KV em L4."),
+                   "A100-40", "17 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 23,65: não "
+                              "cabe em L4 com a folga de 1,2 GiB."),
     ProfileContext("qwen-image-2.1-q4km", "qwen-image-2.1", "q4km", 0, 1,
                    "T4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela."),
     ProfileContext("qwen-image-2.1-fp8", "qwen-image-2.1", "fp8-int8", 0, 1,
@@ -471,6 +512,8 @@ class CompatibilityResult:
     gpu_id: str
     alternatives: tuple[str, ...]
     reason: str = ""
+    #: Folga mínima exigida para esta GPU (`vram_headroom_gib`).
+    headroom_gib: float = 0.0
 
 
 def gpu_by_id(gpu_id: str) -> Gpu:
@@ -521,9 +564,23 @@ def kv_cache_gib(max_model_len: int) -> float:
     return max(MIN_KV_CACHE_GIB, KV_CACHE_GIB_PER_32K * max_model_len / 32768)
 
 
+def vram_headroom_gib(vram_gib: float) -> float:
+    """Folga exigida para driver, contexto CUDA, alocadores e fragmentação."""
+    return round(max(VRAM_HEADROOM_MIN_GIB, VRAM_HEADROOM_FRACTION * vram_gib), 2)
+
+
 def required_vram_gib(variant: Variant, max_model_len: int, runtime: str = "") -> float:
+    """Pesos + projetor de visão + runtime + KV; sem folga (ver `check_fit`)."""
     kv = 0.0 if runtime == "image" else kv_cache_gib(max_model_len)
-    return round(variant.memory_gib + RUNTIME_RESERVE_GIB + kv, 2)
+    return round(
+        variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv, 2
+    )
+
+
+def _fits(variant: Variant, runtime: str, gpu: Gpu, max_model_len: int) -> bool:
+    """Pesos + visão + runtime + KV precisam caber com a folga da GPU."""
+    required = required_vram_gib(variant, max_model_len, runtime)
+    return variant.available and required + vram_headroom_gib(gpu.vram_gib) <= gpu.vram_gib
 
 
 def check_fit(
@@ -534,23 +591,26 @@ def check_fit(
     gpu = gpu_by_id(gpu_id)
     runtime = model_by_id(model_id).runtime
     required = required_vram_gib(variant, max_model_len, runtime)
+    headroom = vram_headroom_gib(gpu.vram_gib)
     alternatives: list[str] = []
     if variant.available:
         for other in model_by_id(model_id).variants:
             if other.id == variant.id or not other.available:
                 continue
-            if required_vram_gib(other, max_model_len, runtime) <= gpu.vram_gib:
+            if _fits(other, runtime, gpu, max_model_len):
                 alternatives.append(f"{model_id}:{other.id}")
-    fits = variant.available and required <= gpu.vram_gib
+    fits = _fits(variant, runtime, gpu, max_model_len)
     reason = ""
     if not variant.available:
         reason = variant.reason
     elif not fits:
         kv = 0.0 if runtime == "image" else kv_cache_gib(max_model_len)
+        visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
         reason = (
             f"{variant.label} precisa de ~{required:.1f} GiB "
-            f"(pesos {variant.memory_gib:g} + runtime {RUNTIME_RESERVE_GIB:g} + "
-            f"KV ~{kv:.1f}), mas {gpu.label} tem {gpu.vram_gib} GiB."
+            f"(pesos {variant.memory_gib:g}{visao} + runtime {RUNTIME_RESERVE_GIB:g} + "
+            f"KV ~{kv:.1f}) mais {headroom:.1f} GiB de margem, "
+            f"mas {gpu.label} tem {gpu.vram_gib} GiB utilizáveis."
         )
     return CompatibilityResult(
         fits=fits,
@@ -559,6 +619,7 @@ def check_fit(
         gpu_id=gpu.id,
         alternatives=tuple(alternatives),
         reason=reason,
+        headroom_gib=headroom,
     )
 
 
@@ -755,6 +816,18 @@ def validate_catalog() -> None:
                 raise ValueError(f"Variante indisponível sem motivo: {model.id}:{variant.id}")
             if variant.context_doc > variant.context and not variant.context_reason:
                 raise ValueError(f"Redução de contexto sem motivo: {model.id}:{variant.id}")
+            if variant.vision_gib < 0:
+                raise ValueError(f"Custo de visão negativo: {model.id}:{variant.id}")
+            # Invariante do orçamento: a GPU mínima declarada precisa comportar a
+            # variante no MENOR contexto servido por algum perfil, com a folga
+            # exigida (o contexto de referência pode exigir uma GPU maior).
+            menor_ctx = min(served_contexts_for(model.id, variant.id))
+            if variant.available and not check_fit(
+                model.id, variant.id, variant.min_gpu, menor_ctx
+            ).fits:
+                raise ValueError(
+                    f"Variante não cabe na GPU mínima: {model.id}:{variant.id}"
+                )
             seen_variants.add(variant.id)
     seen_profiles: set[str] = set()
     for item in PROFILE_CONTEXTS:
@@ -772,6 +845,11 @@ def validate_catalog() -> None:
             raise ValueError(f"GPU do perfil abaixo da mínima da variante: {item.profile_id}")
         if item.context_doc > item.context_served and not item.reason:
             raise ValueError(f"Redução de contexto do perfil sem motivo: {item.profile_id}")
+        # Nenhum perfil pode declarar uma GPU em que não cabe sob a regra de folga.
+        if not check_fit(
+            item.model_id, item.variant_id, item.gpu_id, item.context_served
+        ).fits:
+            raise ValueError(f"Perfil não cabe na GPU declarada: {item.profile_id}")
 
 
 validate_catalog()

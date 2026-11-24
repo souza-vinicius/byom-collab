@@ -709,6 +709,7 @@ class PerfilView:
     contexto_curto: str
     raciocinio: str
     pesos_gib: float
+    visao_gib: float
     runtime_gib: float
     kv_gib: float
     total_gib: float
@@ -759,6 +760,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
         ctx_doc = variant.context_doc if variant else ctx_servido
         gpu_min = variant.min_gpu if variant else str(p.settings.get("gpu", "L4"))
         pesos = variant.memory_gib if variant else 0.0
+        visao_gib = variant.vision_gib if variant else 0.0
         runtime_gib = catalog.RUNTIME_RESERVE_GIB
         kv_gib = 0.0 if p.runtime == "image" else catalog.kv_cache_gib(ctx_servido)
         total_gib = (
@@ -807,6 +809,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 contexto_curto=M.formatar_contexto(ctx_servido, p.runtime),
                 raciocinio=raciocinio,
                 pesos_gib=pesos,
+                visao_gib=visao_gib,
                 runtime_gib=runtime_gib,
                 kv_gib=kv_gib,
                 total_gib=total_gib,
@@ -1013,10 +1016,15 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
         )
         add("Contexto", f"Não se aplica (atendido em POST {item.endpoint_aviso}).")
     else:
+        visao = (
+            f" + {M.formatar_gib(item.visao_gib)} para o projetor de visão"
+            if item.visao_gib
+            else ""
+        )
         add(
             "Memória estimada",
             f"{M.formatar_gib(item.total_gib, aproximado=True)} "
-            f"({M.formatar_gib(item.pesos_gib)} para os pesos + "
+            f"({M.formatar_gib(item.pesos_gib)} para os pesos{visao} + "
             f"{M.formatar_gib(item.runtime_gib)} para o motor + "
             f"{M.formatar_gib(item.kv_gib)} para o cache KV).",
         )
@@ -1658,7 +1666,10 @@ def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView)
     """Mostra o par que será gravado, incluindo o mapeamento do catálogo para o config.toml."""
     sim = obter_simbolos(con)
     gpu_cfg, high_mem = catalog.colab_settings_for_gpu(gpu.id)
-    memoria = f"pesos {M.formatar_gib(item.pesos_gib)} + motor {M.formatar_gib(item.runtime_gib)}"
+    memoria = f"pesos {M.formatar_gib(item.pesos_gib)}"
+    if item.visao_gib:
+        memoria += f" + visão {M.formatar_gib(item.visao_gib)}"
+    memoria += f" + motor {M.formatar_gib(item.runtime_gib)}"
     if item.profile.runtime != "image":
         memoria += f" + cache KV {M.formatar_gib(item.kv_gib)}"
 

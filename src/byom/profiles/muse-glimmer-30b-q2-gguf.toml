@@ -1,5 +1,5 @@
 name = "Muse Glimmer 30B (q2)"
-description = "Muse Glimmer 2 bit para T4; build llama.cpp fixado."
+description = "Muse Glimmer 2 bit para L4 (a T4 não comporta o projetor de visão); build llama.cpp fixado."
 opencode_output_limit = 8192
 runtime = "llama-cpp"
 catalog_model = "muse-glimmer-30b"
@@ -9,7 +9,7 @@ catalog_variant = "q2"
 model = "muse-glimmer-30b"
 served_model_name = "muse-glimmer-30b"
 max_model_len = 32768
-gpu = "T4"
+gpu = "L4"
 gpu_high_mem = false
 vllm_spec = "vllm"
 vllm_enforce_eager = false

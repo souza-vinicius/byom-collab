@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from byom import catalog
+from byom import catalog, config
 
 
 def test_catalogo_valido_e_vram_oficial_aproximada_no_colab():
     catalog.validate_catalog()
     gpus = {gpu.id: gpu for gpu in catalog.GPUS}
     assert {key: gpu.vram_gib for key, gpu in gpus.items()} == {
-        "T4": 16,
+        "T4": 15,
         "L4": 24,
         "A100-40": 40,
         "A100-80": 80,
@@ -44,19 +44,69 @@ def test_colab_settings_for_gpu_fecha_o_ciclo_com_resolve_gpu():
 
 
 def test_compatibilidade_com_margem_e_alternativas():
-    fit = catalog.check_fit("inkling-2-mini", "q4", "L4", 65536)
-    assert fit.fits
-    assert fit.required_gib == 24.0
-    assert fit.available_gib == 24.0
+    # 24,0 de 24,0 GiB era aprovado antes da regra de folga; agora reprova.
+    no_limite = catalog.check_fit("inkling-2-mini", "q4", "L4", 65536)
+    assert no_limite.required_gib == pytest.approx(24.65)
+    assert no_limite.available_gib == 24.0
+    assert not no_limite.fits
+    assert "margem" in no_limite.reason
 
-    # A alternativa q2 serve 32768; com 65536 ela também não caberia em T4.
+    com_folga = catalog.check_fit("inkling-2-mini", "q4", "A100-40", 65536)
+    assert com_folga.fits
+    assert com_folga.headroom_gib == pytest.approx(2.0)
+
+    # Em L4 a alternativa q2 (com visão) ainda cabe em 65.536; em T4 nenhuma cabe.
+    assert "inkling-2-mini:q2" in no_limite.alternatives
     too_big = catalog.check_fit("inkling-2-mini", "q4", "T4", 32768)
     assert not too_big.fits
-    assert "tam" in too_big.reason or "GiB" in too_big.reason
-    assert "inkling-2-mini:q2" in too_big.alternatives
+    assert "GiB" in too_big.reason
+    assert too_big.alternatives == ()
 
     with pytest.raises(ValueError):
         catalog.check_fit("modelo-inexistente", "q4", "L4")
+
+
+def test_folga_nomeada_e_proporcional_ao_vram():
+    assert catalog.vram_headroom_gib(15) == pytest.approx(1.0)
+    assert catalog.vram_headroom_gib(24) == pytest.approx(1.2)
+    assert catalog.vram_headroom_gib(40) == pytest.approx(2.0)
+    assert catalog.vram_headroom_gib(80) == pytest.approx(4.0)
+
+
+def test_required_igual_ao_disponivel_reprova():
+    """A folga é obrigatória: 100% da VRAM nunca é aprovado."""
+    fit = catalog.check_fit("gemma-4", "e2b-q4", "T4", 147_456)  # 4 + 2 + 9 = 15
+    assert fit.required_gib == pytest.approx(15.0)
+    assert fit.available_gib == pytest.approx(15.0)
+    assert not fit.fits
+    assert "margem" in fit.reason
+
+
+def test_t4_rejeita_muse_q2_e_qwen_q3_citando_os_componentes():
+    muse = catalog.check_fit("muse-glimmer-30b", "q2", "T4", 32768)
+    assert not muse.fits
+    for termo in ("pesos", "runtime", "KV", "visão"):
+        assert termo in muse.reason
+
+    qwen = catalog.check_fit("qwen3.8-27b-gguf", "q3", "T4", 32768)
+    assert not qwen.fits
+    for termo in ("pesos", "runtime", "KV"):
+        assert termo in qwen.reason
+    assert "visão" not in qwen.reason
+
+
+def test_todo_perfil_aplicado_cabe_com_margem():
+    for profile in config.available_profiles():
+        cfg = config.Config()
+        config.apply_profile(cfg, profile.id)
+        fit = config.check_compatibility(cfg)
+        folga = fit.available_gib - fit.required_gib
+        assert fit.fits, (profile.id, fit.reason)
+        assert folga >= catalog.vram_headroom_gib(fit.available_gib), (
+            profile.id,
+            fit.required_gib,
+            fit.available_gib,
+        )
 
 
 def test_modelos_grandes_sem_perfil_executavel():
@@ -70,7 +120,7 @@ def test_modelos_grandes_sem_perfil_executavel():
 
 def test_saidas_dos_comandos():
     gpus = catalog.format_gpus((("p", "inkling-2-mini", "q4", 32768),))
-    assert "T4 (Tesla T4) | 16 | nao | sim" in gpus
+    assert "T4 (Tesla T4) | 15 | nao | sim" in gpus
     assert "Fonte VRAM:" in gpus
     models = catalog.format_models()
     assert "qwen-image-2.1 | image | q4km" in models
@@ -153,9 +203,11 @@ def test_contexto_documentado_servido_e_motivo():
 
 
 def test_compatibilidade_continua_usando_contexto_servido():
-    # 65.536 servidos cabem em L4; 1.000.000 documentados não caberiam.
-    assert catalog.check_fit("inkling-2-mini", "q4", "L4", 65_536).fits
-    assert not catalog.check_fit("inkling-2-mini", "q4", "L4", 1_000_000).fits
+    # 65.536 servidos (com visão e folga) cabem em A100-40, não em L4;
+    # 1.000.000 documentados não cabem em nenhuma das duas.
+    assert catalog.check_fit("inkling-2-mini", "q4", "A100-40", 65_536).fits
+    assert not catalog.check_fit("inkling-2-mini", "q4", "L4", 65_536).fits
+    assert not catalog.check_fit("inkling-2-mini", "q4", "A100-40", 1_000_000).fits
     ref = catalog.profile_context("inkling-2-mini-q4-gguf")
     assert ref.context_served == 65_536
     assert ref.context_doc == 1_000_000

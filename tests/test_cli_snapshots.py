@@ -37,77 +37,88 @@ def test_snapshot_cli_profiles():
     res = runner.invoke(cli.app, ["profiles"])
     assert res.exit_code == 0
     esperado = (
-        "gemma-4-12b-q4-gguf — Gemma 4 12b-q4 (32,768 tokens servidos; reasoning not documented)\n"
-        "  gemma-4:12b-q4 — contexto doc 262,144 / servido 32,768\n"
-        "  8 GiB de pesos em T4: 32K mantêm 2 GiB de KV.\n"
-        "  Gemma 4 12B Unified 4 bit; thinking ligado por <|think|>.\n"
-        "gemma-4-26b-a4b-q4-gguf — Gemma 4 26b-a4b-q4 "
-        "(32,768 tokens servidos; reasoning not documented)\n"
-        "  gemma-4:26b-a4b-q4 — contexto doc 262,144 / servido 32,768\n"
-        "  18 GiB de pesos + 2 GiB runtime em L4 limitam o KV.\n"
-        "  Gemma 4 26B-A4B 4 bit com mmproj de visão.\n"
-        "gemma-4-31b-q4-gguf — Gemma 4 31b-q4 (131,072 tokens servidos; reasoning not documented)\n"
-        "  gemma-4:31b-q4 — contexto doc 262,144 / servido 131,072\n"
-        "  20 GiB de pesos na A100-40: 131.072 tokens usam 8 GiB de KV.\n"
-        "  Gemma 4 31B 4 bit; requer A100.\n"
-        "gemma-4-e4b-q4-gguf — Gemma 4 e4b-q4 (65,536 tokens servidos; reasoning not documented)\n"
-        "  gemma-4:e4b-q4 — contexto doc 131,072 / servido 65,536\n"
-        "  6 GiB de pesos em T4: 65.536 tokens mantêm 4 GiB de KV.\n"
-        "  Gemma 4 E4B 4 bit; thinking ligado por <|think|>.\n"
-        "inkling-2-mini-iq2-gguf — Inkling 2 Mini (2 bit, GGUF) "
-        "(32,768 tokens servidos; reasoning high)\n"
-        "  inkling-2-mini:q2 — contexto doc 1,000,000 / servido 32,768\n"
-        "  1M pediria ~64 GiB de KV; perfil T4 usa 32K por margem de memória.\n"
-        "  2 bit para T4; build mainline b12611 com arquivos Mainline_Support.\n"
-        "inkling-2-mini-q4-gguf — Inkling 2 Mini (4 bit, GGUF) "
-        "(65,536 tokens servidos; reasoning high)\n"
-        "  inkling-2-mini:q4 — contexto doc 1,000,000 / servido 65,536\n"
-        "  18 GiB pesos + 2 GiB runtime + 4 GiB KV em 65.536 = 24 GiB em L4.\n"
-        "  Quant recomendado UD-Q4_K_XL com visão; cabe em L4.\n"
-        "inkling-2-mini-q8-gguf — Inkling 2 Mini (8 bit, GGUF) "
-        "(131,072 tokens servidos; reasoning high)\n"
-        "  inkling-2-mini:q8 — contexto doc 1,000,000 / servido 131,072\n"
-        "  24 GiB de pesos limitam o KV a 8 GiB na A100-40.\n"
-        "  8 bit sem perdas; build mainline b12611 com arquivos Mainline_Support; "
-        "requer A100 de 40 GB ou mais.\n"
-        "muse-glimmer-30b-q2-gguf — Muse Glimmer 30B (q2) "
-        "(32,768 tokens servidos; reasoning high)\n"
-        "  muse-glimmer-30b:q2 — contexto doc 131,072 / servido 32,768\n"
-        "  12 GiB de pesos em T4: 32K mantêm 2 GiB de KV.\n"
-        "  Muse Glimmer 2 bit para T4; build llama.cpp fixado.\n"
-        "muse-glimmer-30b-q4-gguf — Muse Glimmer 30B (q4) "
-        "(65,536 tokens servidos; reasoning high)\n"
-        "  muse-glimmer-30b:q4 — contexto doc 131,072 / servido 65,536\n"
-        "  17 GiB de pesos + 2 GiB runtime + 4 GiB KV em L4.\n"
-        "  Muse Glimmer 4 bit com visão; build llama.cpp fixado.\n"
-        "qwen-image-2.1-fp8 — Qwen-Image-2.1 (FP8/INT8-ConvRot) "
-        "(1 tokens servidos; reasoning not documented)\n"
-        "  qwen-image-2.1:fp8-int8 — contexto doc 0 / servido 1\n"
-        "  Modelo de difusão não tem janela autoregressiva; 1 é sentinela.\n"
-        "  Pesos INT8-ConvRot para GPU de 24 GB+; endpoint de imagem, não chat.\n"
-        "qwen-image-2.1-q4km — Qwen-Image-2.1 (GGUF Q4_K_M) "
-        "(1 tokens servidos; reasoning not documented)\n"
-        "  qwen-image-2.1:q4km — contexto doc 0 / servido 1\n"
-        "  Modelo de difusão não tem janela autoregressiva; 1 é sentinela.\n"
-        "  Geração de imagens em T4/L4; POST /v1/images/generations, não chat.\n"
-        "qwen3.8-27b-256k — Qwen3.8 27B (256k) (262,144 tokens servidos; reasoning xhigh)\n"
-        "  qwen3.8-27b-awq:q4-awq — contexto doc 262,144 / servido 262,144\n"
-        "  Contexto máximo documentado mantido em A100 80 GB (high_mem).\n"
-        "  Full native context for a high-memory A100.\n"
-        "qwen3.8-27b-32k — Qwen3.8 27B (32k) (32,768 tokens servidos; reasoning xhigh)\n"
-        "  qwen3.8-27b-awq:q4-awq — contexto doc 262,144 / servido 32,768\n"
-        "  A100 40 GB sem high_mem: 32K limita o KV a 2 GiB.\n"
-        "  Lower-context profile for an A100 without a high-memory requirement.\n"
-        "qwen3.8-27b-q3-gguf — Qwen3.8 27B (3 bit, GGUF) "
-        "(32,768 tokens servidos; reasoning xhigh)\n"
-        "  qwen3.8-27b-gguf:q3 — contexto doc 262,144 / servido 32,768\n"
-        "  12 GiB de pesos em T4: 32K mantém 2 GiB de KV.\n"
-        "  GGUF 3 bit para T4; alternativa ao AWQ em vLLM.\n"
-        "qwen3.8-27b-q4-gguf — Qwen3.8 27B (4 bit, GGUF) "
-        "(32,768 tokens servidos; reasoning xhigh)\n"
-        "  qwen3.8-27b-gguf:q4 — contexto doc 262,144 / servido 32,768\n"
-        "  17 GiB de pesos em L4: 32K mantém 2 GiB de KV.\n"
-        "  GGUF 4 bit recomendado; requer L4 ou melhor.\n"
+        'gemma-4-12b-q4-gguf — Gemma 4 12b-q4 (32,768 tokens servidos; reasoning not documented)\n'
+        '  gemma-4:12b-q4 — contexto doc 262,144 / servido 32,768\n'
+        '  8 GiB de pesos em T4: 32K mantêm 2 GiB de KV.\n'
+        '  Gemma 4 12B Unified 4 bit; thinking ligado por <|think|>.\n'
+        'gemma-4-26b-a4b-q4-gguf — Gemma 4 26b-a4b-q4 (32,768 tokens servidos; reasoning not '
+        'documented)\n'
+        '  gemma-4:26b-a4b-q4 — contexto doc 262,144 / servido 32,768\n'
+        '  18 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 22,65: L4 fica com 1,2 GiB de margem '
+        'em 32K.\n'
+        '  Gemma 4 26B-A4B 4 bit com mmproj de visão.\n'
+        'gemma-4-31b-q4-gguf — Gemma 4 31b-q4 (131,072 tokens servidos; reasoning not '
+        'documented)\n'
+        '  gemma-4:31b-q4 — contexto doc 262,144 / servido 131,072\n'
+        '  20 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 30,65 na A100-40, com 2 GiB de margem.\n'
+        '  Gemma 4 31B 4 bit; requer A100.\n'
+        'gemma-4-e4b-q4-gguf — Gemma 4 e4b-q4 (65,536 tokens servidos; reasoning not documented)\n'
+        '  gemma-4:e4b-q4 — contexto doc 131,072 / servido 65,536\n'
+        '  6 GiB de pesos em T4: 65.536 tokens mantêm 4 GiB de KV.\n'
+        '  Gemma 4 E4B 4 bit; thinking ligado por <|think|>.\n'
+        'inkling-2-mini-iq2-gguf — Inkling 2 Mini (2 bit, GGUF) (32,768 tokens servidos; '
+        'reasoning high)\n'
+        '  inkling-2-mini:q2 — contexto doc 1,000,000 / servido 32,768\n'
+        '  11 GiB pesos + 0,65 visão + 2 runtime estouram os 15 GiB utilizáveis da T4; em L4, '
+        '32K fica com ~7 GiB de margem.\n'
+        '  2 bit para L4 (a T4 não comporta pesos + projetor de visão); build mainline b12611 '
+        'com arquivos Mainline_Support.\n'
+        'inkling-2-mini-q4-gguf — Inkling 2 Mini (4 bit, GGUF) (65,536 tokens servidos; '
+        'reasoning high)\n'
+        '  inkling-2-mini:q4 — contexto doc 1,000,000 / servido 65,536\n'
+        '  18 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 24,65: não cabe em L4 (24 GiB) com a '
+        'folga de 1,2 GiB.\n'
+        '  Quant recomendado UD-Q4_K_XL com visão; 64K exige A100 de 40 GB (L4 fica 1,2 GiB '
+        'abaixo da folga).\n'
+        'inkling-2-mini-q8-gguf — Inkling 2 Mini (8 bit, GGUF) (131,072 tokens servidos; '
+        'reasoning high)\n'
+        '  inkling-2-mini:q8 — contexto doc 1,000,000 / servido 131,072\n'
+        '  24 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 34,65 na A100-40, com 2 GiB de margem.\n'
+        '  8 bit sem perdas; build mainline b12611 com arquivos Mainline_Support; requer A100 de '
+        '40 GB ou mais.\n'
+        'muse-glimmer-30b-q2-gguf — Muse Glimmer 30B (q2) (32,768 tokens servidos; reasoning '
+        'high)\n'
+        '  muse-glimmer-30b:q2 — contexto doc 131,072 / servido 32,768\n'
+        '  12 GiB pesos + 0,65 visão + 2 runtime + 2 KV = 16,65: a T4 de 15 GiB utilizáveis não '
+        'comporta.\n'
+        '  Muse Glimmer 2 bit para L4 (a T4 não comporta o projetor de visão); build llama.cpp '
+        'fixado.\n'
+        'muse-glimmer-30b-q4-gguf — Muse Glimmer 30B (q4) (65,536 tokens servidos; reasoning '
+        'high)\n'
+        '  muse-glimmer-30b:q4 — contexto doc 131,072 / servido 65,536\n'
+        '  17 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 23,65: não cabe em L4 com a folga de '
+        '1,2 GiB.\n'
+        '  Muse Glimmer 4 bit com visão; 64K exige A100 de 40 GB (L4 fica 1,2 GiB abaixo da '
+        'folga).\n'
+        'qwen-image-2.1-fp8 — Qwen-Image-2.1 (FP8/INT8-ConvRot) (1 tokens servidos; reasoning '
+        'not documented)\n'
+        '  qwen-image-2.1:fp8-int8 — contexto doc 0 / servido 1\n'
+        '  Modelo de difusão não tem janela autoregressiva; 1 é sentinela.\n'
+        '  Pesos INT8-ConvRot para GPU de 24 GB+; endpoint de imagem, não chat.\n'
+        'qwen-image-2.1-q4km — Qwen-Image-2.1 (GGUF Q4_K_M) (1 tokens servidos; reasoning not '
+        'documented)\n'
+        '  qwen-image-2.1:q4km — contexto doc 0 / servido 1\n'
+        '  Modelo de difusão não tem janela autoregressiva; 1 é sentinela.\n'
+        '  Geração de imagens em T4/L4; POST /v1/images/generations, não chat.\n'
+        'qwen3.8-27b-256k — Qwen3.8 27B (256k) (262,144 tokens servidos; reasoning xhigh)\n'
+        '  qwen3.8-27b-awq:q4-awq — contexto doc 262,144 / servido 262,144\n'
+        '  Contexto máximo documentado mantido em A100 80 GB (high_mem).\n'
+        '  Full native context for a high-memory A100.\n'
+        'qwen3.8-27b-32k — Qwen3.8 27B (32k) (32,768 tokens servidos; reasoning xhigh)\n'
+        '  qwen3.8-27b-awq:q4-awq — contexto doc 262,144 / servido 32,768\n'
+        '  A100 40 GB sem high_mem: 32K limita o KV a 2 GiB.\n'
+        '  Lower-context profile for an A100 without a high-memory requirement.\n'
+        'qwen3.8-27b-q3-gguf — Qwen3.8 27B (3 bit, GGUF) (32,768 tokens servidos; reasoning '
+        'xhigh)\n'
+        '  qwen3.8-27b-gguf:q3 — contexto doc 262,144 / servido 32,768\n'
+        '  12 GiB pesos + 2 runtime + 2 KV = 16 GiB: não cabe nos 15 GiB utilizáveis da T4.\n'
+        '  GGUF 3 bit para L4 (pesos + runtime + KV passam dos 15 GiB da T4); alternativa ao AWQ '
+        'em vLLM.\n'
+        'qwen3.8-27b-q4-gguf — Qwen3.8 27B (4 bit, GGUF) (32,768 tokens servidos; reasoning '
+        'xhigh)\n'
+        '  qwen3.8-27b-gguf:q4 — contexto doc 262,144 / servido 32,768\n'
+        '  17 GiB de pesos em L4: 32K mantém 2 GiB de KV.\n'
+        '  GGUF 4 bit recomendado; requer L4 ou melhor.\n'
     )
     assert res.output == esperado
 
@@ -116,34 +127,34 @@ def test_snapshot_cli_gpus():
     res = runner.invoke(cli.app, ["gpus"])
     assert res.exit_code == 0
     esperado = (
-        "GPU | VRAM (GiB) | bf16 | VRAM aproximada | Perfis que cabem\n\n"
-        "T4 (Tesla T4) | 16 | nao | sim | gemma-4-12b-q4-gguf, gemma-4-e4b-q4-gguf, "
-        "inkling-2-mini-iq2-gguf, muse-glimmer-30b-q2-gguf, qwen-image-2.1-q4km, "
-        "qwen3.8-27b-q3-gguf\n"
-        "L4 (L4) | 24 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, "
-        "gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, inkling-2-mini-q4-gguf, "
-        "muse-glimmer-30b-q2-gguf, muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, "
-        "qwen-image-2.1-q4km, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf\n"
-        "A100-40 (A100 40 GB) | 40 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, "
-        "gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, "
-        "inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, muse-glimmer-30b-q2-gguf, "
-        "muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-256k, "
-        "qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf\n"
-        "A100-80 (A100 80 GB) | 80 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, "
-        "gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, "
-        "inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, muse-glimmer-30b-q2-gguf, "
-        "muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-256k, "
-        "qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf\n"
-        "H100-80 (H100 80 GB) | 80 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, "
-        "gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, "
-        "inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, muse-glimmer-30b-q2-gguf, "
-        "muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-256k, "
-        "qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf\n\n"
-        "Fonte VRAM: Google Cloud, Compute Engine > GPU machine types > General comparison chart "
-        "(docs.cloud.google.com/compute/docs/gpus), consultado em 2026-11-23\n"
-        "Nota Colab: FAQ oficial do Colab (research.google.com/colaboratory/faq.html, "
-        "consultado em 2026-11-23): tipos de GPU variam com o tempo; a FAQ não publica uma "
-        "tabela de VRAM.\n"
+        'GPU | VRAM (GiB) | bf16 | VRAM aproximada | Perfis que cabem\n'
+        '\n'
+        'T4 (Tesla T4) | 15 | nao | sim | gemma-4-12b-q4-gguf, gemma-4-e4b-q4-gguf, '
+        'qwen-image-2.1-q4km\n'
+        'L4 (L4) | 24 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, '
+        'gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, muse-glimmer-30b-q2-gguf, '
+        'qwen-image-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, '
+        'qwen3.8-27b-q4-gguf\n'
+        'A100-40 (A100 40 GB) | 40 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, '
+        'gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, '
+        'inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, muse-glimmer-30b-q2-gguf, '
+        'muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-256k, '
+        'qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf\n'
+        'A100-80 (A100 80 GB) | 80 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, '
+        'gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, '
+        'inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, muse-glimmer-30b-q2-gguf, '
+        'muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-256k, '
+        'qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf\n'
+        'H100-80 (H100 80 GB) | 80 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-q4-gguf, '
+        'gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-iq2-gguf, '
+        'inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, muse-glimmer-30b-q2-gguf, '
+        'muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwen-image-2.1-q4km, qwen3.8-27b-256k, '
+        'qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf\n'
+        '\n'
+        'Fonte VRAM: Google Cloud, Compute Engine > GPU machine types > General comparison chart '
+        '(docs.cloud.google.com/compute/docs/gpus), consultado em 2026-11-23\n'
+        'Nota Colab: FAQ oficial do Colab (research.google.com/colaboratory/faq.html, consultado '
+        'em 2026-11-23): tipos de GPU variam com o tempo; a FAQ não publica uma tabela de VRAM.\n'
     )
     assert res.output == esperado
 
@@ -156,7 +167,7 @@ def test_snapshot_cli_models_all_gpus_e_prompt():
         assert "Summary:" in res.output
 
     res_l4 = runner.invoke(cli.app, ["models", "--gpu", "L4"])
-    assert "Summary: 13 compatible variant(s); 3 discarded for insufficient VRAM." in res_l4.output
+    assert "Summary: 11 compatible variant(s); 5 discarded for insufficient VRAM." in res_l4.output
 
     res_prompt = runner.invoke(cli.app, ["models"], input="2\n")
     assert res_prompt.exit_code == 0

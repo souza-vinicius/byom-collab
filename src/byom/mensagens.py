@@ -296,24 +296,26 @@ DESCRICOES_PERFIS: dict[str, str] = {
     "gemma-4-e4b-q4-gguf": (
         "Modelo compacto E4B de 4 bits; ativa modo de raciocínio automaticamente."
     ),
-    "inkling-2-mini-iq2-gguf": ("Quantização de 2 bits para caber na T4, com suporte a visão."),
+    "inkling-2-mini-iq2-gguf": (
+        "Quantização de 2 bits com suporte a visão; com o projetor, começa em L4."
+    ),
     "inkling-2-mini-q4-gguf": (
-        "Quantização recomendada de 4 bits com suporte a visão; ideal para GPU L4."
+        "Quantização recomendada de 4 bits com suporte a visão; requer A100 de 40 GiB."
     ),
     "inkling-2-mini-q8-gguf": (
         "Quantização de 8 bits de alta fidelidade com visão; requer A100 de 40 GiB ou mais."
     ),
     "muse-glimmer-30b-q2-gguf": (
-        "Modelo de 30B em 2 bits com suporte a visão, ajustado para caber na T4."
+        "Modelo de 30B em 2 bits com suporte a visão; com o projetor, começa em L4."
     ),
     "muse-glimmer-30b-q4-gguf": (
-        "Modelo de 30B em 4 bits com suporte a visão; recomendado para L4 ou superior."
+        "Modelo de 30B em 4 bits com suporte a visão; requer A100 de 40 GiB."
     ),
     "qwen-image-2.1-fp8": ("Geração de imagens em 8 bits (FP8/INT8) para GPUs com 24 GiB ou mais."),
     "qwen-image-2.1-q4km": ("Geração de imagens compacta (4 bits) compatível com T4 ou L4."),
     "qwen3.8-27b-256k": ("Contexto completo de 256K para GPU A100 de 80 GiB (memória estendida)."),
     "qwen3.8-27b-32k": ("Perfil com contexto de 32K para GPU A100 padrão (40 GiB) ou L4."),
-    "qwen3.8-27b-q3-gguf": ("Variante GGUF de 3 bits para T4; alternativa leve ao perfil AWQ."),
+    "qwen3.8-27b-q3-gguf": ("Variante GGUF de 3 bits para L4; alternativa leve ao perfil AWQ."),
     "qwen3.8-27b-q4-gguf": ("Variante GGUF recomendada de 4 bits; requer L4 ou superior."),
 }
 
@@ -327,41 +329,47 @@ MOTIVOS_CONTEXTO_PERFIS: dict[str, str] = {
         "há VRAM suficiente para servir todo o contexto de 256K."
     ),
     "inkling-2-mini-iq2-gguf": (
-        "O contexto máximo de 1M exigiria ~64 GiB de cache KV; "
-        "na T4 o perfil usa 32K por segurança."
+        "O contexto máximo de 1M exigiria ~64 GiB de cache KV; 11 GiB de pesos + "
+        "0,65 de visão + 2 GiB do motor passam dos 15 GiB da T4, então 32K roda em L4."
     ),
     "inkling-2-mini-q4-gguf": (
-        "Na L4 (24 GiB), 18 GiB dos pesos + 2 GiB do motor + 4 GiB de cache KV cabem com 64K."
+        "18 GiB dos pesos + 0,65 de visão + 2 GiB do motor + 4 GiB de cache KV somam "
+        "24,65 GiB: com a folga de 1,2 GiB, 64K exige A100 de 40 GiB."
     ),
     "inkling-2-mini-q8-gguf": (
-        "Na A100 de 40 GiB, os 24 GiB dos pesos deixam margem para 8 GiB de cache KV (128K)."
+        "Na A100 de 40 GiB, 24 GiB de pesos + 0,65 de visão + 2 GiB do motor + "
+        "8 GiB de cache KV somam 34,65 GiB (128K)."
     ),
     "qwen3.8-27b-q3-gguf": (
-        "Na T4 (16 GiB), 12 GiB dos pesos deixam espaço para "
-        "2 GiB do motor e 2 GiB de cache KV (32K)."
+        "12 GiB de pesos + 2 GiB do motor + 2 GiB de cache KV somam 16 GiB, acima dos "
+        "15 GiB utilizáveis da T4; 32K roda em L4."
     ),
     "qwen3.8-27b-q4-gguf": (
         "Na L4 (24 GiB), 17 GiB dos pesos deixam espaço para "
         "2 GiB do motor e 2 GiB de cache KV (32K)."
     ),
     "gemma-4-e4b-q4-gguf": (
-        "Na T4 (16 GiB), 6 GiB dos pesos permitem servir 64K de contexto (4 GiB de cache KV)."
+        "Na T4 (15 GiB utilizáveis), 6 GiB dos pesos permitem servir 64K de contexto "
+        "(4 GiB de cache KV)."
     ),
     "gemma-4-12b-q4-gguf": (
-        "Na T4 (16 GiB), 8 GiB dos pesos mantêm 32K de contexto com folga de memória."
+        "Na T4 (15 GiB utilizáveis), 8 GiB dos pesos mantêm 32K de contexto com folga."
     ),
     "gemma-4-26b-a4b-q4-gguf": (
-        "Na L4 (24 GiB), 18 GiB dos pesos + 2 GiB do motor limitam o cache KV para 32K."
+        "18 GiB dos pesos + 0,65 de visão + 2 GiB do motor deixam 1,2 GiB de margem em "
+        "L4 e limitam o cache KV a 32K."
     ),
     "gemma-4-31b-q4-gguf": (
-        "Na A100 de 40 GiB, 20 GiB dos pesos deixam margem para "
-        "128K de contexto (8 GiB de cache KV)."
+        "Na A100 de 40 GiB, 20 GiB dos pesos + 0,65 de visão + 2 GiB do motor + "
+        "8 GiB de cache KV somam 30,65 GiB em 128K."
     ),
     "muse-glimmer-30b-q2-gguf": (
-        "Na T4 (16 GiB), 12 GiB dos pesos mantêm 32K de contexto com 2 GiB de cache KV."
+        "12 GiB de pesos + 0,65 de visão + 2 GiB do motor + 2 GiB de cache KV passam dos "
+        "15 GiB da T4; 32K roda em L4."
     ),
     "muse-glimmer-30b-q4-gguf": (
-        "Na L4 (24 GiB), 17 GiB dos pesos + 2 GiB do motor + 4 GiB de cache KV cabem com 64K."
+        "17 GiB dos pesos + 0,65 de visão + 2 GiB do motor + 4 GiB de cache KV somam "
+        "23,65 GiB: com a folga de 1,2 GiB, 64K exige A100 de 40 GiB."
     ),
     "qwen-image-2.1-q4km": (
         "Modelo de difusão para geração de imagens; não utiliza janela de contexto de texto."
@@ -390,7 +398,7 @@ NOTAS_MODELOS: dict[str, tuple[str, ...]] = {
 }
 
 NOTAS_GPUS: dict[str, str] = {
-    "T4": "Sem suporte a bf16; geração de imagem usa fp16.",
+    "T4": "15 GiB utilizáveis no Colab; sem bf16, geração de imagem usa fp16.",
     "L4": "Equilíbrio entre custo e memória (24 GiB).",
     "A100-40": "No Colab: A100 com memória padrão (high_mem desativado).",
     "A100-80": "No Colab: A100 com memória estendida (high_mem ativado).",

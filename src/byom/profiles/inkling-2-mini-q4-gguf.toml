@@ -1,5 +1,5 @@
 name = "Inkling 2 Mini (4 bit, GGUF)"
-description = "Quant recomendado UD-Q4_K_XL com visão; cabe em L4."
+description = "Quant recomendado UD-Q4_K_XL com visão; 64K exige A100 de 40 GB (L4 fica 1,2 GiB abaixo da folga)."
 opencode_output_limit = 8192
 runtime = "llama-cpp"
 catalog_model = "inkling-2-mini"
@@ -9,7 +9,7 @@ catalog_variant = "q4"
 model = "inkling-2-mini"
 served_model_name = "inkling-2-mini"
 max_model_len = 65536
-gpu = "L4"
+gpu = "A100"
 gpu_high_mem = false
 vllm_spec = "vllm"
 vllm_enforce_eager = false
