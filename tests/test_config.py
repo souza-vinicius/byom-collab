@@ -417,3 +417,65 @@ def test_tui_mostra_o_aviso_das_chaves_desconhecidas():
 
     assert cfg.model == "x"
     assert "chave_nova" in con.export_text()
+
+
+# -- 5.11: BYOM_HOME/XDG_CONFIG_HOME têm de ser absolutos --------------------
+def test_byom_home_relativo_e_recusado(monkeypatch):
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("BYOM_HOME", "relativo/byom")
+
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.byom_home()
+
+    assert "BYOM_HOME" in str(excinfo.value)
+    assert "absolute" in str(excinfo.value)
+
+
+def test_byom_home_com_til_e_guardado_absoluto(monkeypatch, isolated_home):
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("BYOM_HOME", "~/byom-home")
+
+    caminho = config.byom_home()
+
+    assert caminho.is_absolute()
+    assert caminho == isolated_home / "byom-home"
+
+
+def test_xdg_relativo_e_recusado(monkeypatch):
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("BYOM_HOME", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relativo")
+
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.byom_home(platform="linux")
+
+    assert "XDG_CONFIG_HOME" in str(excinfo.value)
+
+
+def test_byom_home_vazio_e_recusado(monkeypatch):
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("BYOM_HOME", "   ")
+
+    with pytest.raises(config.ConfigError):
+        config.byom_home()
+
+
+def test_uninstall_recusa_alvo_relativo():
+    from byom import llm_chat
+
+    with pytest.raises(llm_chat.LlmChatError) as excinfo:
+        llm_chat.validate_safe_byom_dir(Path("byom-relativo"))
+
+    assert "relativo" in str(excinfo.value)
+
+
+def test_byom_home_symlink_nao_e_resolvido(tmp_path, monkeypatch):
+    """O `uninstall` recusa symlink; resolver aqui esconderia esse caso."""
+    monkeypatch.delenv("BYOM_CONFIG_DIR", raising=False)
+    alvo = tmp_path / "real"
+    alvo.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(alvo)
+    monkeypatch.setenv("BYOM_HOME", str(link))
+
+    assert config.byom_home().is_symlink()

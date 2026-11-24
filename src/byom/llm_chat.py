@@ -64,6 +64,11 @@ def validate_safe_byom_dir(path: Path) -> Path:
     raw = str(path).strip()
     if not raw or raw in {".", ".."}:
         raise LlmChatError(f"Caminho inválido para o diretório do byom: {str(path)!r}")
+    if not path.is_absolute():
+        # Relativo ao CWD no `rmtree` apagaria o diretório errado.
+        raise LlmChatError(
+            f"Recusando operar sobre caminho relativo: {raw!r}; use um caminho absoluto"
+        )
     if path.is_symlink():
         raise LlmChatError(f"Recusando operar sobre symlink no diretório do byom: {path}")
     resolved = path.resolve()

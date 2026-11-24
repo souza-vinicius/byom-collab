@@ -108,20 +108,37 @@ class StateFileError(ValueError):
     """
 
 
+def _absolute_dir(raw: str, variable: str) -> Path:
+    """Resolve uma variável de diretório e exige caminho ABSOLUTO.
+
+    Caminho relativo viraria relativo ao CWD: `rmtree` no `uninstall` apagaria
+    o diretório errado conforme o diretório de onde o comando foi chamado.
+    """
+    texto = raw.strip()
+    if not texto:
+        raise ConfigError(f"{variable} cannot be empty")
+    caminho = Path(texto).expanduser()
+    if not caminho.is_absolute():
+        raise ConfigError(
+            f"{variable} must be an absolute path, got {raw!r}; "
+            "use something like $HOME/.config/byom"
+        )
+    # `abspath` (e não `resolve`): normaliza sem seguir symlinks, para que o
+    # `uninstall` continue recusando um BYOM_HOME que é link.
+    return Path(os.path.abspath(caminho))
+
+
 def byom_home(*, platform: str | None = None) -> Path:
     """Return the exclusive `byom` directory for config, state, and `llm` data.
 
     Precedence: `BYOM_HOME`, then `BYOM_CONFIG_DIR` (used by existing tests),
     then the OS-standard per-user location named `byom` via the standard library.
+    Todo caminho vindo do ambiente é absoluto (resolvido, com `~` expandido).
     """
     if "BYOM_HOME" in os.environ:
-        raw = os.environ["BYOM_HOME"]
-        if not raw.strip():
-            raise ConfigError("BYOM_HOME cannot be empty")
-        return Path(raw).expanduser()
-    legacy_override = os.environ.get("BYOM_CONFIG_DIR", "").strip()
-    if legacy_override:
-        return Path(legacy_override).expanduser()
+        return _absolute_dir(os.environ["BYOM_HOME"], "BYOM_HOME")
+    if os.environ.get("BYOM_CONFIG_DIR", "").strip():
+        return _absolute_dir(os.environ["BYOM_CONFIG_DIR"], "BYOM_CONFIG_DIR")
     plat = platform or sys.platform
     if plat == "darwin":
         return Path.home() / "Library" / "Application Support" / "byom"
@@ -130,7 +147,7 @@ def byom_home(*, platform: str | None = None) -> Path:
         base = Path(appdata).expanduser() if appdata else Path.home() / "AppData" / "Roaming"
         return base / "byom"
     xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    base = _absolute_dir(xdg, "XDG_CONFIG_HOME") if xdg else Path.home() / ".config"
     return base / "byom"
 
 
