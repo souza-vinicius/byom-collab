@@ -193,15 +193,16 @@ def test_saidas_dos_comandos():
     assert "T4 (Tesla T4) | 15 | nao | sim" in gpus
     assert "Fonte VRAM:" in gpus
     models = catalog.format_models()
-    assert "qwen-image-2.1 | image | q4km" in models
+    assert "Modelo | Fornecedor | Runtime |" in models
+    assert "qwen-image-2.1 | Qwen (Alibaba Cloud) | image | q4km" in models
     assert "NAO CABE EM GPU UNICA DO COLAB" in models
     assert "Contexto doc | Contexto servido" in models
     # Os dois números aparecem distintamente: documento à esquerda, perfil à direita.
-    assert "inkling-2-mini | llama-cpp | q4" in models
+    assert "inkling-2-mini | Thinking Machines Lab | llama-cpp | q4" in models
     assert "1000000 | 65536" in models
-    assert "qwen3.8-27b-awq | vllm | q4-awq" in models
+    assert "qwen3.8-27b-awq | Qwen (Alibaba Cloud) | vllm | q4-awq" in models
     assert "262144 | 32768, 262144" in models
-    assert "muse-glimmer-30b | llama-cpp | q4" in models
+    assert "muse-glimmer-30b | Meta Superintelligence Lab | llama-cpp | q4" in models
     assert "131072 | 65536" in models
 
 
