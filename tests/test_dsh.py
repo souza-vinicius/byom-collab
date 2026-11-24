@@ -207,3 +207,134 @@ def test_rejects_same_indent_model_items_without_writing(tmp_path: Path):
     with pytest.raises(dsh.DshConfigError):
         dsh.sync_config(_cfg(), path)
     assert path.read_text() == SAME_INDENT_MODELS
+
+
+# -- 4.3: o passo de indentação vem do arquivo --------------------------------
+def _reindented(text: str, factor: int) -> str:
+    """Reescreve o recuo do arquivo com outro passo, preservando o conteúdo.
+
+    Item de lista YAML é `- ` + primeiro campo, então o campo começa em
+    `dash_col + 2`. Para o campo alinhar em `item_indent * factor + step`, o
+    traço ganha o número de espaços do passo.
+    """
+    step = 2 * factor
+    lines = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip(" ")
+        indent = len(line) - len(stripped)
+        if stripped.startswith("- "):
+            lines.append(" " * (indent * factor) + "-" + " " * (step - 1) + stripped[2:])
+        else:
+            lines.append(" " * (indent * factor) + stripped)
+    return "".join(lines)
+
+
+FOUR_SPACES = _reindented(SAMPLE, 2)
+
+
+def test_merge_com_indentacao_de_quatro_espacos_gera_yaml_valido(tmp_path: Path):
+    import yaml
+
+    path = tmp_path / "cordis.patch.yml"
+    path.write_text(FOUR_SPACES)
+    cfg = _cfg()
+
+    result = dsh.sync_config(cfg, path)
+
+    text = path.read_text()
+    assert result.changed is True
+    docs = yaml.safe_load(text)
+    byom = docs[1]["config"]["providers"]["byom"]
+    assert byom["api"] == "openai-completions"
+    assert byom["baseURL"] == f"http://127.0.0.1:{cfg.proxy_port}/v1"
+    assert byom["models"][0]["id"] == cfg.served_model_name
+    assert docs[1]["config"]["providers"]["amd"]["apiKeyEnv"] == "AMD_KEY"
+    assert docs[2]["config"] == {"provider": "byom", "model": cfg.served_model_name}
+    # 4 espaços por nível, sem literais de 2 no bloco novo.
+    assert "    byom:\n" in text
+    assert "        api: openai-completions\n" in text
+    assert '                    -   id: "qwen3.8-27b"\n' in text
+    assert "\n      byom:\n" not in text
+    # Comentários e chaves do usuário continuam no arquivo.
+    assert text.startswith("# Your patch layer\n")
+    assert "SECRET_ENV_SENTINEL" in text
+
+
+def test_merge_de_quatro_espacos_e_idempotente(tmp_path: Path):
+    path = tmp_path / "cordis.patch.yml"
+    path.write_text(FOUR_SPACES)
+    assert dsh.sync_config(_cfg(), path).changed is True
+    primeiro = path.read_text()
+    assert dsh.sync_config(_cfg(), path).changed is False
+    assert path.read_text() == primeiro
+
+
+def test_recusa_indentacao_de_tres_espacos_sem_escrever(tmp_path: Path):
+    path = tmp_path / "cordis.patch.yml"
+    original = (
+        "-  id: llm-pi-ai\n"
+        '   name: "@deepseek-ai/dsh-llm-pi-ai"\n'
+        "   config:\n"
+        "      providers:\n"
+        "         byom:\n"
+        "            apiKeyEnv: MY_ENV\n"
+    )
+    path.write_text(original)
+
+    with pytest.raises(dsh.DshConfigError) as excinfo:
+        dsh.sync_config(_cfg(), path)
+
+    assert "indentação" in str(excinfo.value)
+    assert path.read_text() == original
+    assert not (tmp_path / "cordis.patch.yml.byom.bak").exists()
+
+
+def test_backup_e_gravado_uma_vez_antes_da_primeira_alteracao(tmp_path: Path):
+    path = tmp_path / "cordis.patch.yml"
+    path.write_text(FOUR_SPACES)
+
+    dsh.sync_config(_cfg(), path)
+
+    backup = tmp_path / "cordis.patch.yml.byom.bak"
+    assert backup.read_text() == FOUR_SPACES
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+    # Segunda execução (troca de perfil) não sobrescreve o backup original.
+    dsh.sync_config(_cfg("qwen3.8-27b-32k"), path)
+    assert backup.read_text() == FOUR_SPACES
+
+
+def test_merge_perdido_nao_e_gravado(tmp_path: Path, monkeypatch):
+    """Se o texto novo perder conteúdo, a validação recusa e nada é escrito."""
+    path = tmp_path / "cordis.patch.yml"
+    original = FOUR_SPACES
+    path.write_text(original)
+
+    original_merge = dsh._merge
+
+    def merge_lossy(text, cfg, step):
+        return original_merge(text, cfg, step).replace("SECRET_ENV_SENTINEL", "OUTRO")
+
+    monkeypatch.setattr(dsh, "_merge", merge_lossy)
+
+    with pytest.raises(dsh.DshConfigError) as excinfo:
+        dsh.sync_config(_cfg(), path)
+
+    assert "nada foi gravado" in str(excinfo.value)
+    assert path.read_text() == original
+    assert not (tmp_path / "cordis.patch.yml.byom.bak").exists()
+
+
+def test_merge_com_yaml_invalido_nao_e_gravado(tmp_path: Path, monkeypatch):
+    path = tmp_path / "cordis.patch.yml"
+    original = FOUR_SPACES
+    path.write_text(original)
+
+    monkeypatch.setattr(dsh, "_merge", lambda text, cfg, step: text + "foo: [\n")
+
+    with pytest.raises(dsh.DshConfigError) as excinfo:
+        dsh.sync_config(_cfg(), path)
+
+    assert "YAML inválido" in str(excinfo.value)
+    assert path.read_text() == original
+
