@@ -31,6 +31,9 @@ PROFILE_IDS = {
     "muse-glimmer-30b-q4-gguf",
     "qwen-image-2.1-q4km",
     "qwen-image-2.1-fp8",
+    "ternary-bonsai-25-27b-q2",
+    "ternary-bonsai-25-27b-ptq1",
+    "ternary-bonsai-25-27b-ptq1-mtp",
 }
 
 

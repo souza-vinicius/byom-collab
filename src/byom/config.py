@@ -284,8 +284,38 @@ WORKER_FIELDS = frozenset(
         "drafter_pattern",
         "dspark",
         "llama_jinja",
+        "flash_attn",
         "chat_template_kwargs",
         "sampling",
+        "spec",
+    }
+)
+
+#: Chaves aceitas em `[worker.spec]`. `drafter_pattern` dentro da spec é o
+#: arquivo separado (`-md`); fora dela, no `[worker]`, continua valendo para o
+#: `dspark` legado.
+SPEC_FIELDS = frozenset({"type", "n_min", "n_max", "p_min", "drafter_pattern"})
+
+#: Tipos de spec cuja cabeça de rascunho vem embutida no arquivo principal, sem
+#: `-md`. Espelha `EMBEDDED_DRAFTER_SPEC_TYPES` de `worker/build_vllm_command.py`
+#: (o worker não é pacote importável daqui): só `draft-mtp`, cujo `-mtp.gguf` é
+#: carregado como `-m` (docs.prismml.com/models/bonsai-2-5-27b.md, 2026-11-24).
+EMBEDDED_DRAFTER_SPEC_TYPES = frozenset({"draft-mtp"})
+
+#: Chaves aceitas em `[worker.sampling]`, cada uma com a flag do llama-server
+#: em `worker/build_vllm_command.py`. Chave fora daqui seria descartada em
+#: silêncio no argv (um `repeat_penaly` digitado errado viraria servidor com o
+#: default), então o load do perfil recusa. Nomes conferidos no `--help` da
+#: build fixada `prism-b12128-d7b2896` (2026-11-24).
+SAMPLING_KEYS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "presence_penalty",
+        "repeat_penalty",
+        "repeat_last_n",
     }
 )
 
@@ -318,6 +348,64 @@ PROFILE_FIELDS = frozenset(
         "reasoning_parser",
     }
 )
+
+
+def _validate_spec(
+    name: str, spec: object, runtime: str, worker: dict
+) -> None:
+    """Recusa `[worker.spec]` inválido no load do perfil, não no runtime.
+
+    Um `spec` malformado que só estourasse em `build_llama_args` apareceria
+    depois de subir a VM e baixar os pesos; aqui falha antes de qualquer
+    download, com o nome do arquivo.
+    """
+    if not isinstance(spec, dict):
+        raise ValueError(f"{name}: [worker.spec] must be a table")
+    unknown = set(spec) - SPEC_FIELDS
+    if unknown:
+        raise ValueError(
+            f"Unknown [worker.spec] fields in {name}: {', '.join(sorted(unknown))}; "
+            f"expected {', '.join(sorted(SPEC_FIELDS))}"
+        )
+    tipo = spec.get("type")
+    if not isinstance(tipo, str) or not tipo.strip():
+        raise ValueError(
+            f"{name}: [worker.spec] requires a non-empty type "
+            "(e.g. draft-mtp, draft-dspark); without it the server would run "
+            "sem decodificação especulativa"
+        )
+    for chave in ("n_min", "n_max"):
+        if chave not in spec:
+            continue
+        valor = spec[chave]
+        if isinstance(valor, bool) or not isinstance(valor, int) or valor < 0:
+            raise ValueError(f"{name}: [worker.spec].{chave} must be an int >= 0: {valor!r}")
+    if "n_min" in spec and "n_max" in spec and spec["n_min"] > spec["n_max"]:
+        raise ValueError(
+            f"{name}: [worker.spec].n_min ({spec['n_min']}) cannot exceed "
+            f"n_max ({spec['n_max']})"
+        )
+    if "p_min" in spec:
+        valor = spec["p_min"]
+        if isinstance(valor, bool) or not isinstance(valor, int | float) or not 0 <= valor <= 1:
+            raise ValueError(f"{name}: [worker.spec].p_min must be a probability 0..1: {valor!r}")
+    drafter = spec.get("drafter_pattern")
+    if drafter is not None and (not isinstance(drafter, str) or not drafter.strip()):
+        raise ValueError(f"{name}: [worker.spec].drafter_pattern must be a file pattern")
+    if runtime != "llama-cpp":
+        raise ValueError(
+            f"{name}: [worker.spec] only works with runtime 'llama-cpp' "
+            f"(this profile declares {runtime!r})"
+        )
+    if not drafter and not worker.get("drafter_pattern") and tipo not in (
+        EMBEDDED_DRAFTER_SPEC_TYPES
+    ):
+        raise ValueError(
+            f"{name}: [worker.spec] type {tipo!r} requires drafter_pattern "
+            "(the separate draft file that prepare_runtime downloads and "
+            "build_llama_args passes as --model-draft); only draft-mtp embeds "
+            "the head in the main file"
+        )
 
 
 def available_profiles(directory: Path | None = None) -> list[Profile]:
@@ -402,13 +490,37 @@ def available_profiles(directory: Path | None = None) -> list[Profile]:
                     f"profile {path.name}: [worker] dspark = true only works with "
                     f"runtime 'llama-cpp' (this profile declares {runtime!r})"
                 )
+        if "spec" in worker:
+            if worker.get("dspark"):
+                raise ValueError(
+                    f"profile {path.name}: [worker] dspark = true and [worker.spec] "
+                    "are the same setting; declare dspark (legacy shorthand) or "
+                    "[worker.spec], not both"
+                )
+            _validate_spec(path.name, worker["spec"], runtime, worker)
         for key, value in worker.items():
+            if key == "spec":
+                continue  # validado acima
             if key == "sampling":
                 if not isinstance(value, dict) or not all(
                     isinstance(k, str) and isinstance(v, int | float) and not isinstance(v, bool)
                     for k, v in value.items()
                 ):
                     raise ValueError(f"Invalid [worker].sampling in {path.name}: {value!r}")
+                unknown_sampling = set(value) - SAMPLING_KEYS
+                if unknown_sampling:
+                    raise ValueError(
+                        f"Unknown keys in [worker.sampling] of {path.name}: "
+                        f"{', '.join(sorted(unknown_sampling))}; expected "
+                        f"{', '.join(sorted(SAMPLING_KEYS))}"
+                    )
+                continue
+            if key == "flash_attn":
+                if not isinstance(value, bool):
+                    raise ValueError(
+                        f"Invalid [worker].flash_attn in {path.name}: {value!r}; "
+                        "expected true or false"
+                    )
                 continue
             if key == "image_roles":
                 if not isinstance(value, dict) or not value:

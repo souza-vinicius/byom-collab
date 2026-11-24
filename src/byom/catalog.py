@@ -50,6 +50,12 @@ REASONING_SOURCE_GEMMA = (
     "https://unsloth.ai/docs/models/gemma-4.md (2026-11-23): a página NÃO define "
     "reasoning_effort; define <|think|> no system prompt e enable_thinking"
 )
+REASONING_SOURCE_BONSAI = (
+    "https://docs.prismml.com/models/bonsai-2-5-27b.md (2026-11-24): 'Reasoning "
+    "efforts: xhigh (default) or medium' e, em Best practices, 'The model uses "
+    "xhigh by default ... medium gives shorter responses ... low is not supported: "
+    "when selected, the model behaves close to xhigh'"
+)
 GENERATION_SOURCE_IMAGE = (
     "https://unsloth.ai/docs/models/qwen-image-2.1.md (2026-11-23): "
     "'Defaults: 25 steps, guidance 1'. Equivalência com sd-server em "
@@ -109,6 +115,12 @@ VISION_PROJECTOR_GIB_BY_MODEL = {
 #: 2026-11-24).
 IMAGE_VISION_GIB = 1.08
 
+#: Projetor de visão do Bonsai 2.5: `Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf`,
+#: 629.246.976 B = 0,59 GiB (tree da API do HF, 2026-11-24). O repo publica
+#: também o BF16 de 931.145.856 B = 0,87 GiB; o perfil usa o Q8_0 pelo nome
+#: exato, então é ele que o orçamento cobra.
+BONSAI_VISION_GIB = 0.59
+
 #: Custo do drafter DSpark em VRAM quando o perfil declara `[worker] dspark`.
 #: É o peso do próprio drafter, que o llama-server carrega ao lado do modelo
 #: (`--model-draft`): `unsloth/Inkling-2-Mini-GGUF/dspark-Inkling-2-Mini-Q8_0.gguf`,
@@ -118,9 +130,21 @@ DSPARK_DRAFTER_GIB = 0.47
 
 
 def drafter_gib(worker: dict[str, object] | None) -> float:
-    """VRAM extra do drafter declarado no `[worker]`; zero sem `dspark`."""
+    """VRAM extra do drafter, cobrada só quando existe ARQUIVO separado (`-md`).
+
+    Um `spec` com `draft-mtp` carrega a cabeça de rascunho dentro do arquivo
+    principal (`-m`) e não põe um segundo peso na GPU, então custa zero. O
+    valor de 0,47 GiB é o do drafter DSpark do Inkling
+    (`dspark-Inkling-2-Mini-Q8_0.gguf`, 503.889.952 B); outro arquivo de
+    rascunho precisa de constante própria — a função não estima tamanho.
+    """
     dados = worker or {}
-    return DSPARK_DRAFTER_GIB if dados.get("dspark") else 0.0
+    if dados.get("drafter_pattern"):
+        return DSPARK_DRAFTER_GIB
+    spec = dados.get("spec")
+    if isinstance(spec, dict) and spec.get("drafter_pattern"):
+        return DSPARK_DRAFTER_GIB
+    return 0.0
 
 GPU_SOURCE = (
     "Google Cloud, Compute Engine > GPU machine types > General comparison chart "
@@ -183,6 +207,12 @@ class KvProfile:
     param de crescer em `window` tokens. Cada campo abaixo vem do `config.json`
     oficial do modelo (`source` + `checked_at`, no mesmo formato das outras
     fontes datadas do catálogo) — nada é inferido do nome do modelo.
+
+    `window = 0` marca camada **linear** (atenção linear / recorrente): o estado
+    é fixo, não existe KV por token e a camada não entra na conta que cresce com
+    o contexto. É o caso das 48 camadas lineares do Qwen3.8-27B
+    (`layer_types` com 3 `linear_attention` para cada `full_attention`).
+    Janela positiva é sliding window: a camada paga `min(ctx, janela)`.
 
     `bytes_per_elem` é o dtype nativo do config (`torch_dtype`); o fator do
     `kv_cache_dtype` do runtime entra depois, em `cache_gib`.
@@ -307,6 +337,31 @@ def inkling_kv_profile() -> KvProfile:
         checked_at="2026-11-24",
     )
 
+
+#: Forma do KV do Qwen3.8-27B — e de tudo que herda a arquitetura dele, como o
+#: Bonsai 2.5. `text_config`: `num_hidden_layers` 64, `full_attention_interval`
+#: 4 → 16 camadas de atenção completa (índices 3, 7, …, 63) e 48
+#: `linear_attention`, `num_key_value_heads` 4, `head_dim` 256, `dtype`
+#: bfloat16 → 2 B. As lineares têm estado recorrente fixo: `window = 0`, sem KV
+#: por token. Por camada completa: 2 × 4 × 256 × 2 = 4 KiB por token; nas 16 =
+#: **64 KiB por token**, exatamente o número dos docs do publicador
+#: ("The FP16 KV cache costs 64 KiB per token on the 27B").
+QWEN38_KV_SOURCE = "https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json"
+
+
+def qwen38_kv_profile() -> KvProfile:
+    """`ModelEntry.kv_shape` do Qwen3.8-27B / Bonsai 2.5 (config.json, 2026-11-24)."""
+    return KvProfile(
+        layers_full=16,
+        layers_local=48,
+        kv_heads=4,
+        head_dim=256,
+        window=0,
+        bytes_per_elem=2,
+        source=QWEN38_KV_SOURCE,
+        checked_at="2026-11-24",
+    )
+
 #: Fonte de cada `ModelEntry.provider`: o card/repositório OFICIAL de quem
 #: desenvolve o modelo, todos conferidos em 2026-11-24. Regra do repositório:
 #: nome de empresa entra no catálogo só com fonte datada. Onde o card não cita
@@ -349,6 +404,13 @@ PROVIDER_SOURCES: dict[str, str] = {
         "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash (2026-11-24): repo "
         "oficial da org DeepSeek"
     ),
+    "ternary-bonsai-2.5-27b": (
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF (2026-11-24): o "
+        "card NÃO declara uma frase de empresa — linka 'Prism ML Website' "
+        "(prismml.com) e o whitepaper em PrismML-Eng/Bonsai-demo. O nome vem da org "
+        "do HF (api/organizations/prism-ml → fullname 'Prism ML', mesma data) e do "
+        "site dos docs (docs.prismml.com, navbar 'PrismML')"
+    ),
 }
 
 #: Nomes de exibição das orgs de onde o byom BAIXA os pesos. Chave em minúsculas
@@ -362,6 +424,7 @@ PACKAGE_OWNER_NAMES: dict[str, str] = {
     "comfy-org": "Comfy-Org",
     "leejet": "leejet",
     "philbert440": "philbert440",
+    "prism-ml": "Prism ML",
 }
 
 
@@ -519,6 +582,74 @@ MODELS: tuple[ModelEntry, ...] = (
         sampling={"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0},
         reasoning_effort="xhigh",
         reasoning_source=REASONING_SOURCE_QWEN38,
+    ),
+    ModelEntry(
+        "ternary-bonsai-2.5-27b", "Ternary Bonsai 2.5 27B", "llama-cpp",
+        (
+            Variant("q2", "Q2_0 • upstream", 7.15, 32_768, "T4",
+                    context_doc=262_144,
+                    context_reason="7,15 GiB de pesos + 0,59 de visão + 2 de runtime "
+                                   "+ 2,00 de KV em 32K (64 KiB/token pelas 16 camadas "
+                                   "de atenção completa) = 11,74, mais 1,0 de folga = "
+                                   "12,74 <= 15 GiB utilizáveis da T4. 64K ainda passaria "
+                                   "na regra (14,74), com 0,26 GiB de sobra além da folga; "
+                                   "o perfil fica em 32K.",
+                    vision_gib=BONSAI_VISION_GIB,
+                    notes=("`Ternary-Bonsai-2.5-27B-Q2_0.gguf` tem 7.673.194.848 B = "
+                           "7,15 GiB (tree da API do HF, 2026-11-24); roda no llama.cpp "
+                           "upstream. Build anterior ao piso carrega o arquivo e gera "
+                           "lixo em silêncio.",)),
+            Variant("ptq1", "PTQ1_0 • fork", 5.58, 65_536, "T4",
+                    context_doc=262_144,
+                    context_reason="5,58 GiB de pesos + 0,59 de visão + 2 de runtime + "
+                                   "4,00 de KV em 64K = 12,17, mais 1,0 de folga = 13,17 "
+                                   "<= 15 GiB da T4.",
+                    vision_gib=BONSAI_VISION_GIB,
+                    notes=("`Ternary-Bonsai-2.5-27B-PTQ1_0.gguf` tem 5.993.834.848 B = "
+                           "5,58 GiB; é o arquivo que o card chama de 5,93 GB. Exige o "
+                           "binário do fork PrismML (kernels ternary), não o upstream.",)),
+            Variant("ptq1-mtp", "PTQ1_0-MTP • fork", 5.80, 65_536, "T4",
+                    context_doc=262_144,
+                    context_reason="5,80 GiB de pesos (cabeça MTP embutida, sem drafter "
+                                   "separado) + 0,59 de visão + 2 de runtime + 4,00 de KV "
+                                   "em 64K = 12,39, mais 1,0 de folga = 13,39 <= 15 GiB da T4.",
+                    vision_gib=BONSAI_VISION_GIB,
+                    notes=("`Ternary-Bonsai-2.5-27B-PTQ1_0-mtp.gguf` tem 6.232.818.944 B "
+                           "= 5,80 GiB; a cabeça MTP vem DENTRO do arquivo, carregado "
+                           "como `-m` (não `-md`). Ganho medido pelo publicador: 1,5-1,8× "
+                           "de decode em NVIDIA.",)),
+        ),
+        "https://docs.prismml.com/models/bonsai-2-5-27b.md",
+        provider="Prism ML",
+        notes=(
+            "Ternary 1,76 bit/peso, 27,36B parâmetros (0,47B de visão), Apache-2.0; "
+            "base Qwen/Qwen3.8-27B (híbrida: 64 camadas, ~75% linear, 262.144 máx.). O "
+            "card declara 5,93 GB contra 53,8 GB do FP16.",
+            "`Q2_0` roda no llama.cpp upstream; o piso é **b11556** no card "
+            "(`prism-ml/Ternary-Bonsai-2.5-27B-GGUF`) e nas três páginas de docs "
+            "conferidas (`/run/llamacpp`, `/download/formats`, `/models/bonsai-2-5-27b`) "
+            "em 2026-11-24 — nenhuma delas publica `b11555`. Builds mais velhos carregam "
+            "o `Q2_0` e geram lixo sem avisar.",
+            "`PTQ1_0` e o MTP exigem o binário do **fork PrismML** (upstream recusa o "
+            "tipo como desconhecido; o PR de upstream está aberto). Binário fixado: "
+            "`prism-b12128-d7b2896`, o build onde o preset MTP foi medido.",
+            "Sampling de thinking (card \"Best Practices\" + docs): temperature 1.0, "
+            "top_p 0.95, top_k 20, min_p 0.0, sem presence/repeat penalty — presença "
+            "1.0/1.5 e repeat são dos modelos pequenos da família. `min_p = 0.0` é o "
+            "valor do card E dos docs, com `--min-p` passado explícito porque o default "
+            "do llama.cpp é 0.05 (o `--help` da build fixada confirma: "
+            "`--min-p N ... (default: 0.05, 0.0 = disabled)`).",
+            "Raciocínio: `xhigh` é o default e `medium` é suportado; `low` NÃO é "
+            "suportado — quando selecionado o modelo se comporta como `xhigh`. Para "
+            "limitar o raciocínio, o caminho é orçamento de tokens, não esforço menor.",
+            "O irmão `prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit` (`library_name: mlx`, "
+            "Apple Silicon) não tem perfil: o byom roda no Colab (CUDA) e não tem "
+            "runtime MLX.",
+        ),
+        sampling={"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0},
+        reasoning_effort="xhigh",
+        reasoning_source=REASONING_SOURCE_BONSAI,
+        kv_shape=qwen38_kv_profile(),
     ),
     ModelEntry(
         "gemma-4", "Gemma 4", "llama-cpp",
@@ -728,6 +859,21 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela. "
                          "12,07 GiB de pesos + 2 de runtime + 1,0 de folga = 15,07 > 15 GiB "
                          "da T4; a L4 (24 GiB) comporta."),
+    ProfileContext("ternary-bonsai-25-27b-q2", "ternary-bonsai-2.5-27b", "q2", 262_144,
+                   32_768, "T4",
+                   "7,15 GiB de pesos + 0,59 de visão + 2 de runtime + 2,00 de KV em 32K "
+                   "= 11,74, mais 1,0 de folga = 12,74 <= 15 GiB utilizáveis da T4. O KV "
+                   "vem da arquitetura do Qwen3.8-27B: 64 KiB/token só nas 16 camadas de "
+                   "atenção completa, as 48 lineares têm estado fixo."),
+    ProfileContext("ternary-bonsai-25-27b-ptq1", "ternary-bonsai-2.5-27b", "ptq1",
+                   262_144, 65_536, "T4",
+                   "5,58 GiB de pesos + 0,59 de visão + 2 de runtime + 4,00 de KV em 64K "
+                   "= 12,17, mais 1,0 de folga = 13,17 <= 15 GiB da T4."),
+    ProfileContext("ternary-bonsai-25-27b-ptq1-mtp", "ternary-bonsai-2.5-27b", "ptq1-mtp",
+                   262_144, 65_536, "T4",
+                   "5,80 GiB de pesos (a cabeça MTP vem dentro do arquivo, então NÃO há "
+                   "drafter separado na conta) + 0,59 de visão + 2 de runtime + 4,00 de KV "
+                   "em 64K = 12,39, mais 1,0 de folga = 13,39 <= 15 GiB da T4."),
 
 )
 
@@ -910,9 +1056,13 @@ def kv_cache_gib(
     model: ModelEntry | None = None,
     *,
     kv_cache_dtype: str | None = None,
-    runtime: str = "vllm",
+    runtime: str = "",
 ) -> float:
     """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato.
+
+    Sem `runtime` explícito a conta assume **f16** (o mais conservador): um
+    chamador que esqueça o argumento não subestima VRAM. Só `vllm` pode descer
+    para fp8, e apenas quando o perfil declara `kv_cache_dtype`.
 
     Com `model.kv_shape` a conta segue a arquitetura (`KvProfile.cache_gib`):
     só as camadas de atenção completa crescem com o contexto. Sem `kv_shape`,
@@ -947,8 +1097,13 @@ def kv_shape_note(model: ModelEntry | None) -> str:
         )
     return (
         f"arquitetura: {shape.layers_full} camadas de atenção completa + "
-        f"{shape.layers_local} com janela de {shape.window} tokens; "
-        f"fonte {shape.source} ({shape.checked_at})"
+        f"{shape.layers_local} "
+        + (
+            "lineares (estado recorrente fixo, sem KV por token)"
+            if shape.window == 0
+            else f"com janela de {shape.window} tokens"
+        )
+        + f"; fonte {shape.source} ({shape.checked_at})"
     )
 
 
@@ -1073,9 +1228,15 @@ def check_fit(
         dtype = effective_kv_dtype(runtime, kv_cache_dtype)
         cache = f"KV ~{kv:.2f} GiB em {dtype}" if dtype else f"KV ~{kv:.2f} GiB"
         if entry.kv_shape is not None:
+            shape = entry.kv_shape
+            janela = (
+                "camadas lineares sem KV por token"
+                if shape.window == 0
+                else f"janela de {shape.window}"
+            )
             cache += (
-                f" calculado pela arquitetura ({entry.kv_shape.layers_full} camadas "
-                f"de atenção completa, janela de {entry.kv_shape.window})"
+                f" calculado pela arquitetura ({shape.layers_full} camadas "
+                f"de atenção completa, {janela})"
             )
         visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
         drafter = f" + drafter {drafter_gib:g}" if drafter_gib else ""
@@ -1303,7 +1464,7 @@ def _check_kv_shape(model_id: str, shape: KvProfile) -> None:
         raise ValueError(f"kv_shape inválido (heads/dim/bytes): {model_id}")
     if shape.layers_full < 0 or shape.layers_local < 0 or not shape.layers_total:
         raise ValueError(f"kv_shape sem camadas: {model_id}")
-    if shape.layers_local and shape.window <= 0:
+    if shape.layers_local and shape.window < 0:
         raise ValueError(f"kv_shape com camadas locais e sem janela: {model_id}")
     if not shape.source or not shape.checked_at:
         raise ValueError(f"kv_shape sem fonte datada: {model_id}")

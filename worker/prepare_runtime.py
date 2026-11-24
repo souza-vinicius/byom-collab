@@ -153,8 +153,19 @@ def prepare(session_file: Path) -> dict:
             raise ValueError("model_repo is required for llama-cpp")
         paths = hf_files(model_repo)
         resolved: dict[str, str] = {}
-        for key in ("main_pattern", "mmproj_pattern", "drafter_pattern"):
-            pattern = worker.get(key)
+        # O drafter de uma spec pode morar dentro dela (`[worker.spec]
+        # drafter_pattern`) ou no `[worker]` (atalho `dspark`): os dois baixam
+        # e viram `manifest["drafter"]`, que o argv usa em `--model-draft`.
+        spec = worker.get("spec") or {}
+        drafter_pattern = worker.get("drafter_pattern")
+        if not drafter_pattern and isinstance(spec, dict):
+            drafter_pattern = spec.get("drafter_pattern")
+        padroes = {
+            "main_pattern": worker.get("main_pattern"),
+            "mmproj_pattern": worker.get("mmproj_pattern"),
+            "drafter_pattern": drafter_pattern,
+        }
+        for key, pattern in padroes.items():
             if pattern:
                 resolved[key] = match_file(paths, str(pattern))
         wanted = set(resolved.values()) | {

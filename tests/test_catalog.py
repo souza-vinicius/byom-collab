@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from byom import catalog, config
@@ -70,6 +72,20 @@ def test_compatibilidade_com_margem_e_alternativas():
 
     with pytest.raises(ValueError):
         catalog.check_fit("modelo-inexistente", "q4", "L4")
+
+
+def test_kv_cache_sem_runtime_assume_f16_e_nao_subestima():
+    """Chamador que omite o runtime não pode receber a metade do KV.
+
+    O default era `runtime="vllm"`, que com `kv_cache_dtype=None` cai no fp8 do
+    worker e devolve metade do valor — foi o que aconteceu ao conferir o Bonsai
+    à mão (`kv_cache_gib(32768, modelo)` dava 1 GiB contra os 2 GiB reais).
+    """
+    modelo = catalog.model_by_id("ternary-bonsai-2.5-27b")
+    assert catalog.kv_cache_gib(32768, modelo) == 2.0
+    assert catalog.kv_cache_gib(32768, modelo, runtime="llama-cpp") == 2.0
+    assert catalog.kv_cache_gib(32768, modelo, runtime="vllm", kv_cache_dtype="fp8") == 1.0
+    assert catalog.kv_cache_gib(32768) == 2.0  # heurístico, também em f16
 
 
 def test_kv_cache_respeita_o_dtype_do_runtime():
@@ -279,7 +295,7 @@ def test_contexto_documentado_servido_e_motivo():
     assert served["inkling-2-mini-ad-q4k"] == 32_768
     assert served["inkling-2-mini-ad-iq2xxs"] == 32_768
     assert all(item.reason for item in catalog.PROFILE_CONTEXTS)
-    assert len(served) == 18
+    assert len(served) == 21
 
 
 def test_compatibilidade_continua_usando_contexto_servido():
@@ -458,7 +474,7 @@ def test_kv_shape_invalido_falha_na_validacao():
         )
     with pytest.raises(ValueError, match="sem janela"):
         catalog._check_kv_shape(
-            "x", catalog.KvProfile(4, 20, 8, 128, 0, source="u", checked_at="2026-11-24")
+            "x", catalog.KvProfile(4, 20, 8, 128, -1, source="u", checked_at="2026-11-24")
         )
     with pytest.raises(ValueError, match="sem camadas"):
         catalog._check_kv_shape(
@@ -566,3 +582,163 @@ def test_perfis_de_inkling_ficam_na_gpu_mais_barata_que_cabe():
         assert catalog.check_fit(
             perfil.catalog_model, perfil.catalog_variant, atual.id, contexto
         ).fits
+
+
+# ---------------------------------------------------------------------------
+# Qwen3.8-27B híbrido: camadas lineares não têm KV por token
+# ---------------------------------------------------------------------------
+
+QWEN38_CONFIG_URL = "https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json"
+
+
+def _shape_linear() -> catalog.KvProfile:
+    """64 camadas com `full_attention_interval` 4: 16 completas + 48 lineares.
+
+    `text_config` do config.json oficial (2026-11-24): `num_hidden_layers` 64,
+    `layout_types` com `full_attention` a cada 4 camadas,
+    `num_key_value_heads` 4, `head_dim` 256, `dtype` bfloat16.
+    """
+    return catalog.KvProfile(
+        16,
+        48,
+        4,
+        256,
+        0,
+        bytes_per_elem=2,
+        source=QWEN38_CONFIG_URL,
+        checked_at="2026-11-24",
+    )
+
+
+def test_kv_de_camada_linear_cresce_so_nas_camadas_de_atencao_completa():
+    shape = _shape_linear()
+
+    # 2 (K,V) × 4 heads × 256 dim × 2 B = 4 KiB por token em UMA camada
+    # completa; nas 16 completas, 64 KiB por token (o número dos docs).
+    assert shape.bytes_per_token(2) == 4 * 1024
+    assert shape.bytes_per_token(2) * shape.layers_full == 64 * 1024
+    assert shape.cache_gib(32_768) == pytest.approx(2.0)
+    assert shape.cache_gib(131_072) == pytest.approx(8.0)
+    assert shape.cache_gib(262_144) == pytest.approx(16.0)
+    # As 48 lineares não somam nada: o estado recorrente é fixo.
+    assert shape.cache_gib(4_096) == pytest.approx(0.25)
+
+
+def test_kv_shape_com_camada_linear_aceita_janela_zero():
+    """Janela 0 é a marca de camada linear; janela negativa continua inválida."""
+    catalog._check_kv_shape("ternary-bonsai-2.5-27b", _shape_linear())
+
+    with pytest.raises(ValueError, match="sem janela"):
+        catalog._check_kv_shape(
+            "x", catalog.KvProfile(4, 20, 8, 128, -1, source="u", checked_at="2026-11-24")
+        )
+
+
+def test_kv_shape_note_de_camada_linear_nao_fala_em_janela_de_zero():
+    nota = catalog.kv_shape_note(_entrada_sintetica(_shape_linear()))
+
+    assert "16 camadas de atenção completa" in nota
+    assert "48 lineares" in nota
+    assert "janela de 0" not in nota
+    assert QWEN38_CONFIG_URL in nota
+
+
+# ---------------------------------------------------------------------------
+# Ternary Bonsai 2.5 27B (Prism ML, ternário 1,76 bit/peso)
+# ---------------------------------------------------------------------------
+
+BONSAI_ID = "ternary-bonsai-2.5-27b"
+
+
+def test_bonsai_entra_no_catalogo_com_kv_da_arquitetura_do_qwen38():
+    modelo = catalog.model_by_id(BONSAI_ID)
+
+    assert modelo.name == "Ternary Bonsai 2.5 27B"
+    assert modelo.runtime == "llama-cpp"
+    assert modelo.provider == "Prism ML"
+    assert BONSAI_ID in catalog.PROVIDER_SOURCES
+    assert "huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF" in (
+        catalog.PROVIDER_SOURCES[BONSAI_ID]
+    )
+    assert modelo.kv_shape == catalog.qwen38_kv_profile()
+    assert modelo.reasoning_effort == "xhigh"
+    assert "docs.prismml.com/models/bonsai-2-5-27b.md" in modelo.reasoning_source
+
+    # O número dos docs: 64 KiB por token, 2,0 GiB em 32K e 16,0 em 262.144.
+    assert catalog.kv_cache_gib(32_768, modelo, runtime="llama-cpp") == pytest.approx(2.0)
+    assert catalog.kv_cache_gib(131_072, modelo, runtime="llama-cpp") == pytest.approx(8.0)
+    assert catalog.kv_cache_gib(262_144, modelo, runtime="llama-cpp") == pytest.approx(16.0)
+
+
+def test_bonsai_declara_as_tres_variantes_com_os_bytes_do_tree():
+    modelo = catalog.model_by_id(BONSAI_ID)
+    variantes = {variante.id: variante for variante in modelo.variants}
+
+    assert set(variantes) == {"q2", "ptq1", "ptq1-mtp"}
+    # 7.673.194.848 / 5.993.834.848 / 6.232.818.944 B do tree da API do HF.
+    assert variantes["q2"].memory_gib == 7.15
+    assert variantes["ptq1"].memory_gib == 5.58
+    assert variantes["ptq1-mtp"].memory_gib == 5.80
+    assert {v.vision_gib for v in variantes.values()} == {0.59}
+    assert all(v.context_doc == 262_144 for v in variantes.values())
+    assert all(v.context < v.context_doc and v.context_reason for v in variantes.values())
+
+
+def test_bonsai_cabe_na_t4_nas_tres_variantes():
+    esperado = {"q2": (32_768, 11.74), "ptq1": (65_536, 12.17), "ptq1-mtp": (65_536, 12.39)}
+    for variante_id, (contexto, required) in esperado.items():
+        fit = catalog.check_fit(BONSAI_ID, variante_id, "T4", contexto)
+        assert fit.required_gib == pytest.approx(required), variante_id
+        assert fit.fits is True, (variante_id, fit.reason)
+        assert fit.required_gib + fit.headroom_gib <= fit.available_gib
+
+
+def test_bonsai_mtp_nao_soma_drafter_no_orcamento():
+    """A cabeça MTP está no `-mtp.gguf`: nenhum peso extra de rascunho."""
+    sem_drafter = catalog.check_fit(BONSAI_ID, "ptq1-mtp", "T4", 65_536)
+    assert sem_drafter.required_gib == pytest.approx(12.39)
+    assert catalog.drafter_gib({"spec": {"type": "draft-mtp", "n_max": 3}}) == 0.0
+    # E o mesmo contexto/GPU com um `spec` que exige `-md` custaria mais 0,47.
+    com_drafter = catalog.check_fit(BONSAI_ID, "ptq1-mtp", "T4", 65_536, drafter_gib=0.47)
+    assert com_drafter.required_gib == pytest.approx(12.86)
+
+
+def test_bonsai_limita_o_contexto_pelo_maximo_do_modelo(tmp_path: Path):
+    """262.144 é o teto; 262.145 é recusado no load do perfil."""
+    tompl = """
+name = "Bonsai (teste de teto)"
+runtime = "llama-cpp"
+catalog_model = "ternary-bonsai-2.5-27b"
+catalog_variant = "ptq1"
+
+[config]
+model = "ternary-bonsai-2.5-27b"
+served_model_name = "ternary-bonsai-2.5-27b"
+max_model_len = {ctx}
+gpu = "T4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[worker]
+binary_url = "https://example.invalid/llama.tar.gz"
+binary_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+binary_dir = "llama.cpp"
+model_repo = "prism-ml/Ternary-Bonsai-2.5-27B-GGUF"
+main_pattern = "Ternary-Bonsai-2.5-27B-PTQ1_0.gguf"
+"""
+    pasta = tmp_path / "profiles"
+    pasta.mkdir()
+    (pasta / "teto.toml").write_text(tompl.format(ctx=262_145), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="acima do máximo"):
+        config.available_profiles(pasta)
+
+    (pasta / "teto.toml").write_text(tompl.format(ctx=262_144), encoding="utf-8")
+    (perfil,) = config.available_profiles(pasta)
+    assert perfil.settings["max_model_len"] == 262_144

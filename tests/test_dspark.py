@@ -141,12 +141,13 @@ def test_orcamento_soma_o_drafter_quando_dspark_esta_ligado():
         "ad-q6k",
         "A100-40",
         131_072,
-        drafter_gib=catalog.drafter_gib({"dspark": True}),
+        drafter_gib=catalog.drafter_gib({"dspark": True, "drafter_pattern": DRAFTER}),
     )
 
     custo = catalog.drafter_gib(perfil.worker or {})
     assert custo == 0.0  # nenhum TOML embarcado liga dspark
-    assert catalog.drafter_gib({"dspark": True}) == pytest.approx(0.47)
+    perfil_com_drafter = {"dspark": True, "drafter_pattern": DRAFTER}
+    assert catalog.drafter_gib(perfil_com_drafter) == pytest.approx(0.47)
     assert com_drafter.required_gib == pytest.approx(sem_drafter.required_gib + 0.47)
     assert com_drafter.fits is True  # 26,88 + 0,47 + 2,0 ainda cabe nos 40 GiB
 
@@ -157,6 +158,32 @@ def test_orcamento_soma_o_drafter_quando_dspark_esta_ligado():
     assert not catalog.check_fit(
         "inkling-2-mini", "q4", "L4", 131_072, drafter_gib=0.47
     ).fits
+
+
+def test_drafter_so_e_cobrado_quando_ha_arquivo_separado():
+    """MTP embute a cabeça no arquivo principal: não há segundo peso na VRAM.
+
+    O caso existe porque `[worker.spec]` permite `draft-mtp` sem
+    `drafter_pattern`: o `-mtp.gguf` vai em `-m`, e cobrar 0,47 GiB de drafter
+    ali seria dinheiro inventado no orçamento.
+    """
+    assert catalog.drafter_gib({"dspark": True, "drafter_pattern": DRAFTER}) == (
+        pytest.approx(0.47)
+    )
+    assert catalog.drafter_gib({"drafter_pattern": DRAFTER}) == pytest.approx(0.47)
+    assert (
+        catalog.drafter_gib(
+            {"spec": {"type": "draft-dflash", "drafter_pattern": "dflash.gguf"}}
+        )
+        == pytest.approx(0.47)
+    )
+    assert (
+        catalog.drafter_gib(
+            {"spec": {"type": "draft-mtp", "n_min": 0, "n_max": 3, "p_min": 0.1}}
+        )
+        == 0.0
+    )
+    assert catalog.drafter_gib({"dspark": True}) == 0.0
 
 
 def test_check_compatibility_do_perfil_dspark_soma_o_drafter(tmp_path, monkeypatch):

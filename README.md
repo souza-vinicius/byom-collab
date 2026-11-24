@@ -153,6 +153,7 @@ para filtrar a listagem; ele não altera a GPU declarada:
 | Inkling 2 Mini | Thinking Machines Lab | llama.cpp | AD-Q6_K / AD-Q4_K / AD-IQ2_XXS — pesos AtomicChat | 22,2 / 15,4 / 9,7 GiB | 1.000.000 | 131.072 / 32.768 / 32.768 | A100 40 / **L4** / **T4** |
 | Qwen3.8 27B | Qwen (Alibaba Cloud) | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | A100 40 / A100 80 (256K) |
 | Qwen3.8 27B | Qwen (Alibaba Cloud) | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | L4 |
+| Ternary Bonsai 2.5 27B | Prism ML | llama.cpp | Q2_0 (upstream) / PTQ1_0 / PTQ1_0-MTP (fork PrismML nos dois últimos) | 7,15 / 5,58 / 5,80 GiB | 262.144 | 32.768 / 65.536 / 65.536 | **T4** nos três |
 | Gemma 4 | Google DeepMind | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
 | Muse Glimmer 30B | Meta Superintelligence Lab | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
 | Qwen-Image-2.1 | Qwen (Alibaba Cloud) | image | INT8-ConvRot (12,07 GiB) / GGUF Q4_K (9,22 GiB) | 12,1 / 9,2 GiB | n/a | n/a | L4 / **T4** |
@@ -224,7 +225,15 @@ NVFP4 por especialista na segunda e terceira passadas em loop e produzem saída
 incorreta. Os perfis `inkling-2-mini-ad-*` usam o **mesmo** `b12611` porque os
 arquivos `AD-*` da AtomicChat já estão no layout merged do PR #32694 e o
 publicador exige `b12600` ou mais novo com `--jinja`; nenhum perfil usa
-`Q4_K_M`/`Q5_K_M`. DSpark continua desativado nos TOMLs: o suporte mainline é
+`Q4_K_M`/`Q5_K_M`. O Ternary Bonsai 2.5 27B tem três variantes e só a primeira
+roda no llama.cpp upstream: `Q2_0` precisa de build **b11556** ou mais novo
+(o perfil usa o mesmo `b12611` dos perfis Inkling) e builds mais velhos carregam
+o arquivo e geram lixo sem avisar; `PTQ1_0` e o `PTQ1_0-MTP` exigem o binário do
+fork **PrismML**, fixado em `prism-b12128-d7b2896` (asset CUDA 12.8 x64 de
+228.535.760 B, sha256 conferido). O irmão `prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit`
+é **MLX** (Apple Silicon) e ficou fora do catálogo: o byom roda no Colab (CUDA) e
+não tem runtime MLX, então nenhum perfil seria executável. DSpark continua
+desativado nos TOMLs: o suporte mainline é
 um pull request aberto (PR #32218), então o drafter não tem perfil — mas o custo
 dele (0,47 GiB) já entra no orçamento de qualquer perfil que ligue
 `[worker] dspark = true`, e `available_profiles` recusa o campo sem
@@ -430,7 +439,7 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   registradas no catálogo e nas tabelas acima. Nenhum perfil repete `medium`,
   `25` ou um máximo de contexto documentado.
 * **O contexto não é reduzido silenciosamente.** `PROFILE_CONTEXTS` lista todos
-  os 18 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
+  os 21 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
   imprime ambos; `check_fit` continua usando o valor servido de `config.toml`.
   Elevar um perfil ao máximo documentado sem uma GPU maior está explicitamente
   fora de escopo.
