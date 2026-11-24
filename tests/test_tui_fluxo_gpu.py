@@ -208,3 +208,14 @@ def test_caminho_gpu_modelo_consome_lista_reabrindo_a_lista_de_gpus(monkeypatch)
 
     assert tui._executar_gpu_modelo(rec, tui.ler_estado_local()) == "menu"
     assert chamadas == ["L4", "L4"]
+
+
+@pytest.mark.parametrize(
+    ("escolha", "esperado"), [("__outra_gpu__", "outra_gpu"), ("__voltar__", "menu")]
+)
+def test_lista_de_modelos_permite_trocar_de_gpu_ou_voltar(monkeypatch, escolha, esperado):
+    _roteirizar(monkeypatch, [escolha])
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    assert tui._escolher_modelo_para_gpu(rec, tui.ler_estado_local(), "L4") == esperado
+    assert not config.config_path().exists()
