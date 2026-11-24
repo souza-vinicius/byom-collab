@@ -34,6 +34,10 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
             git cmake build-essential ca-certificates curl file
+          # O container não tem driver: o link precisa do stub libcuda do toolkit.
+          ls -l /usr/local/cuda/lib64/stubs/
+          ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
+          ldconfig
 
       - name: Clonar llama.cpp no commit alvo
         run: |
@@ -51,7 +55,9 @@ jobs:
             -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_EXAMPLES=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.arches }}"
+            -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.arches }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,-rpath-link,/usr/local/cuda/lib64/stubs" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,-rpath-link,/usr/local/cuda/lib64/stubs"
 
       - name: Compilar llama-server
         run: cmake --build build --target llama-server -j"$(nproc)"
