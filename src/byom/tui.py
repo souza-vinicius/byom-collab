@@ -359,6 +359,29 @@ def _carregar_config(con: Console) -> config.Config:
         ) from exc
 
 
+def _ler_estado_ou_erro() -> tuple[config.State | None, str]:
+    """Lê state.json devolvendo o erro em vez de levantar `StateFileError`."""
+    try:
+        return config.load_state(), ""
+    except config.StateFileError as exc:
+        return None, str(exc)
+
+
+def _partes_erro_estado(erro: str) -> tuple[str, str, str]:
+    """Texto padrão do painel de state.json ilegível (falha, causa, ação)."""
+    return (
+        "O arquivo de estado local (state.json) está ilegível.",
+        erro,
+        "Confira o painel do Google Colab: pode haver uma GPU alocada sem registro. "
+        "Depois rode `byom status` e corrija ou remova o state.json.",
+    )
+
+
+def _renderizar_erro_estado(con: Console, erro: str) -> None:
+    """Painel padrão de state.json ilegível: pode haver GPU alocada sem registro."""
+    _renderizar_erro(con, *_partes_erro_estado(erro), detalhes_tecnicos=erro)
+
+
 def _renderizar_glossario(con: Console, termos: Sequence[str]) -> None:
     itens = M.glossario_para_tela(termos)
     if not itens:
@@ -1330,7 +1353,12 @@ def _aplicar_perfil_interativo(
             return False, 0.0
 
     inicio = time.monotonic()
-    state = config.load_state()
+    state, erro_estado = _ler_estado_ou_erro()
+    if erro_estado:
+        # Pode haver GPU alocada sem registro: nada é gravado antes de o
+        # usuário conferir o painel do Colab.
+        _renderizar_erro_estado(con, erro_estado)
+        return False, time.monotonic() - inicio
     if state is not None:
         _renderizar_erro(
             con,
@@ -1578,14 +1606,23 @@ def _executar_init(con: Console, cli: Any, estado: EstadoLocal) -> str:
     return _perguntar_proximo_passo("init", novo_estado)
 
 
-def _troca_bloqueada_por_sessao(con: Console, estado: EstadoLocal) -> str | None:
-    """Devolve o destino quando há sessão ativa; None quando a troca é permitida."""
-    if not estado.sessao_ativa:
+def _troca_bloqueada_por_sessao(con: Console) -> str | None:
+    """Devolve o destino quando a troca é bloqueada; None quando é permitida.
+
+    Lê o `state.json` de verdade: a barra de estado marca `sessao_ativa=False`
+    quando o arquivo está ilegível, e liberar a troca nesse caso esconderia
+    uma VM possivelmente alocada.
+    """
+    state, erro_estado = _ler_estado_ou_erro()
+    if erro_estado:
+        _renderizar_erro_estado(con, erro_estado)
+        return "menu"
+    if state is None:
         return None
     _painel(
         con,
         "Sessão ativa encontrada",
-        f"A sessão '{estado.sessao_nome}' está ativa no momento.\n"
+        f"A sessão '{state.session}' está ativa no momento.\n"
         "É necessário encerrá-la antes de trocar o perfil de modelo.",
         estilo="yellow",
     )
@@ -1598,7 +1635,7 @@ def _troca_bloqueada_por_sessao(con: Console, estado: EstadoLocal) -> str | None
 
 def _executar_configure(con: Console, estado: EstadoLocal) -> str:
     renderizar_cabecalho(con, estado, subtela=M.ACOES["configure"][0])
-    bloqueio = _troca_bloqueada_por_sessao(con, estado)
+    bloqueio = _troca_bloqueada_por_sessao(con)
     if bloqueio:
         return bloqueio
 
@@ -1718,7 +1755,7 @@ def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) ->
 def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
     """Caminho GPU + modelo: escolhe a GPU, o modelo compatível e confirma o par."""
     renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
-    bloqueio = _troca_bloqueada_por_sessao(con, estado)
+    bloqueio = _troca_bloqueada_por_sessao(con)
     if bloqueio:
         return bloqueio
 
@@ -2062,13 +2099,14 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
         ],
     ) as exec_etapas:
         exec_etapas.iniciar(0)
-        state_error: str | None = None
-        try:
-            state = config.load_state()
-        except config.StateFileError as exc:
-            state = None
-            state_error = str(exc)
-        exec_etapas.concluir(0, f"sessão {state.session}" if state else "sem sessão registrada")
+        state, state_error = _ler_estado_ou_erro()
+        if state_error:
+            etapa_local = "estado ilegível"
+        elif state is None:
+            etapa_local = "sem sessão registrada"
+        else:
+            etapa_local = f"sessão {state.session}"
+        exec_etapas.concluir(0, etapa_local, aviso=bool(state_error))
 
         exec_etapas.iniciar(1)
         try:
@@ -2129,12 +2167,7 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
 
     if state is None:
         if state_error:
-            _renderizar_erro(
-                con,
-                "Arquivo de estado local inválido.",
-                state_error,
-                "Verifique ~/.config/byom/state.json ou encerre sessões pendentes no Colab.",
-            )
+            _renderizar_erro_estado(con, state_error)
         else:
             _mostrar_resultado(
                 con,
@@ -2257,7 +2290,12 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
         try:
             # 1. Preparar sessão
             exec_etapas.iniciar(0)
-            existing = config.load_state()
+            existing, erro_estado = _ler_estado_ou_erro()
+            if erro_estado:
+                exec_etapas.falhar(0, "estado ilegível")
+                raise _ErroEtapa(
+                    *_partes_erro_estado(erro_estado), detalhes_tecnicos=erro_estado
+                )
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 cli._prepare_session(cfg, existing, force)
             exec_etapas.concluir(0, "sem conflitos")
