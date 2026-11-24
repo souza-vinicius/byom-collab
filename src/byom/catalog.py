@@ -196,6 +196,12 @@ class KvProfile:
     oficial do modelo (`source` + `checked_at`, no mesmo formato das outras
     fontes datadas do catálogo) — nada é inferido do nome do modelo.
 
+    `window = 0` marca camada **linear** (atenção linear / recorrente): o estado
+    é fixo, não existe KV por token e a camada não entra na conta que cresce com
+    o contexto. É o caso das 48 camadas lineares do Qwen3.8-27B
+    (`layer_types` com 3 `linear_attention` para cada `full_attention`).
+    Janela positiva é sliding window: a camada paga `min(ctx, janela)`.
+
     `bytes_per_elem` é o dtype nativo do config (`torch_dtype`); o fator do
     `kv_cache_dtype` do runtime entra depois, em `cache_gib`.
     """
@@ -959,8 +965,13 @@ def kv_shape_note(model: ModelEntry | None) -> str:
         )
     return (
         f"arquitetura: {shape.layers_full} camadas de atenção completa + "
-        f"{shape.layers_local} com janela de {shape.window} tokens; "
-        f"fonte {shape.source} ({shape.checked_at})"
+        f"{shape.layers_local} "
+        + (
+            "lineares (estado recorrente fixo, sem KV por token)"
+            if shape.window == 0
+            else f"com janela de {shape.window} tokens"
+        )
+        + f"; fonte {shape.source} ({shape.checked_at})"
     )
 
 
@@ -1085,9 +1096,15 @@ def check_fit(
         dtype = effective_kv_dtype(runtime, kv_cache_dtype)
         cache = f"KV ~{kv:.2f} GiB em {dtype}" if dtype else f"KV ~{kv:.2f} GiB"
         if entry.kv_shape is not None:
+            shape = entry.kv_shape
+            janela = (
+                "camadas lineares sem KV por token"
+                if shape.window == 0
+                else f"janela de {shape.window}"
+            )
             cache += (
-                f" calculado pela arquitetura ({entry.kv_shape.layers_full} camadas "
-                f"de atenção completa, janela de {entry.kv_shape.window})"
+                f" calculado pela arquitetura ({shape.layers_full} camadas "
+                f"de atenção completa, {janela})"
             )
         visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
         drafter = f" + drafter {drafter_gib:g}" if drafter_gib else ""
@@ -1315,7 +1332,7 @@ def _check_kv_shape(model_id: str, shape: KvProfile) -> None:
         raise ValueError(f"kv_shape inválido (heads/dim/bytes): {model_id}")
     if shape.layers_full < 0 or shape.layers_local < 0 or not shape.layers_total:
         raise ValueError(f"kv_shape sem camadas: {model_id}")
-    if shape.layers_local and shape.window <= 0:
+    if shape.layers_local and shape.window < 0:
         raise ValueError(f"kv_shape com camadas locais e sem janela: {model_id}")
     if not shape.source or not shape.checked_at:
         raise ValueError(f"kv_shape sem fonte datada: {model_id}")

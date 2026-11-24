@@ -458,7 +458,7 @@ def test_kv_shape_invalido_falha_na_validacao():
         )
     with pytest.raises(ValueError, match="sem janela"):
         catalog._check_kv_shape(
-            "x", catalog.KvProfile(4, 20, 8, 128, 0, source="u", checked_at="2026-11-24")
+            "x", catalog.KvProfile(4, 20, 8, 128, -1, source="u", checked_at="2026-11-24")
         )
     with pytest.raises(ValueError, match="sem camadas"):
         catalog._check_kv_shape(
@@ -566,3 +566,62 @@ def test_perfis_de_inkling_ficam_na_gpu_mais_barata_que_cabe():
         assert catalog.check_fit(
             perfil.catalog_model, perfil.catalog_variant, atual.id, contexto
         ).fits
+
+
+# ---------------------------------------------------------------------------
+# Qwen3.8-27B híbrido: camadas lineares não têm KV por token
+# ---------------------------------------------------------------------------
+
+QWEN38_CONFIG_URL = "https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json"
+
+
+def _shape_linear() -> catalog.KvProfile:
+    """64 camadas com `full_attention_interval` 4: 16 completas + 48 lineares.
+
+    `text_config` do config.json oficial (2026-11-24): `num_hidden_layers` 64,
+    `layout_types` com `full_attention` a cada 4 camadas,
+    `num_key_value_heads` 4, `head_dim` 256, `dtype` bfloat16.
+    """
+    return catalog.KvProfile(
+        16,
+        48,
+        4,
+        256,
+        0,
+        bytes_per_elem=2,
+        source=QWEN38_CONFIG_URL,
+        checked_at="2026-11-24",
+    )
+
+
+def test_kv_de_camada_linear_cresce_so_nas_camadas_de_atencao_completa():
+    shape = _shape_linear()
+
+    # 2 (K,V) × 4 heads × 256 dim × 2 B = 4 KiB por token em UMA camada
+    # completa; nas 16 completas, 64 KiB por token (o número dos docs).
+    assert shape.bytes_per_token(2) == 4 * 1024
+    assert shape.bytes_per_token(2) * shape.layers_full == 64 * 1024
+    assert shape.cache_gib(32_768) == pytest.approx(2.0)
+    assert shape.cache_gib(131_072) == pytest.approx(8.0)
+    assert shape.cache_gib(262_144) == pytest.approx(16.0)
+    # As 48 lineares não somam nada: o estado recorrente é fixo.
+    assert shape.cache_gib(4_096) == pytest.approx(0.25)
+
+
+def test_kv_shape_com_camada_linear_aceita_janela_zero():
+    """Janela 0 é a marca de camada linear; janela negativa continua inválida."""
+    catalog._check_kv_shape("ternary-bonsai-2.5-27b", _shape_linear())
+
+    with pytest.raises(ValueError, match="sem janela"):
+        catalog._check_kv_shape(
+            "x", catalog.KvProfile(4, 20, 8, 128, -1, source="u", checked_at="2026-11-24")
+        )
+
+
+def test_kv_shape_note_de_camada_linear_nao_fala_em_janela_de_zero():
+    nota = catalog.kv_shape_note(_entrada_sintetica(_shape_linear()))
+
+    assert "16 camadas de atenção completa" in nota
+    assert "48 lineares" in nota
+    assert "janela de 0" not in nota
+    assert QWEN38_CONFIG_URL in nota
