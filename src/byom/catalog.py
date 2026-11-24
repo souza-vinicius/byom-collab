@@ -319,14 +319,23 @@ MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
         "qwen-image-2.1", "Qwen-Image-2.1", "image",
         (
-            Variant("fp8-int8", "FP8 repo / INT8-ConvRot", 20.0, 0, "L4",
-                    notes=("GPU com 24 GB ou mais; 7,26 GB de pesos INT8-ConvRot.",)),
-            Variant("q4km", "GGUF Q4_K_M", 12.9, 0, "L4",
-                    notes=("Pesos + encoder + VAE somam ~14,9 GB na página da Unsloth; "
-                           "o orçamento conta 12,9 GiB residentes na GPU, porque o encoder "
-                           "tem offload parcial para RAM.",
-                           "12,9 GiB + 2 de runtime + 1 de folga não cabe nos 15 GiB "
-                           "utilizáveis da T4; a GPU mínima é L4 (24 GiB).")),
+            Variant("fp8-int8", "FP8 repo / INT8-ConvRot", 12.07, 0, "L4",
+                    notes=("GPU com 24 GB ou mais; 7,26 GB de pesos INT8-ConvRot.",
+                           "Soma dos bytes publicados (2026-11-24): 7.256.783.064 "
+                           "(diffusion_models/qwen_image_2.1_int8_convrot) + "
+                           "5.027.784.800 (Qwen3VL-8B-Instruct-Q4_K_M) + "
+                           "675.509.688 (vae bf16) = 12.960.077.552 B = 12,07 GiB.",
+                           "12,07 GiB + 2 de runtime + 1 de folga = 15,07 > 15 GiB "
+                           "utilizáveis da T4; a GPU mínima segue L4 (24 GiB).")),
+            Variant("q4km", "GGUF Q4_K", 9.22, 0, "T4",
+                    notes=("Pesos + encoder + VAE somam, nos bytes publicados "
+                           "(2026-11-24), 4.197.494.816 (qwen_image_2.1-Q4_K, 4,20 GB) + "
+                           "5.027.784.800 (Qwen3VL-8B-Instruct-Q4_K_M) + 675.509.688 "
+                           "(vae bf16) = 9.900.789.304 B = 9,22 GiB.",
+                           "O repositório publica Q4_K, não Q4_K_M: o perfil usa o nome "
+                           "exato do arquivo.",
+                           "9,22 GiB + 2 de runtime + 1,0 de folga = 12,22 <= 15 GiB "
+                           "utilizáveis: cabe na T4, que é a GPU mais barata.")),
         ),
         IMAGE_SOURCE,
         notes=(
@@ -410,9 +419,14 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "A100-40", "17 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 23,65: não "
                               "cabe em L4 com a folga de 1,2 GiB."),
     ProfileContext("qwen-image-2.1-q4km", "qwen-image-2.1", "q4km", 0, 1,
-                   "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela."),
+                   "T4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela. "
+                         "9,22 GiB de pesos + 2 de runtime + 1,0 de folga = 12,22 <= 15 GiB "
+                         "utilizáveis da T4, então a GPU barata serve."),
     ProfileContext("qwen-image-2.1-fp8", "qwen-image-2.1", "fp8-int8", 0, 1,
-                   "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela."),
+                   "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela. "
+                         "12,07 GiB de pesos + 2 de runtime + 1,0 de folga = 15,07 > 15 GiB "
+                         "da T4; a L4 (24 GiB) comporta."),
+
 )
 
 

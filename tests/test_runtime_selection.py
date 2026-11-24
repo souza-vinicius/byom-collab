@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from byom import cli, config
+from byom import catalog, cli, config
 
 RUNTIMES = {"vllm", "llama-cpp", "image"}
 
@@ -280,14 +280,21 @@ def test_comando_imagem_falha_com_saida_legivel(tmp_path):
 
 
 # -- prepare_runtime: papéis viram caminhos absolutos no manifest -------------
-HF_FILES = {
-    "leejet/Qwen-Image-2.1-GGUF": ["qwen_image_2.1-Q4_K_M.gguf"],
-    "Comfy-Org/Qwen-Image-2.1": [
-        "vae/qwen_image_2.1_vae_bf16.safetensors",
-        "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
-    ],
-    "Qwen/Qwen3-VL-8B-Instruct-GGUF": ["Qwen3VL-8B-Instruct-Q4_K_M.gguf"],
-}
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "hf_files.json"
+
+
+def hf_fixture() -> dict[str, list[str]]:
+    """Lista real de arquivos por repo, congelada em `tests/fixtures/hf_files.json`.
+
+    `match_file` é testado contra os nomes publicados, sem rede: a fixture é
+    regravada por `scripts/refresh_hf_fixture.py` quando um repo muda.
+    """
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    return {repo: [item["path"] for item in items] for repo, items in data["repos"].items()}
+
+
+HF_FILES = hf_fixture()
+
 
 
 def _binary_tarball() -> bytes:
@@ -382,7 +389,7 @@ def test_prepare_imagem_grava_os_tres_papeis_no_manifest(
                         "binary_sha256": hashlib.sha256(_binary_tarball()).hexdigest(),
                         "binary_dir": "sdcpp",
                         "image_roles": {
-                            "diffusion": "leejet/Qwen-Image-2.1-GGUF::*Q4_K_M*",
+                            "diffusion": "leejet/Qwen-Image-2.1-GGUF::qwen_image_2.1-Q4_K.gguf",
                             "vae": "Comfy-Org/Qwen-Image-2.1::vae/*.safetensors",
                             "text_encoder": "Qwen/Qwen3-VL-8B-Instruct-GGUF::*Q4_K_M.gguf",
                         },
@@ -400,7 +407,7 @@ def test_prepare_imagem_grava_os_tres_papeis_no_manifest(
         assert target.is_absolute()
         assert target.is_file()
         assert target.read_text(encoding="utf-8").startswith("peso:")
-    assert manifest["image"]["diffusion"].endswith("qwen_image_2.1-Q4_K_M.gguf")
+    assert manifest["image"]["diffusion"].endswith("qwen_image_2.1-Q4_K.gguf")
     assert manifest["image"]["vae"].endswith("qwen_image_2.1_vae_bf16.safetensors")
     assert manifest["image"]["text_encoder"].endswith("Qwen3VL-8B-Instruct-Q4_K_M.gguf")
     assert (byom / "sd-server").is_symlink()
@@ -414,3 +421,73 @@ def test_perfis_de_imagem_declaram_os_tres_papeis():
         roles = (profile.worker or {}).get("image_roles") or {}
         assert set(roles) >= {"diffusion", "vae", "text_encoder"}, profile_id
         assert all("::" in spec for spec in roles.values())
+
+
+# -- 4.1: o quant publicado é Q4_K, não Q4_K_M --------------------------------
+def test_match_file_resolve_o_quant_publicado_e_recusa_o_inexistente(prepare_module):
+    """`leejet/Qwen-Image-2.1-GGUF` publica Q4_K (4,20 GB) e não Q4_K_M."""
+    paths = HF_FILES["leejet/Qwen-Image-2.1-GGUF"]
+
+    assert prepare_module.match_file(paths, "qwen_image_2.1-Q4_K.gguf") == (
+        "qwen_image_2.1-Q4_K.gguf"
+    )
+    with pytest.raises(ValueError, match="Q4_K_M"):
+        prepare_module.match_file(paths, "*Q4_K_M*")
+
+
+def test_match_file_tolera_o_caminho_do_repo_com_pasta(prepare_module):
+    paths = HF_FILES["unsloth/Inkling-2-Mini-GGUF"]
+    assert prepare_module.match_file(
+        paths, "Mainline_Support/Inkling-2-Mini-UD-IQ2_XXS.gguf_file"
+    ).startswith("Mainline_Support/")
+
+
+def test_perfil_q4km_aponta_para_arquivos_que_existem_no_hf(prepare_module):
+    profile = config.load_profile("qwen-image-2.1-q4km")
+    roles = profile.worker["image_roles"]
+
+    for role, spec in roles.items():
+        repo, pattern = spec.split("::", 1)
+        assert prepare_module.match_file(HF_FILES[repo], pattern), role
+
+
+def test_orcamento_de_imagem_usa_os_bytes_publicados():
+    """Somas conferidas na API do HF em 2026-11-24 (ver tests/fixtures/hf_files.json)."""
+    q4km = catalog.variant_by_id("qwen-image-2.1", "q4km")
+    fp8 = catalog.variant_by_id("qwen-image-2.1", "fp8-int8")
+    sizes = {item["path"]: item["size"] for item in json.loads(
+        FIXTURE.read_text(encoding="utf-8")
+    )["repos"]["leejet/Qwen-Image-2.1-GGUF"]}
+    q4km_bytes = (
+        sizes["qwen_image_2.1-Q4_K.gguf"]
+        + 5_027_784_800  # Qwen3VL-8B-Instruct-Q4_K_M.gguf
+        + 675_509_688  # vae/qwen_image_2.1_vae_bf16.safetensors
+    )
+    assert q4km.memory_gib == pytest.approx(round(q4km_bytes / 2**30, 2))
+    assert fp8.memory_gib == pytest.approx(round((q4km_bytes + 3_058_988_248) / 2**30, 2))
+
+
+def test_t4_volta_a_comportar_o_q4km_e_o_fp8_continua_em_l4():
+    """9,22 GiB de pesos: T4 (15 GiB) aprova; 12,07 GiB do INT8 não aprova."""
+    q4km_t4 = catalog.check_fit("qwen-image-2.1", "q4km", "T4", 1)
+    q4km_l4 = catalog.check_fit("qwen-image-2.1", "q4km", "L4", 1)
+    fp8_l4 = catalog.check_fit("qwen-image-2.1", "fp8-int8", "L4", 1)
+    fp8_t4 = catalog.check_fit("qwen-image-2.1", "fp8-int8", "T4", 1)
+
+    assert q4km_l4.fits is True
+    assert q4km_t4.fits is True
+    assert fp8_l4.fits is True
+    assert fp8_t4.fits is False
+    assert fp8_t4.required_gib == pytest.approx(14.07)
+    assert "Tesla T4" in fp8_t4.reason
+
+
+def test_perfil_q4km_declara_a_gpu_que_comporta_o_arquivo():
+    profile = config.load_profile("qwen-image-2.1-q4km")
+    assert profile.settings["gpu"] == "T4"
+    ref = catalog.profile_context("qwen-image-2.1-q4km")
+    assert ref.gpu_id == "T4"
+    assert catalog.check_fit(
+        "qwen-image-2.1", "q4km", "T4", profile.settings["max_model_len"]
+    ).fits
+

@@ -1,0 +1,744 @@
+{
+  "source": "https://huggingface.co/api/models/{repo}/tree/main?recursive=true",
+  "captured_at": "2026-11-24",
+  "repos": {
+    "leejet/Qwen-Image-2.1-GGUF": [
+      {
+        "path": ".gitattributes",
+        "size": 2068
+      },
+      {
+        "path": "Qwen_image_2.1_t2i.png",
+        "size": 1653181
+      },
+      {
+        "path": "README.md",
+        "size": 1378
+      },
+      {
+        "path": "qwen_image_2.1-Q2_K.gguf",
+        "size": 2561716256
+      },
+      {
+        "path": "qwen_image_2.1-Q3_K.gguf",
+        "size": 3270553632
+      },
+      {
+        "path": "qwen_image_2.1-Q4_0.gguf",
+        "size": 4197494816
+      },
+      {
+        "path": "qwen_image_2.1-Q4_K.gguf",
+        "size": 4197494816
+      },
+      {
+        "path": "qwen_image_2.1-Q5_0.gguf",
+        "size": 5069910048
+      },
+      {
+        "path": "qwen_image_2.1-Q6_K.gguf",
+        "size": 5996851232
+      },
+      {
+        "path": "qwen_image_2.1-Q8_0.gguf",
+        "size": 7687155744
+      },
+      {
+        "path": "qwen_image_2_1_t2i_gguf.json",
+        "size": 7621
+      }
+    ],
+    "Comfy-Org/Qwen-Image-2.1": [
+      {
+        "path": ".gitattributes",
+        "size": 1519
+      },
+      {
+        "path": "README.md",
+        "size": 7547
+      },
+      {
+        "path": "diffusion_models/qwen_image_2.1_bf16.safetensors",
+        "size": 14230280616
+      },
+      {
+        "path": "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+        "size": 7256783064
+      },
+      {
+        "path": "diffusion_models/qwen_image_2.1_turbo_bf16.safetensors",
+        "size": 14230280616
+      },
+      {
+        "path": "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+        "size": 7256787829
+      },
+      {
+        "path": "loras/p_q_image_2.1_5_steps_v0.1_comfyui_bf16.safetensors",
+        "size": 335621080
+      },
+      {
+        "path": "loras/p_q_image_2.1_6_steps_upsampled_v0.2_comfyui_bf16.safetensors",
+        "size": 344061264
+      },
+      {
+        "path": "loras/p_q_image_2.1_6_steps_v0.2_comfyui_bf16.safetensors",
+        "size": 344061256
+      },
+      {
+        "path": "loras/p_q_image_2.1_8_steps_v0.1_comfyui_bf16.safetensors",
+        "size": 335621112
+      },
+      {
+        "path": "loras/qwen_image_2.1_turbo_lora_avg_rank_178_bf16.safetensors",
+        "size": 913314512
+      },
+      {
+        "path": "model_patches/qwen_image_2.1_fun_controlnet_union_bf16.safetensors",
+        "size": 7550977992
+      },
+      {
+        "path": "model_patches/qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors",
+        "size": 3779298944
+      },
+      {
+        "path": "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors",
+        "size": 9471072252
+      },
+      {
+        "path": "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i_w4a8.safetensors",
+        "size": 6724090764
+      },
+      {
+        "path": "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors",
+        "size": 9471072252
+      },
+      {
+        "path": "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i_w4a8.safetensors",
+        "size": 6724090764
+      },
+      {
+        "path": "text_encoders/qwen3vl_8b_bf16.safetensors",
+        "size": 17534334616
+      },
+      {
+        "path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+        "size": 9350798360
+      },
+      {
+        "path": "text_encoders/qwen3vl_8b_w4a8.safetensors",
+        "size": 6312105364
+      },
+      {
+        "path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+        "size": 675509688
+      }
+    ],
+    "Qwen/Qwen3-VL-8B-Instruct-GGUF": [
+      {
+        "path": ".gitattributes",
+        "size": 1863
+      },
+      {
+        "path": "Qwen3VL-8B-Instruct-F16.gguf",
+        "size": 16388044896
+      },
+      {
+        "path": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+        "size": 5027784800
+      },
+      {
+        "path": "Qwen3VL-8B-Instruct-Q8_0.gguf",
+        "size": 8709519456
+      },
+      {
+        "path": "README.md",
+        "size": 7851
+      },
+      {
+        "path": "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
+        "size": 1159029824
+      },
+      {
+        "path": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+        "size": 752289728
+      }
+    ],
+    "unsloth/Inkling-2-Mini-GGUF": [
+      {
+        "path": ".gitattributes",
+        "size": 8292
+      },
+      {
+        "path": "Inkling-2-Mini-UD-IQ1_M.gguf",
+        "size": 8024442304
+      },
+      {
+        "path": "Inkling-2-Mini-UD-IQ1_S.gguf",
+        "size": 7764293056
+      },
+      {
+        "path": "Inkling-2-Mini-UD-IQ2_XXS.gguf",
+        "size": 8486237632
+      },
+      {
+        "path": "Inkling-2-Mini-UD-IQ3_XXS.gguf",
+        "size": 11663310784
+      },
+      {
+        "path": "Inkling-2-Mini-UD-IQ4_XS.gguf",
+        "size": 15733756512
+      },
+      {
+        "path": "Inkling-2-Mini-UD-Q2_K_XL.gguf",
+        "size": 9138716608
+      },
+      {
+        "path": "Inkling-2-Mini-UD-Q3_K_XL.gguf",
+        "size": 13631779296
+      },
+      {
+        "path": "Inkling-2-Mini-UD-Q4_K_M.gguf",
+        "size": 16610544608
+      },
+      {
+        "path": "Inkling-2-Mini-UD-Q4_K_XL.gguf",
+        "size": 17629760736
+      },
+      {
+        "path": "Inkling-2-Mini-UD-Q8_K_XL.gguf",
+        "size": 22867452896
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-IQ1_M.gguf_file",
+        "size": 8024442304
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-IQ1_S.gguf_file",
+        "size": 7764293056
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-IQ2_XXS.gguf_file",
+        "size": 8486237632
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-IQ3_XXS.gguf_file",
+        "size": 11663310784
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-IQ4_XS.gguf_file",
+        "size": 15733756512
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-Q2_K_XL.gguf_file",
+        "size": 9138716608
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-Q3_K_XL.gguf_file",
+        "size": 13631779296
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-Q4_K_M.gguf_file",
+        "size": 16610544608
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file",
+        "size": 17629760736
+      },
+      {
+        "path": "Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file",
+        "size": 22867452896
+      },
+      {
+        "path": "Mainline_Support/README.md",
+        "size": 5733
+      },
+      {
+        "path": "Mainline_Support/dspark-Inkling-2-Mini-Q8_0.gguf_file",
+        "size": 503889952
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-IQ1_M.gguf_file",
+        "size": 8024441024
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-IQ1_S.gguf_file",
+        "size": 7764291776
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-IQ2_XXS.gguf_file",
+        "size": 8486236352
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-IQ3_XXS.gguf_file",
+        "size": 11663309504
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-IQ4_XS.gguf_file",
+        "size": 15733755232
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-Q2_K_XL.gguf_file",
+        "size": 9138715328
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-Q3_K_XL.gguf_file",
+        "size": 13631778016
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-Q4_K_M.gguf_file",
+        "size": 16610543328
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file",
+        "size": 17629759456
+      },
+      {
+        "path": "Old_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file",
+        "size": 22867451616
+      },
+      {
+        "path": "Old_Support/dspark-Inkling-2-Mini-BF16.gguf_file",
+        "size": 647792800
+      },
+      {
+        "path": "Old_Support/dspark-Inkling-2-Mini-Q8_0.gguf_file",
+        "size": 402278560
+      },
+      {
+        "path": "Old_Support/mmproj-BF16.gguf_file",
+        "size": 641805760
+      },
+      {
+        "path": "Old_Support/mmproj-F16.gguf_file",
+        "size": 639348160
+      },
+      {
+        "path": "Old_Support/mmproj-F32.gguf_file",
+        "size": 1273048512
+      },
+      {
+        "path": "README.md",
+        "size": 56469
+      },
+      {
+        "path": "assets/size_vs_kld.png",
+        "size": 273844
+      },
+      {
+        "path": "assets/size_vs_top1.png",
+        "size": 275713
+      },
+      {
+        "path": "dspark-Inkling-2-Mini-Q8_0.gguf",
+        "size": 503889952
+      },
+      {
+        "path": "dspark-Inkling-2-Mini-Q8_0_Old.gguf",
+        "size": 402278560
+      },
+      {
+        "path": "dspark/README.md",
+        "size": 4144
+      },
+      {
+        "path": "dspark/dspark-Inkling-2-Mini-BF16-mainline.gguf_file",
+        "size": 749371936
+      },
+      {
+        "path": "dspark/dspark-Inkling-2-Mini-BF16.gguf",
+        "size": 647792800
+      },
+      {
+        "path": "imatrix_unsloth.gguf_file",
+        "size": 45380640
+      },
+      {
+        "path": "mmproj-BF16.gguf",
+        "size": 641805760
+      },
+      {
+        "path": "mmproj-F16.gguf",
+        "size": 639348160
+      },
+      {
+        "path": "mmproj-F32.gguf",
+        "size": 1273048512
+      },
+      {
+        "path": "unsloth_alternates.json",
+        "size": 1339
+      }
+    ],
+    "unsloth/Muse-Glimmer-30B-GGUF": [
+      {
+        "path": ".gitattributes",
+        "size": 2956
+      },
+      {
+        "path": "BF16/Muse-Glimmer-30B-BF16-00001-of-00002.gguf",
+        "size": 29805191936
+      },
+      {
+        "path": "BF16/Muse-Glimmer-30B-BF16-00002-of-00002.gguf",
+        "size": 25920319232
+      },
+      {
+        "path": "Muse-Glimmer-30B-Q8_0.gguf",
+        "size": 29612957984
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-IQ2_M.gguf",
+        "size": 12255421472
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-IQ2_XS.gguf",
+        "size": 11513104416
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-IQ2_XXS.gguf",
+        "size": 10746373152
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-IQ3_M.gguf",
+        "size": 14122705696
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-IQ3_XXS.gguf",
+        "size": 13130658848
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-Q2_K_XL.gguf",
+        "size": 12444212256
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-Q3_K_XL.gguf",
+        "size": 13360983072
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "size": 15878222368
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-Q5_K_L.gguf",
+        "size": 19768527904
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-Q5_K_M.gguf",
+        "size": 19194274848
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-Q5_K_XL.gguf",
+        "size": 21789618976
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-Q6_K_XL.gguf",
+        "size": 26265362976
+      },
+      {
+        "path": "Muse-Glimmer-30B-UD-Q8_K_XL.gguf",
+        "size": 32300651040
+      },
+      {
+        "path": "README.md",
+        "size": 18526
+      },
+      {
+        "path": "dflash-kquant.gguf",
+        "size": 1631205312
+      },
+      {
+        "path": "mmproj-Muse-Glimmer-30B-BF16.gguf",
+        "size": 3849173728
+      },
+      {
+        "path": "mmproj-Muse-Glimmer-30B-Q8_0.gguf",
+        "size": 2051685088
+      },
+      {
+        "path": "mmproj-kquant.gguf",
+        "size": 1400328928
+      }
+    ],
+    "unsloth/gemma-4-26B-A4B-it-GGUF": [
+      {
+        "path": ".gitattributes",
+        "size": 4448
+      },
+      {
+        "path": "BF16/gemma-4-26B-A4B-it-BF16-00001-of-00002.gguf",
+        "size": 49923215552
+      },
+      {
+        "path": "BF16/gemma-4-26B-A4B-it-BF16-00002-of-00002.gguf",
+        "size": 581922272
+      },
+      {
+        "path": "MTP/README.md",
+        "size": 2175
+      },
+      {
+        "path": "MTP/mtp-gemma-4-26B-A4B-it-BF16.gguf",
+        "size": 855228576
+      },
+      {
+        "path": "MTP/mtp-gemma-4-26B-A4B-it-F16.gguf",
+        "size": 855228576
+      },
+      {
+        "path": "MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+        "size": 461766816
+      },
+      {
+        "path": "README.md",
+        "size": 28516
+      },
+      {
+        "path": "config.json",
+        "size": 3861
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-MXFP4_MOE.gguf",
+        "size": 16551048928
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-Q8_0.gguf",
+        "size": 26859861728
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-IQ2_M.gguf",
+        "size": 10014755296
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-IQ2_XXS.gguf",
+        "size": 9922480608
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-IQ3_S.gguf",
+        "size": 11289671136
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf",
+        "size": 11416548832
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-IQ4_NL.gguf",
+        "size": 13613037280
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-IQ4_XS.gguf",
+        "size": 13597177568
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q2_K_XL.gguf",
+        "size": 10546934240
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q3_K_M.gguf",
+        "size": 12728497888
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf",
+        "size": 12907280096
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+        "size": 16947541728
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q4_K_S.gguf",
+        "size": 16487610080
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf",
+        "size": 17010980576
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q5_K_M.gguf",
+        "size": 21150365408
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q5_K_S.gguf",
+        "size": 18850707168
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q5_K_XL.gguf",
+        "size": 21217769184
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q6_K.gguf",
+        "size": 23172478688
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf",
+        "size": 23295391456
+      },
+      {
+        "path": "gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf",
+        "size": 27636232928
+      },
+      {
+        "path": "imatrix_unsloth.gguf_file",
+        "size": 56941536
+      },
+      {
+        "path": "mmproj-BF16.gguf",
+        "size": 1194828256
+      },
+      {
+        "path": "mmproj-F16.gguf",
+        "size": 1193058784
+      },
+      {
+        "path": "mmproj-F32.gguf",
+        "size": 2291200480
+      },
+      {
+        "path": "mtp-gemma-4-26B-A4B-it.gguf",
+        "size": 461766816
+      }
+    ],
+    "unsloth/gemma-4-31B-it-GGUF": [
+      {
+        "path": ".gitattributes",
+        "size": 3992
+      },
+      {
+        "path": "BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf",
+        "size": 49950156960
+      },
+      {
+        "path": "BF16/gemma-4-31B-it-BF16-00002-of-00002.gguf",
+        "size": 11463033568
+      },
+      {
+        "path": "MTP/README.md",
+        "size": 2098
+      },
+      {
+        "path": "MTP/mtp-gemma-4-31B-it-BF16.gguf",
+        "size": 954843264
+      },
+      {
+        "path": "MTP/mtp-gemma-4-31B-it-F16.gguf",
+        "size": 954843264
+      },
+      {
+        "path": "MTP/mtp-gemma-4-31B-it-Q8_0.gguf",
+        "size": 514687104
+      },
+      {
+        "path": "README.md",
+        "size": 28499
+      },
+      {
+        "path": "config.json",
+        "size": 4702
+      },
+      {
+        "path": "gemma-4-31B-it-IQ4_NL.gguf",
+        "size": 17287670720
+      },
+      {
+        "path": "gemma-4-31B-it-IQ4_XS.gguf",
+        "size": 16372460480
+      },
+      {
+        "path": "gemma-4-31B-it-Q3_K_M.gguf",
+        "size": 14736608192
+      },
+      {
+        "path": "gemma-4-31B-it-Q3_K_S.gguf",
+        "size": 13210856384
+      },
+      {
+        "path": "gemma-4-31B-it-Q4_0.gguf",
+        "size": 17338248128
+      },
+      {
+        "path": "gemma-4-31B-it-Q4_1.gguf",
+        "size": 19118091200
+      },
+      {
+        "path": "gemma-4-31B-it-Q4_K_M.gguf",
+        "size": 18323733440
+      },
+      {
+        "path": "gemma-4-31B-it-Q4_K_S.gguf",
+        "size": 17399835584
+      },
+      {
+        "path": "gemma-4-31B-it-Q5_K_M.gguf",
+        "size": 21658401728
+      },
+      {
+        "path": "gemma-4-31B-it-Q5_K_S.gguf",
+        "size": 21124672448
+      },
+      {
+        "path": "gemma-4-31B-it-Q6_K.gguf",
+        "size": 25201486784
+      },
+      {
+        "path": "gemma-4-31B-it-Q8_0.gguf",
+        "size": 32635677632
+      },
+      {
+        "path": "gemma-4-31B-it-UD-IQ2_M.gguf",
+        "size": 10752820160
+      },
+      {
+        "path": "gemma-4-31B-it-UD-IQ2_XXS.gguf",
+        "size": 8534295488
+      },
+      {
+        "path": "gemma-4-31B-it-UD-IQ3_XXS.gguf",
+        "size": 11837782976
+      },
+      {
+        "path": "gemma-4-31B-it-UD-Q2_K_XL.gguf",
+        "size": 11774991296
+      },
+      {
+        "path": "gemma-4-31B-it-UD-Q3_K_XL.gguf",
+        "size": 15380222912
+      },
+      {
+        "path": "gemma-4-31B-it-UD-Q4_K_XL.gguf",
+        "size": 18822970304
+      },
+      {
+        "path": "gemma-4-31B-it-UD-Q5_K_XL.gguf",
+        "size": 21890429888
+      },
+      {
+        "path": "gemma-4-31B-it-UD-Q6_K_XL.gguf",
+        "size": 27521338304
+      },
+      {
+        "path": "gemma-4-31B-it-UD-Q8_K_XL.gguf",
+        "size": 35020041152
+      },
+      {
+        "path": "imatrix_unsloth.gguf_file",
+        "size": 13753952
+      },
+      {
+        "path": "mmproj-BF16.gguf",
+        "size": 1200726496
+      },
+      {
+        "path": "mmproj-F16.gguf",
+        "size": 1198957024
+      },
+      {
+        "path": "mmproj-F32.gguf",
+        "size": 2302996960
+      },
+      {
+        "path": "mtp-gemma-4-31B-it.gguf",
+        "size": 514687104
+      }
+    ]
+  }
+}

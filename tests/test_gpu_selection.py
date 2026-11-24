@@ -57,10 +57,10 @@ def test_t4_filtra_modelos_grandes():
         ("gemma-4", "31b-q4"),
         ("muse-glimmer-30b", "q6"),
         ("qwen-image-2.1", "fp8-int8"),
-        # 12,9 GiB + 2 de runtime + 1 de folga passam dos 15 GiB utilizáveis.
-        ("qwen-image-2.1", "q4km"),
     ):
         assert excluded not in ids
+    # 9,22 GiB + 2 de runtime + 1 de folga cabem nos 15 GiB utilizáveis.
+    assert ("qwen-image-2.1", "q4km") in ids
     assert selection.dropped_for_memory > 0
 
     text = catalog.format_compatible_models("T4")
@@ -120,19 +120,21 @@ def test_modelo_de_imagem_sem_kv_cache():
     assert "n/a (imagem)" in catalog.format_compatible_models("L4")
 
 
-def test_q4km_de_imagem_nao_cabe_na_t4_com_folga():
-    """12,9 + 2 de runtime + 1 de folga > 15 GiB utilizáveis da T4."""
+def test_q4km_de_imagem_cabe_na_t4_com_folga():
+    """9,22 + 2 de runtime + 1 de folga = 12,22 <= 15 GiB utilizáveis."""
     fit = catalog.check_fit("qwen-image-2.1", "q4km", "T4", 1)
 
-    assert fit.fits is False
-    assert fit.required_gib == 14.9
+    assert fit.fits is True
+    assert fit.required_gib == 11.22
     assert fit.headroom_gib == 1.0
-    assert "mais 1.0 GiB de margem" in fit.reason
-    assert "15 GiB utilizáveis" in fit.reason
-    # A variante também não pode aparecer como compatível com a T4.
-    assert ("qwen-image-2.1", "q4km") not in {
+    # A variante aparece como compatível com a T4 (e o fp8 não).
+    assert ("qwen-image-2.1", "q4km") in {
         (row.model_id, row.variant_id) for row in catalog.compatible_variants("T4").rows
     }
+    assert ("qwen-image-2.1", "fp8-int8") not in {
+        (row.model_id, row.variant_id) for row in catalog.compatible_variants("T4").rows
+    }
+
 
 
 def test_modelos_indisponiveis_nunca_aparecem():
