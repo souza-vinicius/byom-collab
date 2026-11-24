@@ -124,6 +124,18 @@ def test_perfil_llama_cpp_conta_o_kv_que_o_argv_usa():
     assert "--cache-type-k" not in argv and "--cache-type-v" not in argv
 
 
+def test_igualdade_no_limite_nao_aprova():
+    """14,0 de required + 1,0 de folga = 15,0 de 15,0 não é aprovação."""
+    fit = catalog.check_fit("gemma-4", "e2b-q4", "T4", 131_072)
+    assert fit.required_gib == pytest.approx(14.0)
+    assert fit.headroom_gib == pytest.approx(1.0)
+    assert fit.required_gib + fit.headroom_gib == pytest.approx(fit.available_gib)
+    assert fit.fits is False
+    assert "margem" in fit.reason
+    # Uma GPU com folga de verdade continua aprovando o mesmo contexto.
+    assert catalog.check_fit("gemma-4", "e2b-q4", "L4", 131_072).fits is True
+
+
 def test_folga_nomeada_e_proporcional_ao_vram():
     assert catalog.vram_headroom_gib(15) == pytest.approx(1.0)
     assert catalog.vram_headroom_gib(24) == pytest.approx(1.2)

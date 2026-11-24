@@ -75,7 +75,8 @@ KV_CACHE_RUNTIME_DEFAULT = {"vllm": "fp8", "llama-cpp": "f16", "image": ""}
 #: Folga obrigatória entre o que o modelo ocupa e a VRAM utilizável da GPU.
 #: HEURÍSTICA, não número de documentação: driver, contexto CUDA, alocadores e
 #: fragmentação consomem memória mesmo com os pesos já residentes. 5% da VRAM
-#: com piso de 1 GiB evita aprovar o limite exato (24,0 de 24,0 GiB).
+#: com piso de 1 GiB, e a checagem usa `<` — ficar EXATAMENTE no limite
+#: (14,0 de pesos + runtime + KV + folga = 15,0 de 15,0) não aprova.
 VRAM_HEADROOM_FRACTION = 0.05
 VRAM_HEADROOM_MIN_GIB = 1.0
 
@@ -287,7 +288,10 @@ MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
         "gemma-4", "Gemma 4", "llama-cpp",
         (
-            Variant("e2b-q4", "E2B 4 bit", 4.0, 131_072, "T4", context_doc=131_072),
+            Variant("e2b-q4", "E2B 4 bit", 4.0, 131_072, "L4", context_doc=131_072,
+                    context_reason="4 GiB pesos + 2 runtime + 8 KV = 14,0; com 1,0 de "
+                                   "folga dá 15,0, exatamente o limite da T4 — que a "
+                                   "checagem estrita reprova. A L4 atende 131K."),
             Variant("e4b-q4", "E4B 4 bit", 6.0, 65_536, "T4",
                     context_doc=131_072,
                     context_reason="6 GiB de pesos em T4: 65.536 tokens mantêm 4 GiB de KV."),
@@ -685,7 +689,9 @@ def _fits(
     required = required_vram_gib(
         variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype
     )
-    return variant.available and required + vram_headroom_gib(gpu.vram_gib) <= gpu.vram_gib
+    # `<` e não `<=`: com igualdade a folga é zero, que é justamente o caso que
+    # a folga existe para reprovar.
+    return variant.available and required + vram_headroom_gib(gpu.vram_gib) < gpu.vram_gib
 
 
 def min_gpu_for(model_id: str, variant_id: str, max_model_len: int) -> str:

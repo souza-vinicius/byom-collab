@@ -51,8 +51,10 @@ def test_gpu_invalida_com_mensagem_e_lista_de_ids_aceitos():
 def test_t4_filtra_modelos_grandes():
     selection = catalog.compatible_variants("T4")
     ids = {(row.model_id, row.variant_id) for row in selection.rows}
-    assert ("gemma-4", "e2b-q4") in ids
+    assert ("gemma-4", "e4b-q4") in ids
     for excluded in (
+        # 4 + 2 + 8 = 14,0; + 1,0 de folga = 15,0 == limite da T4: reprovado.
+        ("gemma-4", "e2b-q4"),
         ("qwen3.8-27b-awq", "q4-awq"),
         ("gemma-4", "31b-q4"),
         ("muse-glimmer-30b", "q6"),
@@ -72,10 +74,11 @@ def test_t4_filtra_modelos_grandes():
     assert "gemma-4 | llama-cpp | 31b-q4" not in text
 
     # Variante sem perfil registrado: o contexto servido vem da própria variante.
-    row = next(r for r in selection.rows if (r.model_id, r.variant_id) == ("gemma-4", "e2b-q4"))
+    l4 = catalog.compatible_variants("L4")
+    row = next(r for r in l4.rows if (r.model_id, r.variant_id) == ("gemma-4", "e2b-q4"))
     assert row.profile_id == ""
     assert row.context_served == catalog.variant_by_id("gemma-4", "e2b-q4").context
-    assert "n/a (sem perfil)" in text
+    assert "n/a (sem perfil)" in catalog.format_compatible_models("L4")
 
 
 def test_inkling_q2_cabe_na_t4_com_o_kv_contado():
