@@ -30,6 +30,11 @@ try:  # pragma: no cover - platform-dependent
 except ImportError:  # pragma: no cover - non-POSIX platforms
     fcntl = None  # type: ignore[assignment]
 
+#: Header que carrega o nonce da sessão nos endpoints internos do gateway.
+#: O forward do byom é `ssh -L 127.0.0.1:<porta>:127.0.0.1:<porta>`, então todo
+#: cliente do túnel aparece como loopback: o header é o que prova identidade.
+NONCE_HEADER = "X-BYOM-Nonce"
+
 #: O valor padrão NÃO é literal aqui: vem da propriedade do modelo no catálogo.
 #: O modelo padrão sem perfil é o Qwen3.8 AWQ (xhigh conforme a página).
 DEFAULTS: dict[str, Any] = {

@@ -46,6 +46,7 @@ async def run() -> int:
         session=state.session,
         endpoint=state.endpoint,
         cfg=cfg,
+        nonce=state.nonce,
         log_path=_log_path("tunnel"),
     )
     runtime = Runtime(state=state, cfg=cfg, tunnel=tunnel)

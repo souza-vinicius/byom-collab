@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import http.server
+import json
+import threading
 import time
 
 import httpx
@@ -23,7 +27,7 @@ def make_state() -> config.State:
 
 def make_runtime(*, verified: bool = True, model_ready: bool = True) -> Runtime:
     cfg = config.Config()
-    tunnel = TunnelSupervisor(session="byom-test", endpoint="/tun/m/x", cfg=cfg)
+    tunnel = TunnelSupervisor(session="byom-test", endpoint="/tun/m/x", cfg=cfg, nonce=NONCE)
     tunnel.status = TunnelState(state="connected", reconnects=0, latency_ms=12.5)
     runtime = Runtime(state=make_state(), cfg=cfg, tunnel=tunnel)
     runtime.worker = WorkerStatus(
@@ -556,3 +560,50 @@ def test_timeout_sem_read_timeout_no_stream():
     assert proxy.PROXY_TIMEOUT.connect == 5.0
     assert proxy.PROXY_TIMEOUT.write == 30.0
     assert proxy.PROXY_TIMEOUT.pool == 5.0
+
+
+# ---------------------------------------------------------------------------
+# O probe de `/health` apresenta o nonce da sessão
+# ---------------------------------------------------------------------------
+class _RecordingHandler(http.server.BaseHTTPRequestHandler):
+    """Gateway de mentira: registra headers e responde o mínimo."""
+
+    seen: list[dict[str, str]] = []
+
+    def do_GET(self) -> None:  # noqa: N802 - API do http.server
+        type(self).seen.append({k.lower(): v for k, v in self.headers.items()})
+        body = json.dumps({"model_ready": True, "watchdog_silence_s": 1.0}).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *args: object) -> None:  # silencia o log do teste
+        return
+
+
+@contextlib.contextmanager
+def fake_gateway():
+    handler = type("Handler", (_RecordingHandler,), {"seen": []})
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1], handler
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_probe_health_envia_o_nonce_da_sessao():
+    with fake_gateway() as (port, handler):
+        cfg = config.Config(tunnel_port=port)
+        tunnel = TunnelSupervisor(
+            session="byom-test", endpoint="/tun/m/x", cfg=cfg, nonce=NONCE
+        )
+        payload = asyncio.run(tunnel.probe_health())
+
+    assert payload == {"model_ready": True, "watchdog_silence_s": 1.0}
+    assert handler.seen[0]["x-byom-nonce"] == NONCE
+    assert handler.seen[0]["host"] == f"127.0.0.1:{port}"

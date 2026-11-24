@@ -115,9 +115,10 @@ class WatchdogSupervisor:
 
     async def _probe_heartbeat(self) -> float | None:
         url = f"http://127.0.0.1:{self.cfg.tunnel_port}/health"
+        headers = {config.NONCE_HEADER: self.state.nonce}
         try:
             async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
-                response = await client.get(url)
+                response = await client.get(url, headers=headers)
         except httpx.HTTPError as exc:
             log.warning("Watchdog heartbeat probe failed: %s", exc)
             return None

@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 
 from . import colab, config
+from .config import NONCE_HEADER
 from .remote import Remote, RemoteError
 
 log = logging.getLogger("byom.tunnel")
@@ -63,12 +64,16 @@ class TunnelSupervisor:
         session: str,
         endpoint: str,
         cfg: config.Config,
+        nonce: str = "",
         ssh_bin: str = "ssh",
         log_path: Path | None = None,
     ) -> None:
         self.session = session
         self.endpoint = endpoint
         self.cfg = cfg
+        #: Nonce da sessão, enviado em `X-BYOM-Nonce` no probe de `/health`.
+        #: Nunca vai para log nem para relatório de status.
+        self.nonce = nonce
         self.remote = Remote(
             session=session,
             cfg=cfg,
@@ -96,17 +101,28 @@ class TunnelSupervisor:
             return False
 
     async def probe_health(self) -> dict[str, object] | None:
-        """Read `/health` through the tunnel and measure latency."""
+        """Read `/health` through the tunnel and measure latency.
+
+        The request carries the session nonce: the gateway answers 403 without
+        it, because every client of the forwarded port sees loopback.
+        """
         started = time.monotonic()
+        headers = {NONCE_HEADER: self.nonce} if self.nonce else {}
         try:
             async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
-                response = await client.get(f"{self.local_base_url}/health")
+                response = await client.get(f"{self.local_base_url}/health", headers=headers)
         except httpx.HTTPError as exc:
             log.debug("Gateway health probe failed: %s", exc)
             return None
         self.status.latency_ms = round((time.monotonic() - started) * 1000, 1)
         if response.status_code != 200:
+            # 403 = nonce ausente ou divergente: outra sessão, ou proxy no meio.
             log.debug("Gateway health probe returned HTTP %s", response.status_code)
+            if response.status_code in {401, 403}:
+                self.status.last_error = (
+                    "Gateway rejected the session nonce (HTTP "
+                    f"{response.status_code}); the tunnel may point at another session"
+                )
             return None
         try:
             return response.json()

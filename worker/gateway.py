@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 import os
@@ -613,10 +614,31 @@ def _is_loopback(request: Request) -> bool:
     return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
 
-def _forbidden() -> JSONResponse:
-    return JSONResponse(
-        status_code=403, content={"error": {"message": "Internal endpoints are loopback-only"}}
-    )
+#: Header com o nonce da sessão. O forward do byom é
+#: `ssh -L 127.0.0.1:<porta>:127.0.0.1:<porta>`, então **todo** cliente do
+#: túnel aparece como loopback: `_is_loopback` não prova identidade.
+NONCE_HEADER = "X-BYOM-Nonce"
+
+
+def _nonce_ok(request: Request, expected: str) -> bool:
+    supplied = request.headers.get(NONCE_HEADER)
+    if not supplied:
+        return False
+    return hmac.compare_digest(supplied, expected)
+
+
+def _forbidden(message: str) -> JSONResponse:
+    # Nunca devolva o nonce esperado nem parte dele.
+    return JSONResponse(status_code=403, content={"error": {"message": message}})
+
+
+def _guard(request: Request, cfg: GatewayConfig) -> JSONResponse | None:
+    """Recusa quem não é loopback ou não apresenta o nonce da sessão."""
+    if not _is_loopback(request):
+        return _forbidden("Internal endpoints are loopback-only")
+    if not _nonce_ok(request, cfg.nonce):
+        return _forbidden("Internal endpoints require the session nonce")
+    return None
 
 
 def create_app(
@@ -649,8 +671,11 @@ def create_app(
     app.state.gateway = gateway
 
     @app.get("/health")
-    async def health() -> dict[str, Any]:
+    async def health(request: Request) -> Any:
         """Does not count as activity and does not register a watchdog heartbeat."""
+        denied = _guard(request, cfg)
+        if denied is not None:
+            return denied
         payload = gateway.status_payload()
         payload.pop("watchdog_seen", None)
         return payload
@@ -658,15 +683,17 @@ def create_app(
     @app.get("/internal/state")
     async def internal_state(request: Request) -> Any:
         """Called by the watchdog; each call refreshes the heartbeat."""
-        if not _is_loopback(request):
-            return _forbidden()
+        denied = _guard(request, cfg)
+        if denied is not None:
+            return denied
         gateway.register_watchdog_poll()
         return gateway.status_payload()
 
     @app.post("/internal/begin-shutdown")
     async def begin_shutdown(request: Request) -> Any:
-        if not _is_loopback(request):
-            return _forbidden()
+        denied = _guard(request, cfg)
+        if denied is not None:
+            return denied
         accepted, reason = await gateway.try_begin_shutdown()
         return {"accepted": accepted, "reason": reason}
 
