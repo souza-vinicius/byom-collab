@@ -444,6 +444,9 @@ def probe_up_failure() -> None:
 
         cli._sync_external_configs = lambda *a, **k: None
         cli._check_orphans = lambda: None
+        # A validação real da chave abortaria o up antes do daemon; esta sonda
+        # isola o teardown, então a checagem é neutralizada como nos testes.
+        remote.validate_ssh_key = lambda path: None
         cli._bootstrap_worker = lambda *a, **k: None
         cli._check_proxy_port = lambda cfg: None
         cli.remote.Remote = FakeRemote
