@@ -422,7 +422,17 @@ def load_config() -> Config:
     path = config_path()
     if not path.exists():
         return Config()
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        # Sem esta tradução o erro de parse escapa como TOMLDecodeError, que não
+        # é ConfigError: a TUI cairia no handler genérico e fecharia o menu.
+        raise ConfigError(
+            f"config.toml não pode ser interpretado ({path}): {exc}. "
+            "Corrija a sintaxe ou mova o arquivo para fora do diretório do byom."
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(f"config.toml não pode ser lido ({path}): {exc}") from exc
     known = {f.name for f in fields(Config)}
     values = {k: v for k, v in raw.items() if k in known}
     cfg = Config(**values)
@@ -489,7 +499,10 @@ def load_state() -> State | None:
         raise StateFileError("state.json is missing required fields (session, nonce)")
     filtered.setdefault("endpoint", "")
     filtered.setdefault("created_at", "")
-    state = State(**filtered)
+    try:
+        state = State(**filtered)
+    except TypeError as exc:  # pragma: no cover - defensivo: as chaves já foram filtradas
+        raise StateFileError(f"state.json inválido: {exc}") from exc
     validate_state(state)
     return state
 

@@ -341,6 +341,24 @@ def _renderizar_erro(
         )
 
 
+def _carregar_config(con: Console) -> config.Config:
+    """Lê config.toml; arquivo inválido vira painel de erro, nunca exceção genérica.
+
+    É a única forma de o usuário consertar o arquivo pela interface: o painel
+    diz o caminho e a ação, e o menu volta a ser desenhado.
+    """
+    try:
+        return config.load_config()
+    except config.ConfigError as exc:
+        raise _ErroEtapa(
+            "O arquivo config.toml não pôde ser lido.",
+            str(exc),
+            f"Corrija ou mova {M.encurtar_caminho(config.config_path())} e volte ao menu. "
+            "Nada foi alocado nem gravado nesta tentativa.",
+            detalhes_tecnicos=str(exc),
+        ) from exc
+
+
 def _renderizar_glossario(con: Console, termos: Sequence[str]) -> None:
     itens = M.glossario_para_tela(termos)
     if not itens:
@@ -1322,7 +1340,13 @@ def _aplicar_perfil_interativo(
         )
         return False, time.monotonic() - inicio
 
-    cfg = config.load_config()
+    try:
+        cfg = _carregar_config(con)
+    except _ErroEtapa as exc:
+        _renderizar_erro(
+            con, exc.falha, exc.causa, exc.acao, detalhes_tecnicos=exc.detalhes_tecnicos
+        )
+        return False, time.monotonic() - inicio
     config.apply_profile(cfg, p.id)
     fit: catalog.CompatibilityResult | None = None
     if gpu is not None:
@@ -1487,7 +1511,11 @@ def _executar_init(con: Console, cli: Any, estado: EstadoLocal) -> str:
 
         # 4. ssh key
         exec_etapas.iniciar(3)
-        cfg = config.load_config()
+        try:
+            cfg = _carregar_config(con)
+        except _ErroEtapa:
+            exec_etapas.falhar(3, "config.toml inválido")
+            raise
         criou_chave = False
         if not cfg.ssh_key_path.exists():
             cfg.ssh_key_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1950,6 +1978,10 @@ def _aplicar_harness_automatico(con: Console, harness_id: str, cfg: config.Confi
 def _executar_harness(con: Console, cli: Any, estado: EstadoLocal) -> str:
     import questionary
 
+    # A config é lida antes de qualquer pergunta: com config.toml inválido o
+    # painel precisa aparecer já na entrada da tela.
+    cfg = _carregar_config(con)
+
     while True:
         renderizar_cabecalho(con, estado, subtela=M.ACOES["harness"][0])
         _mostrar_pre_acao(con, "harness")
@@ -1973,7 +2005,6 @@ def _executar_harness(con: Console, cli: Any, estado: EstadoLocal) -> str:
         if harness_id is None or harness_id == "__voltar__":
             return "menu"
 
-        cfg = config.load_config()
         suporta_auto = next(
             auto for hid, _n, _d, auto in M.HARNESS_OPCOES if hid == str(harness_id)
         )
@@ -2018,7 +2049,7 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
     con.print(M.SOMENTE_LEITURA, style="dim")
     con.print()
 
-    cfg = config.load_config()
+    cfg = _carregar_config(con)
     detalhes_tecnicos: list[str] = []
 
     with ExecutorEtapas(
@@ -2176,7 +2207,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
             return "acao:init"
         return "menu"
 
-    cfg = config.load_config()
+    cfg = _carregar_config(con)
     try:
         fit = config.check_compatibility(cfg)
     except ValueError as exc:
@@ -2369,7 +2400,7 @@ def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
             return "acao:up"
         return "menu"
 
-    cfg = config.load_config()
+    cfg = _carregar_config(con)
     endpoint = f"http://127.0.0.1:{cfg.proxy_port}/v1"
     try:
         resultado = llm_chat.run_setup(url=endpoint, model_name=cfg.served_model_name)
@@ -2501,7 +2532,12 @@ def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
             exec_etapas.concluir(2, "não confirmado", aviso=True)
 
         exec_etapas.iniciar(3)
-        cfg = config.load_config()
+        try:
+            cfg = config.load_config()
+        except config.ConfigError as exc:
+            # `down` precisa funcionar mesmo com config.toml inválido.
+            cfg = config.Config()
+            exec_etapas.registrar_log(f"config.toml inválido; usando padrões locais: {exc}")
         cli._terminate_local(state)
         cli.remote.Remote(session=state.session, cfg=cfg).stop()
         if confirmed:
