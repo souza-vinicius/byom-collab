@@ -500,7 +500,7 @@ def _enrich_endpoint(state: config.State) -> None:
         return
     state.endpoint = line.endpoint
     try:
-        config.update_state(endpoint=line.endpoint)
+        config.update_state(endpoint=line.endpoint, expected_session=state.session)
     except config.StateFileError:  # pragma: no cover - a corrida exigiria escrita externa
         return
 
@@ -528,7 +528,12 @@ def _stop_allocation(name: str) -> bool:
         _say("Unknown: could not confirm deallocation")
         _say("  The VM may still be consuming compute units; run `byom down`")
         return False
-    config.clear_state()
+    try:
+        config.clear_state(expected_session=name)
+    except config.StateFileError as exc:
+        # Alguém registrou outra sessão no meio do caminho: o state alheio fica.
+        _say(f"Warning: {exc}")
+        return False
     # O pin da chave de host vale por sessão: a próxima sessão é outra VM.
     remote.forget_session_host_key(name)
     _say("Session stopped (confirmed by Colab)")
@@ -570,7 +575,9 @@ def _register_daemon(state: config.State) -> None:
     state.daemon_pid = _start_daemon()
     state.daemon_start_ticks = config.process_start_ticks(state.daemon_pid)
     config.update_state(
-        daemon_pid=state.daemon_pid, daemon_start_ticks=state.daemon_start_ticks
+        expected_session=state.session,
+        daemon_pid=state.daemon_pid,
+        daemon_start_ticks=state.daemon_start_ticks,
     )
 
 
@@ -841,11 +848,16 @@ def _wait_for_exit(pid: int, start_ticks: int | None, timeout_s: float) -> bool:
     return not _pid_is_byom(pid, start_ticks)
 
 
-def _clear_pid_fields(values: dict[str, int | None]) -> None:
+def _clear_pid_fields(values: dict[str, int | None], expected_session: str) -> None:
+    """Limpa campos de PID só no state da própria sessão.
+
+    `StateFileError` aqui significa que o `state.json` atual é de outra sessão
+    (ou desapareceu): não é meu registro para editar.
+    """
     try:
-        config.update_state(**values)
+        config.update_state(expected_session=expected_session, **values)
     except (config.StateFileError, OSError):
-        return  # state.json já removido: nada a limpar
+        return
 
 
 def _terminate_local(state: config.State) -> None:
@@ -862,7 +874,9 @@ def _terminate_local(state: config.State) -> None:
                 f"  {label} pid {pid} is not the byom process registered in state.json "
                 "(stale state after a reboot?); no signal sent"
             )
-            _clear_pid_fields({f"{label}_pid": None, f"{label}_start_ticks": None})
+            _clear_pid_fields(
+                {f"{label}_pid": None, f"{label}_start_ticks": None}, state.session
+            )
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -915,7 +929,11 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
     remote.Remote(session=state.session, cfg=cfg).stop()
 
     if confirmed:
-        config.clear_state()
+        try:
+            config.clear_state(expected_session=state.session)
+        except config.StateFileError as exc:
+            say(f"Warning: {exc}")
+            return False
         remote.forget_session_host_key(state.session)
         say("Stopped (confirmed by Colab)")
     else:
@@ -929,7 +947,14 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
 def down() -> None:
     """Stop the session and verify the result with Colab."""
     cfg = _load_config_or_die()
-    if not _down(cfg):
+    # Mesmo lock do `up`: um `down` lento não pode apagar o state de uma sessão
+    # que outro processo acabou de criar.
+    try:
+        with config.up_lock(holder="down"):
+            confirmed = _down(cfg)
+    except config.ConfigError as exc:
+        _die(str(exc))
+    if not confirmed:
         raise typer.Exit(1)
 
 

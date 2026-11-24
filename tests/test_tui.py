@@ -790,5 +790,5 @@ def test_up_tui_recusa_quando_outro_up_esta_em_andamento(monkeypatch, isolated_h
         tui._executar_up(rec, cli, tui.ler_estado_local())
 
     assert "em andamento" in exc.value.falha
-    assert "não alocou GPU" in exc.value.acao
+    assert "não alterou nada" in exc.value.acao
     assert alocou is False

@@ -586,13 +586,32 @@ def _save_state_unlocked(state: State) -> Path:
     return path
 
 
-def save_state(state: State) -> Path:
-    """Atomically persist state, serializing writers from all local processes."""
+def save_state(state: State, *, expected_session: str | None = None) -> Path:
+    """Atomically persist state, serializing writers from all local processes.
+
+    `expected_session` é o dono declarado da escrita: se o `state.json` atual
+    pertence a outra sessão (um `up` que acabou de registrar outra VM), nada é
+    gravado e `StateFileError` explica o motivo. Sem isso, um `down` antigo
+    apagava o registro da sessão nova.
+    """
     with state_lock():
+        _assert_owner(expected_session)
         return _save_state_unlocked(state)
 
 
-def update_state(**changes: Any) -> State:
+def _assert_owner(expected_session: str | None) -> None:
+    """Confere o dono do `state.json` atual; deve rodar dentro de `state_lock`."""
+    if expected_session is None:
+        return
+    current = load_state()
+    if current is not None and current.session != expected_session:
+        raise StateFileError(
+            f"state.json pertence à sessão {current.session!r}; "
+            f"a escrita da sessão {expected_session!r} foi recusada"
+        )
+
+
+def update_state(*, expected_session: str | None = None, **changes: Any) -> State:
     """Re-read state under the lock, apply `changes`, then persist atomically.
 
     Processes that only own one PID (the daemon, the watchdog supervisor) must
@@ -605,15 +624,20 @@ def update_state(**changes: Any) -> State:
         current = load_state()
         if current is None:
             raise StateFileError("No active session is registered in state.json")
+        _assert_owner(expected_session)
         for key, value in changes.items():
             setattr(current, key, value)
         _save_state_unlocked(current)
         return current
 
 
-def clear_state() -> None:
-    with state_lock(), contextlib.suppress(FileNotFoundError):
-        state_path().unlink()
+def clear_state(*, expected_session: str | None = None) -> None:
+    """Remove `state.json` apenas quando a sessão é a esperada (se informada)."""
+    with state_lock():
+        _assert_owner(expected_session)
+        with contextlib.suppress(FileNotFoundError):
+            state_path().unlink()
+
 
 
 def nonce_matches(payload: Any, state: State) -> bool:
@@ -646,30 +670,38 @@ def up_lock_path() -> Path:
 
 
 @contextlib.contextmanager
-def up_lock() -> Iterator[None]:
-    """Lock exclusivo e não bloqueante de uma transação `byom up`.
+def up_lock(holder: str = "up") -> Iterator[None]:
+    """Lock exclusivo e não bloqueante de uma transação `byom up`/`byom down`.
 
-    Dois `up` simultâneos alocariam duas GPUs: o segundo processo é recusado
-    com `ConfigError` em vez de esperar. `flock` é liberado pelo kernel quando
-    o processo morre, então uma execução interrompida não deixa lock preso.
+    Dois `up` simultâneos alocariam duas GPUs, e um `down` lento (até ~11 min
+    com os timeouts do Colab) apagaria o state de um `up` que acabou de criar
+    outra sessão: o segundo processo é recusado com `ConfigError` em vez de
+    esperar. `flock` é liberado pelo kernel quando o processo morre, então uma
+    execução interrompida não deixa lock preso.
     """
     if fcntl is None:  # pragma: no cover - non-POSIX platforms
         yield
         return
     path = up_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    detalhe = (
+        "já existe um up em andamento"
+        if holder == "up"
+        else "um `up`/`down` está em andamento"
+    )
     with open(path, "a+") as handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             raise ConfigError(
-                f"já existe um up em andamento (lock {path} ocupado); "
+                f"{detalhe} (lock {path} ocupado); "
                 "aguarde a outra execução ou encerre-a antes de tentar de novo"
             ) from exc
         try:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
 
 
 def atomic_write_text(

@@ -447,21 +447,35 @@ def _opcoes_down() -> dict[str, Any]:
 
 
 @contextlib.contextmanager
-def _guarda_up() -> Iterator[None]:
-    """Segura o lock exclusivo de `up` e traduz a recusa em painel de erro.
+def _guarda_transacao(holder: str) -> Iterator[None]:
+    """Segura o lock exclusivo de `up`/`down` e traduz a recusa em painel.
 
-    Dois `up` simultâneos alocariam duas GPUs. O lock da CLI é o mesmo arquivo,
-    então a TUI não abre uma janela própria de alocação concorrente.
+    Dois `up` simultâneos alocariam duas GPUs; um `down` lento apagaria o state
+    de uma sessão nova. O lock da CLI é o mesmo arquivo, então a TUI não abre
+    uma janela própria de alocação concorrente.
     """
     try:
-        with config.up_lock():
+        with config.up_lock(holder):
             yield
     except config.ConfigError as exc:
+        motivo = (
+            "Já existe um `byom up` em andamento."
+            if holder == "up"
+            else "Um `up`/`down` está em andamento."
+        )
         raise _ErroEtapa(
-            "Já existe um `byom up` em andamento.",
+            motivo,
             str(exc),
-            "Aguarde a outra execução terminar; esta tentativa não alocou GPU.",
+            "Aguarde a outra execução terminar; esta tentativa não alterou nada.",
         ) from exc
+
+
+@contextlib.contextmanager
+def _guarda_up() -> Iterator[None]:
+    """Compatibilidade: `up` usa `_guarda_transacao("up")`."""
+    with _guarda_transacao("up"):
+        yield
+
 
 
 def _opcoes_up() -> dict[str, Any]:
@@ -2551,7 +2565,7 @@ def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
         "Confirmando liberação da GPU",
         "Encerrando processos locais",
     ]
-    with ExecutorEtapas(con, etapas) as exec_etapas:
+    with _guarda_transacao("down"), ExecutorEtapas(con, etapas) as exec_etapas:
         exec_etapas.iniciar(0)
         try:
             state = config.load_state()
@@ -2600,7 +2614,12 @@ def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
         cli._terminate_local(state)
         cli.remote.Remote(session=state.session, cfg=cfg).stop()
         if confirmed:
-            config.clear_state()
+            try:
+                config.clear_state(expected_session=state.session)
+            except config.StateFileError as exc:
+                exec_etapas.registrar_log(str(exc))
+                confirmed = False
+        if confirmed:
             exec_etapas.concluir(3, "estado limpo")
         else:
             exec_etapas.concluir(3, "registro local mantido por segurança", aviso=True)
