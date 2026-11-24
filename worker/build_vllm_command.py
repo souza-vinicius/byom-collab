@@ -13,8 +13,18 @@ import shlex
 import sys
 from pathlib import Path
 
-MANIFEST = "/content/byom/runtime_manifest.json"
+MANIFEST = os.environ.get("BYOM_RUNTIME_MANIFEST") or "/content/byom/runtime_manifest.json"
 MODEL_DIR = "/content/byom/models"
+
+#: Papéis de imagem e a flag do sd-server de cada um. Confirmado na build
+#: fixada (`master-1106-532d2c1`):
+#: https://github.com/leejet/stable-diffusion.cpp/blob/532d2c1/docs/models/qwen_image_2.1.md
+#: (consultado em 2026-11-24), tabela "Model files".
+IMAGE_ROLE_FLAGS = {
+    "diffusion": "--diffusion-model",
+    "vae": "--vae",
+    "text_encoder": "--llm",
+}
 
 
 def build_args(cfg: dict) -> list[str]:
@@ -114,18 +124,39 @@ def build_llama_args(cfg: dict) -> list[str]:
     return args
 
 
+def _unsupported(reason: str) -> RuntimeError:
+    """Falha explícita: melhor recusar do que subir um servidor sem o arquivo."""
+    return RuntimeError(f"runtime de imagem não suportado nesta versão: {reason}")
+
+
 def build_image_args(cfg: dict) -> list[str]:
-    """Comando sd-server: expõe /v1/images/generations, não /v1/chat/completions."""
-    binary = os.environ.get("BYOM_SD_SERVER", "/content/byom/sdcpp/sd-server")
-    return [
-        binary,
-        "--model-dir",
-        MODEL_DIR,
-        "--listen-ip",
-        "127.0.0.1",
-        "--listen-port",
-        str(cfg["vllm_port"]),
-    ]
+    """Comando sd-server montado a partir do manifest, nunca de um palpite.
+
+    Cada papel de `[worker.image_roles]` vira uma flag confirmada na
+    documentação da build fixada (`--diffusion-model`, `--vae`, `--llm`).
+    """
+    manifest = _manifest()
+    server = manifest.get("server")
+    if not isinstance(server, str) or not server:
+        raise _unsupported(
+            "o manifest não registra o binário sd-server; rode prepare_runtime.py"
+        )
+    if not Path(server).is_file():
+        raise _unsupported(f"o binário sd-server não existe em {server}")
+    image = manifest.get("image")
+    if not isinstance(image, dict) or not image:
+        raise _unsupported(
+            "o manifest não registra image; declare [worker] image_roles "
+            "(diffusion, vae, text_encoder) no perfil"
+        )
+    missing = [role for role in IMAGE_ROLE_FLAGS if not image.get(role)]
+    if missing:
+        raise _unsupported(f"o manifest não registra o papel {', '.join(missing)}")
+    args = [server, "--model-dir", MODEL_DIR]
+    for role, flag in IMAGE_ROLE_FLAGS.items():
+        args.extend([flag, str(image[role])])
+    args.extend(["--listen-ip", "127.0.0.1", "--listen-port", str(cfg["vllm_port"])])
+    return args
 
 
 def build_command(cfg: dict) -> list[str]:
@@ -141,7 +172,13 @@ def build_command(cfg: dict) -> list[str]:
 
 def main() -> None:
     cfg = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    print("exec " + shlex.join(build_command(cfg)))
+    try:
+        command = build_command(cfg)
+    except (RuntimeError, ValueError) as exc:
+        # Falha legível: o bootstrap mostra isto em vez de subir sem o arquivo.
+        print(f"[byom-runtime] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    print("exec " + shlex.join(command))
 
 
 if __name__ == "__main__":

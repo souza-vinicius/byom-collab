@@ -256,6 +256,7 @@ WORKER_FIELDS = frozenset(
         "binary_asset",
         "model_repo",
         "model_patterns",
+        "image_roles",
         "main_pattern",
         "mmproj_pattern",
         "drafter_pattern",
@@ -265,6 +266,12 @@ WORKER_FIELDS = frozenset(
         "sampling",
     }
 )
+
+#: Papéis de imagem aceitos em `[worker.image_roles]`, cada um no formato
+#: `repo::pattern`. A flag do sd-server de cada papel está em
+#: `worker/build_vllm_command.py` e foi conferida na documentação da build
+#: fixada (`master-1106-532d2c1`).
+IMAGE_ROLES = ("diffusion", "vae", "text_encoder")
 
 PROFILE_FIELDS = frozenset(
     {
@@ -339,6 +346,24 @@ def available_profiles() -> list[Profile]:
                     for k, v in value.items()
                 ):
                     raise ValueError(f"Invalid [worker].sampling in {path.name}: {value!r}")
+                continue
+            if key == "image_roles":
+                if not isinstance(value, dict) or not value:
+                    raise ValueError(
+                        f"profile {path.name}: [worker.image_roles] must be a non-empty table"
+                    )
+                unknown_roles = set(value) - set(IMAGE_ROLES)
+                if unknown_roles:
+                    raise ValueError(
+                        f"Unknown [worker.image_roles] in {path.name}: "
+                        f"{', '.join(sorted(unknown_roles))}; expected {', '.join(IMAGE_ROLES)}"
+                    )
+                for role, spec in value.items():
+                    if not isinstance(spec, str) or "::" not in spec:
+                        raise ValueError(
+                            f"Invalid [worker].image_roles.{role} in {path.name}: {spec!r}; "
+                            "expected 'repo::pattern'"
+                        )
                 continue
             if not isinstance(value, str | bool | int | list):
                 raise ValueError(f"Invalid [worker].{key} in {path.name}: {value!r}")
