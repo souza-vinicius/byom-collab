@@ -118,9 +118,21 @@ DSPARK_DRAFTER_GIB = 0.47
 
 
 def drafter_gib(worker: dict[str, object] | None) -> float:
-    """VRAM extra do drafter declarado no `[worker]`; zero sem `dspark`."""
+    """VRAM extra do drafter, cobrada só quando existe ARQUIVO separado (`-md`).
+
+    Um `spec` com `draft-mtp` carrega a cabeça de rascunho dentro do arquivo
+    principal (`-m`) e não põe um segundo peso na GPU, então custa zero. O
+    valor de 0,47 GiB é o do drafter DSpark do Inkling
+    (`dspark-Inkling-2-Mini-Q8_0.gguf`, 503.889.952 B); outro arquivo de
+    rascunho precisa de constante própria — a função não estima tamanho.
+    """
     dados = worker or {}
-    return DSPARK_DRAFTER_GIB if dados.get("dspark") else 0.0
+    if dados.get("drafter_pattern"):
+        return DSPARK_DRAFTER_GIB
+    spec = dados.get("spec")
+    if isinstance(spec, dict) and spec.get("drafter_pattern"):
+        return DSPARK_DRAFTER_GIB
+    return 0.0
 
 GPU_SOURCE = (
     "Google Cloud, Compute Engine > GPU machine types > General comparison chart "
