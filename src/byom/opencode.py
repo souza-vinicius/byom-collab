@@ -95,6 +95,29 @@ def sync_config(cfg: config.Config, explicit_path: Path | None = None) -> SyncRe
     return SyncResult(path=path, model=updated["model"], changed=changed)
 
 
+def restore_default_model(path: Path, model: str | None) -> bool:
+    """Devolve `model` ao valor anterior (ou remove a chave, se não havia).
+
+    Usado pelo `down` via `harness_state`: o provedor `byom` pode ficar no
+    arquivo (aponta para um proxy parado, sem efeito), mas o modelo PADRÃO do
+    agente não pode continuar sendo o do byom.
+    """
+    if path.suffix.lower() == ".jsonc":
+        raise OpenCodeConfigError(JSONC_MESSAGE.format(path=path))
+    if not path.exists():
+        return False
+    original = _read_config(path)
+    atual = original.get("model")
+    if model == atual:
+        return False
+    if model is None:
+        original.pop("model", None)
+    else:
+        original["model"] = model
+    _atomic_write(path, json.dumps(original, ensure_ascii=False, indent=2) + "\n")
+    return True
+
+
 def _read_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"$schema": "https://opencode.ai/config.json"}

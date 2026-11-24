@@ -376,6 +376,107 @@ def _scalar(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+#: Valores YAML "simples" que podem ir sem aspas na restauração. Escolher o
+#: estilo do arquivo é o que faz o `down` devolver a linha como era.
+_PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _restored_scalar(value: str) -> str:
+    return value if _PLAIN_SCALAR_RE.fullmatch(value) else _scalar(value)
+
+
+def default_model_values(path: Path) -> dict[str, str | None] | None:
+    """`provider`/`model` do agente em `agent-default-model` (ou None se ausente)."""
+    try:
+        text = _read(path)
+    except DshConfigError:
+        return None
+    if not text.strip():
+        return None
+    try:
+        docs = _load_yaml(text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(docs, list):
+        return None
+    for entry in docs:
+        if isinstance(entry, dict) and entry.get("id") == DEFAULT_MODEL_ENTRY[0]:
+            config_view = entry.get("config") or {}
+            if not isinstance(config_view, dict):
+                return None
+            return {
+                "provider": config_view.get("provider"),
+                "model": config_view.get("model"),
+            }
+    return None
+
+
+def restore_default_model(
+    path: Path, provider: str | None, model: str | None
+) -> bool:
+    """Devolve `provider`/`model` do agente ao estado anterior.
+
+    `None` remove a chave (ela não existia antes do `up`). A edição é textual,
+    com o passo de indentação do próprio arquivo, e validada antes de gravar.
+    """
+    original = _read(path)
+    if not original.strip():
+        return False
+    step = _indent_step(original)
+    lines = original.splitlines()
+    found = _find_entry(lines, DEFAULT_MODEL_ENTRY[0])
+    if found is None:
+        return False
+    cfg_line, cfg_end = _ensure_key(lines, DEFAULT_MODEL_ENTRY, ("config",), step)
+    key_indent = 2 * step
+    alterado = False
+    for key, value in (("provider", provider), ("model", model)):
+        idx = _find_key(lines, cfg_line + 1, cfg_end, key_indent, key)
+        if value is None:
+            if idx is not None:
+                del lines[idx]
+                cfg_end -= 1
+                alterado = True
+            continue
+        novo = f"{' ' * key_indent}{key}: {_restored_scalar(value)}"
+        if idx is None:
+            lines.insert(cfg_end, novo)
+            cfg_end += 1
+            alterado = True
+        elif lines[idx] != novo:
+            lines[idx] = novo
+            alterado = True
+    if not alterado:
+        return False
+    newline = "\r\n" if "\r\n" in original else "\n"
+    updated = newline.join(lines) + (newline if original.endswith("\n") else "")
+    _assert_valid_restore(original, updated)
+    _backup(path)
+    _atomic_write(path, updated)
+    return True
+
+
+def _assert_valid_restore(original: str, updated: str) -> None:
+    """Valida a restauração: YAML válido e nada além do modelo padrão mudou."""
+    try:
+        new_docs = _load_yaml(updated)
+        old_docs = _load_yaml(original)
+    except yaml.YAMLError as exc:
+        raise DshConfigError(
+            f"a restauração produziria YAML inválido ({exc}); o arquivo não foi alterado"
+        ) from exc
+    if not isinstance(new_docs, list) or not isinstance(old_docs, list):
+        raise DshConfigError("a restauração produziria um documento que não é uma lista")
+    old_ids = [entry.get("id") for entry in old_docs if isinstance(entry, dict)]
+    new_ids = [entry.get("id") for entry in new_docs if isinstance(entry, dict)]
+    if old_ids != new_ids:
+        raise DshConfigError("a restauração mudaria a lista de entradas; nada foi gravado")
+    if _managed_view(old_docs, "") != _managed_view(new_docs, ""):
+        raise DshConfigError(
+            "a restauração alteraria chaves fora de `agent-default-model`; nada foi gravado"
+        )
+
+
 def _merge(text: str, cfg: config.Config, step: int) -> str:
     lines = text.splitlines()
     try:

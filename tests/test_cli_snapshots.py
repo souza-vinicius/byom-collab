@@ -297,6 +297,9 @@ def test_snapshot_cli_status_e_down(monkeypatch):
     monkeypatch.setattr(colab, "is_allocated", lambda name, endpoint="": False)
     res_down_active = runner.invoke(cli.app, ["down"])
     assert res_down_active.exit_code == 0
-    assert (
-        res_down_active.output == "Stopping session 'byom-1234abcd'\nStopped (confirmed by Colab)\n"
+    assert res_down_active.output == (
+        "Stopping session 'byom-1234abcd'\n"
+        "Warning: nothing recorded to restore; the harness default may still point to this "
+        "byom endpoint (run `byom up` then `byom down`, or fix it by hand)\n"
+        "Stopped (confirmed by Colab)\n"
     )

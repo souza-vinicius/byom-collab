@@ -2668,6 +2668,8 @@ def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
                 exec_etapas.registrar_log(str(exc))
                 confirmed = False
         if confirmed:
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli._restore_harness(lambda _msg: None)
             exec_etapas.concluir(3, "estado limpo")
         else:
             exec_etapas.concluir(3, "registro local mantido por segurança", aviso=True)

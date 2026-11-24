@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +24,17 @@ from typing import Annotated, NoReturn
 import httpx
 import typer
 
-from . import catalog, colab, config, dsh, llm_chat, mensagens, opencode, remote
+from . import (
+    catalog,
+    colab,
+    config,
+    dsh,
+    harness_state,
+    llm_chat,
+    mensagens,
+    opencode,
+    remote,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -522,7 +533,14 @@ def _prepare_session(
 def _sync_external_configs(
     cfg: config.Config, opencode_config: Path | None, dsh_config: Path | None
 ) -> None:
-    """Merge agent configs before allocating the GPU."""
+    """Merge agent configs before allocating the GPU.
+
+    Antes de sobrescrever, guarda em `harness_state.json` o modelo padrão que
+    cada harness tinha: é o que o `down` devolve depois.
+    """
+    anteriores = harness_state.capture(opencode_config, dsh_config)
+    if anteriores:
+        harness_state.save(anteriores)
     try:
         opencode_result = opencode.sync_config(cfg, opencode_config)
     except opencode.OpenCodeConfigError as exc:
@@ -611,6 +629,7 @@ def _stop_allocation(name: str) -> bool:
         return False
     # O pin da chave de host vale por sessão: a próxima sessão é outra VM.
     remote.forget_session_host_key(name)
+    _restore_harness(_say)
     _say("Session stopped (confirmed by Colab)")
     return True
 
@@ -861,6 +880,11 @@ def status() -> None:
             _say(f"Warning: {state_error}")
         else:
             _say("No active session.")
+        if harness_state.load() is None and cfg.profile:
+            _say(
+                "Warning: no harness record to restore; OpenCode/dsh may still point to "
+                "this byom endpoint (127.0.0.1)."
+            )
         raise typer.Exit(0)
 
     _say(f"Session: {state.session}  (created at {state.created_at})")
@@ -1079,6 +1103,20 @@ def _terminate_local(state: config.State) -> None:
             _say(f"Warning: could not kill process {pid}: {exc}")
 
 
+def _restore_harness(say: Callable[[str], None]) -> None:
+    """Devolve ao OpenCode/dsh o modelo padrão anterior ou avisa que não há registro."""
+    restaurados, falha = harness_state.restore()
+    if restaurados:
+        say(f"Harness config restored: {', '.join(restaurados)}")
+    if falha:
+        say(f"Warning: could not restore harness config ({falha})")
+    if not restaurados and not falha:
+        say(
+            "Warning: nothing recorded to restore; the harness default may still point "
+            "to this byom endpoint (run `byom up` then `byom down`, or fix it by hand)"
+        )
+
+
 def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
     """Stop the session and confirm it was deallocated. Return True if confirmed."""
 
@@ -1120,6 +1158,7 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
             say(f"Warning: {exc}")
             return False
         remote.forget_session_host_key(state.session)
+        _restore_harness(say)
         say("Stopped (confirmed by Colab)")
     else:
         say("Unknown: could not confirm deallocation")
