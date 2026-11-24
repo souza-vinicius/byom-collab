@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import signal
+
 import typer
 from typer.testing import CliRunner
 
@@ -77,6 +79,9 @@ class FakeColab:
     def orphan_assignments(self):
         return []
 
+    def unregistered_sessions(self, known=None):
+        return []
+
     def usage(self) -> str:
         return "CCUs: 200"
 
@@ -92,6 +97,7 @@ def install_fake(monkeypatch, fake: FakeColab) -> None:
         "find_by_endpoint",
         "status_line",
         "orphan_assignments",
+        "unregistered_sessions",
         "usage",
     ):
         monkeypatch.setattr(colab, attribute, getattr(fake, attribute))
@@ -353,3 +359,130 @@ def test_build_worker_tar_fails_without_files(tmp_path, monkeypatch):
         assert exc.exit_code == 1
     else:  # pragma: no cover - the test fails if it does not raise
         raise AssertionError("expected Exit when worker files are missing")
+
+
+# ---------------------------------------------------------------------------
+# PIDs locais: só matar o processo que o byom registrou
+# ---------------------------------------------------------------------------
+def _record_signals(monkeypatch) -> list[tuple[int, int]]:
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    return sent
+
+
+def _local_state(**overrides) -> config.State:
+    values = {
+        "session": "byom-abcdef12",
+        "endpoint": "/tun/m/abc",
+        "nonce": "nonce",
+        "created_at": "2026-11-09T18:00:00+00:00",
+    }
+    values.update(overrides)
+    return config.State(**values)
+
+
+def test_pid_reciclado_nao_recebe_sinal(monkeypatch):
+    """Depois de um reboot o PID pode ser de outro processo do usuário."""
+    sent = _record_signals(monkeypatch)
+    monkeypatch.setattr(cli.config, "process_start_ticks", lambda pid: 999)
+    state = _local_state(daemon_pid=4242, daemon_start_ticks=555)
+
+    cli._terminate_local(state)
+
+    assert sent == []
+
+
+def test_pid_registrado_recebe_sigterm(monkeypatch):
+    sent: list[tuple[int, int]] = []
+    alive = {"ticks": 555}
+
+    def kill(pid: int, sig: int) -> None:
+        sent.append((pid, sig))
+        alive["ticks"] = 0  # encerrou depois do SIGTERM
+
+    monkeypatch.setattr(cli.os, "kill", kill)
+    monkeypatch.setattr(
+        cli.config, "process_start_ticks", lambda pid: alive["ticks"] or None
+    )
+    state = _local_state(daemon_pid=4242, daemon_start_ticks=555)
+
+    cli._terminate_local(state)
+
+    assert sent == [(4242, signal.SIGTERM)]
+
+
+def test_state_legado_com_cmdline_estranho_nao_mata(monkeypatch, capsys):
+    sent = _record_signals(monkeypatch)
+    monkeypatch.setattr(cli.config, "process_start_ticks", lambda pid: 777)
+    monkeypatch.setattr(cli.config, "process_cmdline", lambda pid: "python3 outro-projeto.py")
+    state = _local_state(daemon_pid=4242)
+
+    cli._terminate_local(state)
+
+    assert sent == []
+    saida = capsys.readouterr().out
+    assert "no signal sent" in saida
+    assert "stale state after a reboot" in saida
+
+
+def test_state_legado_com_cmdline_do_byom_mata(monkeypatch):
+    sent: list[tuple[int, int]] = []
+    alive = {"ticks": 777}
+
+    def kill(pid: int, sig: int) -> None:
+        sent.append((pid, sig))
+        alive["ticks"] = 0
+
+    monkeypatch.setattr(cli.os, "kill", kill)
+    monkeypatch.setattr(cli.config, "process_start_ticks", lambda pid: alive["ticks"] or None)
+    monkeypatch.setattr(
+        cli.config, "process_cmdline", lambda pid: "python3 -m byom _daemon"
+    )
+    state = _local_state(daemon_pid=4242)
+
+    cli._terminate_local(state)
+
+    assert sent == [(4242, signal.SIGTERM)]
+
+
+def test_sigterm_ignorado_promove_para_sigkill(monkeypatch):
+    sent = _record_signals(monkeypatch)
+    # O processo nunca desaparece do /proc: só o SIGKILL o encerra.
+    monkeypatch.setattr(cli.config, "process_start_ticks", lambda pid: 555)
+    monkeypatch.setattr(cli, "TERMINATE_GRACE_S", 0.01)
+    state = _local_state(daemon_pid=4242, daemon_start_ticks=555)
+
+    cli._terminate_local(state)
+
+    assert sent == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+
+
+def test_pid_ausente_no_proc_nao_recebe_sinal(monkeypatch):
+    sent = _record_signals(monkeypatch)
+    monkeypatch.setattr(cli.config, "process_start_ticks", lambda pid: None)
+    state = _local_state(watchdog_pid=4242, watchdog_start_ticks=555)
+
+    cli._terminate_local(state)
+
+    assert sent == []
+
+
+def test_up_chega_a_worker_ready_com_o_status_do_daemon(monkeypatch):
+    """O `up` continua fechando em "Worker ready" com o probe por header."""
+    install_fake(monkeypatch, FakeColab())
+    monkeypatch.setattr(colab, "new", lambda name, gpu="": None)
+    install_remote(monkeypatch, FakeRemote(session="s", cfg=config.Config()))
+    monkeypatch.setattr(cli, "_start_daemon", lambda: 9876)
+    respostas = iter(
+        [
+            {"session": "byom-x", "worker": {"state": "initializing"}, "tunnel": {}},
+            {"session": "byom-x", "worker": {"state": "ready"}, "tunnel": {}},
+        ]
+    )
+    monkeypatch.setattr(cli, "_daemon_status", lambda cfg, **kwargs: next(respostas))
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+    result = runner.invoke(cli.app, ["up"])
+
+    assert result.exit_code == 0
+    assert "Worker ready" in result.output

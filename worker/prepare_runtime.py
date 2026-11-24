@@ -24,6 +24,18 @@ MANIFEST = BYOM_DIR / "runtime_manifest.json"
 HF_API = "https://huggingface.co/api/models/{repo}/tree/main?recursive=true&expand=false"
 HF_RESOLVE = "https://huggingface.co/{repo}/resolve/main/{path}"
 
+#: Papéis de imagem e a flag do sd-server que carrega cada um. Confirmado na
+#: documentação da build fixada (`master-1106-532d2c1`):
+#: https://github.com/leejet/stable-diffusion.cpp/blob/532d2c1/docs/models/qwen_image_2.1.md
+#: (consultado em 2026-11-24) — tabela "Model files": `--diffusion-model`
+#: (obrigatório), `--vae` e `--llm` (text encoder). Sem inferência por nome de
+#: arquivo: o papel vem do perfil.
+IMAGE_ROLE_FLAGS = {
+    "diffusion": "--diffusion-model",
+    "vae": "--vae",
+    "text_encoder": "--llm",
+}
+
 
 def download(url: str, dest: Path, sha256: str | None = None) -> Path:
     """Baixe um artefato e valide o digest quando a fonte o fornece."""
@@ -159,13 +171,43 @@ def prepare(session_file: Path) -> dict:
 
     specs = worker.get("model_patterns") or []
     downloaded: list[str] = []
-    for spec in specs:
+
+    def fetch(spec: str) -> str:
         if "::" not in spec:
             raise ValueError(f"Invalid image model spec: {spec!r}")
         repo, pattern = spec.split("::", 1)
         path = match_file(hf_files(repo), pattern)
-        download(HF_RESOLVE.format(repo=repo, path=path), _safe_join(MODEL_DIR / repo, path))
+        target = _safe_join(MODEL_DIR / repo, path)
+        download(HF_RESOLVE.format(repo=repo, path=path), target)
         downloaded.append(f"{repo}::{path}")
+        return str(target)
+
+    roles = worker.get("image_roles")
+    if roles is not None:
+        # `image_roles` é a fonte da verdade quando existe: cada papel tem uma
+        # flag própria do sd-server, e o mapa vai absoluto para o manifest.
+        if not isinstance(roles, dict) or not roles:
+            raise ValueError("[worker] image_roles must be a non-empty table")
+        unknown = set(roles) - set(IMAGE_ROLE_FLAGS)
+        if unknown:
+            raise ValueError(
+                f"Unknown image roles: {', '.join(sorted(unknown))}; "
+                f"expected {', '.join(IMAGE_ROLE_FLAGS)}"
+            )
+        image = {role: fetch(str(roles[role])) for role in IMAGE_ROLE_FLAGS if role in roles}
+        manifest = {
+            "runtime": runtime,
+            "server": str(BYOM_DIR / "sd-server"),
+            "image": image,
+            "downloaded": downloaded,
+        }
+        MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        return manifest
+
+    # Perfis antigos: só baixa os padrões. Sem papéis não há como montar o argv
+    # do sd-server, e `build_vllm_command` recusa em vez de adivinhar.
+    for spec in specs:
+        fetch(str(spec))
     manifest = {
         "runtime": runtime,
         "server": str(BYOM_DIR / "sd-server"),

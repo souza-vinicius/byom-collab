@@ -2,6 +2,6 @@
 
 Open Knowledge Format (OKF v0.2) knowledge base for `byom-collab`.
 
-- [Interactive TUI Architecture](./tui.md) - Structured Rich + questionary TUI layer with PT-BR formatting and responsive layout
+- [Interactive TUI Architecture](./tui.md) - Single-screen Rich + questionary TUI with the `Selecionar GPU` submenu, GPU + model pinning, and responsive layout
 - [Isolated llm chat Integration](./llm-chat.md) - Centralized `byom_home()` path resolution and `setup`, `chat`, and `uninstall` commands wrapping `llm chat`
 - [Update Log](./log.md) - Chronological history of knowledge base updates

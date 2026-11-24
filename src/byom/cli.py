@@ -400,18 +400,32 @@ def _wait_ready(
     raise TimeoutError(f"Worker did not become ready within {int(timeout_s)}s")
 
 
+def _orphan_line(line: colab.SessionLine) -> str:
+    """Describe an orphan and how to stop it, with name and endpoint."""
+    endpoint = line.endpoint or "endpoint desconhecido"
+    if line.name:
+        return f"  - {line.name} ({endpoint}) — `colab stop -s {line.name}`"
+    return f"  - [?] ({endpoint}) — only the Colab panel can stop this one"
+
+
 def _check_orphans() -> None:
     """Block allocation while backend sessions have no local record."""
     try:
-        orphans = colab.orphan_assignments()
+        state = config.load_state()
+    except config.StateFileError as exc:
+        _die(f"Cannot check the registered session: {exc}")
+    known = {state.session} if state is not None else set()
+    try:
+        orphans = colab.unregistered_sessions(known)
     except colab.ColabCliError as exc:
         _die(f"Could not check for orphaned Colab sessions: {exc}")
     if not orphans:
         return
-    endpoints = ", ".join(line.endpoint for line in orphans)
+    lines = "\n".join(_orphan_line(line) for line in orphans)
     _die(
-        "Orphaned Colab sessions found "
-        f"({endpoints}); stop them in Colab before creating another session"
+        "Sessions still allocated with no record in this byom:\n"
+        f"{lines}\n"
+        "Stop them as shown above (or with `byom down`) before allocating again."
     )
 
 
@@ -462,15 +476,63 @@ def _create_colab_session(cfg: config.Config, name: str) -> None:
 
 
 def _record_allocation(name: str) -> config.State:
-    """Persist the session identity as soon as the VM exists."""
+    """Persist the session identity as soon as the VM exists.
+
+    `colab status` only enriches the endpoint: it runs *after* the write, so a
+    slow or failing CLI can never leave an allocated VM without a local record.
+    """
     state = config.State(
         session=name, endpoint="", nonce=secrets.token_hex(16), created_at=_now()
     )
-    line = colab.status_line(name)
-    if line is not None:
-        state.endpoint = line.endpoint
     config.save_state(state)
+    _enrich_endpoint(state)
     return state
+
+
+def _enrich_endpoint(state: config.State) -> None:
+    """Fill `state.endpoint` from the CLI; failure keeps the record as it is."""
+    try:
+        line = colab.status_line(state.session)
+    except colab.ColabCliError as exc:
+        _say(f"  Endpoint not resolved yet ({exc}); the tunnel retries it later")
+        return
+    if line is None or not line.endpoint:
+        return
+    state.endpoint = line.endpoint
+    try:
+        config.update_state(endpoint=line.endpoint)
+    except config.StateFileError:  # pragma: no cover - a corrida exigiria escrita externa
+        return
+
+
+def _stop_allocation(name: str) -> bool:
+    """Stop an allocated session by name and try to confirm the deallocation.
+
+    `colab stop -s <name>` treats an unknown session as a no-op, so calling it
+    is idempotent and does not depend on `state.json`. When the CLI cannot
+    confirm, the local record is kept so `byom down` can try again.
+    """
+    _say(f"Stopping session '{name}'")
+    try:
+        colab.stop(name)
+    except colab.ColabCliError as exc:
+        _say(f"Warning: `colab stop -s {name}` failed ({exc})")
+        _say("  The VM may still be allocated; run `byom down` after fixing the CLI")
+        return False
+    try:
+        confirmed = not colab.is_allocated(name)
+    except colab.ColabCliError as exc:
+        _say(f"Warning: could not confirm shutdown ({exc})")
+        confirmed = False
+    if not confirmed:
+        _say("Unknown: could not confirm deallocation")
+        _say("  The VM may still be consuming compute units; run `byom down`")
+        return False
+    config.clear_state()
+    # O pin da chave de host vale por sessão: a próxima sessão é outra VM.
+    remote.forget_session_host_key(name)
+    _say("Session stopped (confirmed by Colab)")
+    return True
 
 
 def _bootstrap_worker(cfg: config.Config, state: config.State, client: remote.Remote) -> None:
@@ -500,9 +562,16 @@ def _bootstrap_worker(cfg: config.Config, state: config.State, client: remote.Re
 
 
 def _register_daemon(state: config.State) -> None:
-    """Start the daemon and merge its PID into the existing state."""
+    """Start the daemon and merge its PID and start time into the state.
+
+    The start time is read right after `Popen`: `execve` does not change it, so
+    it still identifies the daemon even before it announces itself.
+    """
     state.daemon_pid = _start_daemon()
-    config.update_state(daemon_pid=state.daemon_pid)
+    state.daemon_start_ticks = config.process_start_ticks(state.daemon_pid)
+    config.update_state(
+        daemon_pid=state.daemon_pid, daemon_start_ticks=state.daemon_start_ticks
+    )
 
 
 #: Expected failures that must tear down an allocated session. Programming
@@ -519,6 +588,22 @@ UP_FAILURE_TYPES = (
 
 
 def _run_up(
+    cfg: config.Config,
+    force: bool,
+    opencode_config: Path | None,
+    dsh_config: Path | None,
+) -> None:
+    """Run the `up` transaction under the exclusive allocation lock."""
+    try:
+        with config.up_lock():
+            _run_up_transaction(cfg, force, opencode_config, dsh_config)
+    except config.ConfigError as exc:
+        # O lock é adquirido antes de qualquer efeito colateral: a recusa não
+        # aloca GPU e não toca no state.json da outra execução.
+        _die(str(exc))
+
+
+def _run_up_transaction(
     cfg: config.Config,
     force: bool,
     opencode_config: Path | None,
@@ -569,11 +654,20 @@ def _run_up(
 
         _say("Waiting for the model to become ready")
         _wait_ready(cfg, cfg.bootstrap_timeout_min * 60, expected_session=state.session)
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C (or a nested command aborting) after the VM exists still has
+        # to release it; the interruption is propagated after the cleanup.
+        if allocated:
+            _stop_allocation(name)
+        else:
+            config.clear_state()
+        raise
     except UP_FAILURE_TYPES as exc:
         _say(f"Failed: {exc}")
         if allocated:
-            _say("Stopping session")
-            _down(cfg, quiet=True)
+            # The session name is the only reliable handle here: `state.json`
+            # may be unreadable by the time the failure unwinds.
+            _stop_allocation(name)
         else:
             config.clear_state()
         raise typer.Exit(1) from exc
@@ -698,6 +792,14 @@ def status() -> None:
         )
         if tunnel.get("last_error"):
             _say(f"    Reason: {tunnel['last_error']}")
+        watchdog_state = payload.get("watchdog") or {}
+        if watchdog_state:
+            _say(
+                f"  Watchdog: {watchdog_state.get('state')} "
+                f"(falhas consecutivas: {watchdog_state.get('failures', 0)})"
+            )
+            if watchdog_state.get("last_error"):
+                _say(f"    Reason: {watchdog_state['last_error']}")
 
     usage = colab.usage()
     if usage:
@@ -709,9 +811,58 @@ def status() -> None:
 # ---------------------------------------------------------------------------
 # down
 # ---------------------------------------------------------------------------
+#: Espera entre SIGTERM e SIGKILL. O daemon fecha o túnel e o `AsyncClient`
+#: antes de sair; 5 s cobrem o caminho normal sem segurar o `down`.
+TERMINATE_GRACE_S = 5.0
+
+
+def _pid_is_byom(pid: int, start_ticks: int | None) -> bool:
+    """True só quando o PID ainda é o processo que o byom registrou.
+
+    Depois de um reboot o mesmo número pode pertencer a outro processo do
+    usuário: comparar o instante de início (`/proc/<pid>/stat`, campo 22) evita
+    matar o processo errado.
+    """
+    current = config.process_start_ticks(pid)
+    if current is None:
+        return False  # /proc ausente: o processo já morreu
+    if start_ticks is not None:
+        return current == start_ticks
+    # state.json antigo, sem start time: o cmdline é a única pista disponível.
+    return "byom" in config.process_cmdline(pid)
+
+
+def _wait_for_exit(pid: int, start_ticks: int | None, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _pid_is_byom(pid, start_ticks):
+            return True
+        time.sleep(0.1)
+    return not _pid_is_byom(pid, start_ticks)
+
+
+def _clear_pid_fields(values: dict[str, int | None]) -> None:
+    try:
+        config.update_state(**values)
+    except (config.StateFileError, OSError):
+        return  # state.json já removido: nada a limpar
+
+
 def _terminate_local(state: config.State) -> None:
-    for pid in (state.daemon_pid, state.watchdog_pid):
+    """Stop the local daemon and watchdog, verifying identity first."""
+    targets = (
+        ("daemon", state.daemon_pid, state.daemon_start_ticks),
+        ("watchdog", state.watchdog_pid, state.watchdog_start_ticks),
+    )
+    for label, pid, start_ticks in targets:
         if not pid:
+            continue
+        if not _pid_is_byom(pid, start_ticks):
+            _say(
+                f"  {label} pid {pid} is not the byom process registered in state.json "
+                "(stale state after a reboot?); no signal sent"
+            )
+            _clear_pid_fields({f"{label}_pid": None, f"{label}_start_ticks": None})
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -719,6 +870,14 @@ def _terminate_local(state: config.State) -> None:
             continue
         except OSError as exc:  # pragma: no cover - system-dependent
             _say(f"Warning: could not stop process {pid}: {exc}")
+            continue
+        if _wait_for_exit(pid, start_ticks, TERMINATE_GRACE_S):
+            continue
+        _say(f"  {label} pid {pid} ignored SIGTERM for {int(TERMINATE_GRACE_S)}s; sending SIGKILL")
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError as exc:  # pragma: no cover - system-dependent
+            _say(f"Warning: could not kill process {pid}: {exc}")
 
 
 def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
@@ -757,6 +916,7 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
 
     if confirmed:
         config.clear_state()
+        remote.forget_session_host_key(state.session)
         say("Stopped (confirmed by Colab)")
     else:
         say("Unknown: could not confirm deallocation")

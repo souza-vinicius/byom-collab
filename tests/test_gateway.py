@@ -14,6 +14,10 @@ from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.usefixtures("gateway_module")
 
+#: O gateway exige o nonce da sessão nos endpoints internos: todo cliente do
+#: túnel chega como loopback, então o header é a única prova de identidade.
+NONCE_HEADERS = {"X-BYOM-Nonce": "test-nonce"}
+
 
 class FakeVLLM:
     """Fake vLLM: answers /v1/models and streams /v1/chat/completions."""
@@ -126,7 +130,7 @@ def test_injects_reasoning_effort_when_missing(gateway_module, shutdowns):
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
         response = client.post(
             "/v1/chat/completions",
@@ -143,7 +147,7 @@ def test_respects_client_reasoning_effort(gateway_module, shutdowns):
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
         client.post(
             "/v1/chat/completions",
@@ -163,11 +167,11 @@ def test_health_does_not_count_as_activity(gateway_module, shutdowns):
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
         before = gateway.idle_s
         for _ in range(5):
-            client.get("/health")
+            client.get("/health", headers=NONCE_HEADERS)
             client.get("/v1/models")
         assert gateway.idle_s >= before
         assert gateway.active_jobs == 0
@@ -179,7 +183,7 @@ def test_begin_shutdown_refuses_with_active_jobs(gateway_module, shutdowns):
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
         # Open a job and keep it open while requesting shutdown.
         with client.stream(
@@ -188,14 +192,14 @@ def test_begin_shutdown_refuses_with_active_jobs(gateway_module, shutdowns):
             json={"model": "m", "messages": [{"role": "user", "content": "oi"}]},
         ) as stream:
             assert stream.status_code == 200
-            body = client.post("/internal/begin-shutdown").json()
+            body = client.post("/internal/begin-shutdown", headers=NONCE_HEADERS).json()
             assert body["accepted"] is False
             assert body["reason"] == "active jobs"
             for _ in stream.iter_bytes():
                 pass
 
         # With no jobs, shutdown is accepted.
-        body = client.post("/internal/begin-shutdown").json()
+        body = client.post("/internal/begin-shutdown", headers=NONCE_HEADERS).json()
         assert body["accepted"] is True
 
 
@@ -205,9 +209,12 @@ def test_shutdown_refuses_inference_accepted_before(gateway_module, shutdowns):
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
-        assert client.post("/internal/begin-shutdown").json()["accepted"] is True
+        assert (
+            client.post("/internal/begin-shutdown", headers=NONCE_HEADERS).json()["accepted"]
+            is True
+        )
         response = client.post(
             "/v1/chat/completions",
             json={"model": "m", "messages": [{"role": "user", "content": "oi"}]},
@@ -222,9 +229,9 @@ def test_insufficient_idle_time_does_not_shutdown(gateway_module, shutdowns):
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
-        body = client.post("/internal/begin-shutdown").json()
+        body = client.post("/internal/begin-shutdown", headers=NONCE_HEADERS).json()
         assert body["accepted"] is False
         assert "idle time" in body["reason"]
 
@@ -235,7 +242,7 @@ def test_state_endpoint_registers_heartbeat(gateway_module, shutdowns):
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         assert gateway._watchdog_seen is False
-        payload = client.get("/internal/state").json()
+        payload = client.get("/internal/state", headers=NONCE_HEADERS).json()
         assert gateway._watchdog_seen is True
         assert payload["watchdog_silence_s"] < 1.0
 
@@ -247,7 +254,8 @@ async def test_silent_watchdog_stops_vllm(gateway_module, shutdowns):
     async with (
         with_loops(gateway),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://gateway"
+            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 123)),
+            base_url="http://gateway",
         ) as client,
     ):
         # Let the model become ready and never register a heartbeat.
@@ -269,7 +277,8 @@ async def test_client_disconnect_ends_the_job(gateway_module, shutdowns):
     async with (
         with_loops(gateway),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://gateway"
+            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 123)),
+            base_url="http://gateway",
         ) as client,
     ):
         assert await wait_for(lambda: gateway.model_ready)
@@ -297,7 +306,8 @@ async def test_stuck_job_is_cancelled(gateway_module, shutdowns, monkeypatch):
     async with (
         with_loops(gateway),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://gateway"
+            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 123)),
+            base_url="http://gateway",
         ) as client,
     ):
         assert await wait_for(lambda: gateway.model_ready)
@@ -318,9 +328,7 @@ def install_fake_google_colab(monkeypatch, calls: list[str]) -> None:
     """Fake `google.colab.runtime` in `sys.modules`, without importing Colab."""
     google = types.ModuleType("google")
     colab_module = types.ModuleType("google.colab")
-    setattr(
-        colab_module, "runtime", types.SimpleNamespace(unassign=lambda: calls.append("unassign"))
-    )
+    colab_module.runtime = types.SimpleNamespace(unassign=lambda: calls.append("unassign"))
     monkeypatch.setitem(sys.modules, "google", google)
     monkeypatch.setitem(sys.modules, "google.colab", colab_module)
 
@@ -341,7 +349,7 @@ async def test_fallback_unassigns_when_watchdog_does_not(gateway_module, shutdow
         ) as client,
     ):
         assert await wait_for(lambda: gateway.model_ready)
-        response = await client.post("/internal/begin-shutdown")
+        response = await client.post("/internal/begin-shutdown", headers=NONCE_HEADERS)
         assert response.json()["accepted"] is True
         assert await wait_for(lambda: len(calls) == 1, timeout=2.0)
 
@@ -453,7 +461,7 @@ def gemma_policy():
 def post_chat(app, messages, **extra):
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
         return client.post(
             "/v1/chat/completions",
@@ -589,7 +597,7 @@ def test_image_defaults_reach_backend(gateway_module):
     )
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
         response = client.post(
             "/v1/images/generations",
@@ -618,7 +626,7 @@ def test_image_client_values_override_defaults(gateway_module):
     )
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(100):
-            if client.get("/health").json()["model_ready"]:
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
                 break
         client.post(
             "/v1/images/generations",
@@ -659,3 +667,49 @@ def test_gateway_config_validates_thinking_and_generation(tmp_path, gateway_modu
         path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ValueError):
             gateway_module.GatewayConfig.load(path)
+
+
+# ---------------------------------------------------------------------------
+# Nonce obrigatório nos endpoints internos
+# ---------------------------------------------------------------------------
+def test_endpoints_internos_exigem_nonce(gateway_module, shutdowns):
+    fake = FakeVLLM()
+    app, gateway = build_app(gateway_module, fake, shutdowns)
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        # Sem header: 403 nos três endpoints, e o nonce nunca aparece no corpo.
+        for response in (
+            client.get("/health"),
+            client.get("/internal/state"),
+            client.post("/internal/begin-shutdown"),
+        ):
+            assert response.status_code == 403
+            assert "test-nonce" not in response.text
+            assert gateway_module.NONCE_HEADER not in response.text
+
+        # Header divergente também é recusado.
+        wrong = {"X-BYOM-Nonce": "outra-sessao"}
+        assert client.get("/health", headers=wrong).status_code == 403
+        assert client.get("/internal/state", headers=wrong).status_code == 403
+
+        # Com o nonce da sessão, os três respondem.
+        assert client.get("/health", headers=NONCE_HEADERS).status_code == 200
+        assert client.get("/internal/state", headers=NONCE_HEADERS).status_code == 200
+        assert (
+            client.post("/internal/begin-shutdown", headers=NONCE_HEADERS).status_code == 200
+        )
+
+    # O 403 não pode registrar heartbeat nem aceitar shutdown.
+    assert gateway._watchdog_seen is True  # a chamada válida acima registrou
+
+
+def test_nonce_nao_aparece_em_nenhum_payload_de_status(gateway_module, shutdowns):
+    """O nonce vai só na requisição: nenhuma resposta de status o devolve."""
+    fake = FakeVLLM()
+    app, _ = build_app(gateway_module, fake, shutdowns)
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        for path in ("/health", "/internal/state"):
+            body = client.get(path, headers=NONCE_HEADERS).text
+            assert "nonce" not in body
+            assert "test-nonce" not in body

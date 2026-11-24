@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -173,7 +174,8 @@ def test_proximo_passo_recomendado_por_estado():
         "chave_ssh_existe": True,
         "ambiente_configurado": True,
     }
-    assert tui.proximo_passo_recomendado(tui.EstadoLocal(**sem_perfil)) == "configure"
+    # O perfil é escolhido dentro da tela inicial "Selecionar GPU" (atalho 2).
+    assert tui.proximo_passo_recomendado(tui.EstadoLocal(**sem_perfil)) == "selecionar_gpu"
 
     pronto = {**sem_perfil, "perfil_id": "qwen3.8-27b-32k", "perfil_nome": "Qwen3.8 27B (32k)"}
     assert tui.proximo_passo_recomendado(tui.EstadoLocal(**pronto)) == "up"
@@ -284,6 +286,7 @@ def test_fluxo_simulado_completo_sem_chamadas_reais(monkeypatch, isolated_home):
 
     monkeypatch.setattr(cli.subprocess, "run", fake_ssh_keygen)
     monkeypatch.setattr(cli.colab, "orphan_assignments", lambda: [])
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", lambda known=None: [])
     monkeypatch.setattr(cli.colab, "usage", lambda: "")
     monkeypatch.setattr(cli.colab, "new", lambda *a, **kw: None)
     monkeypatch.setattr(
@@ -417,6 +420,7 @@ def test_up_tui_nao_configura_harness_automaticamente(monkeypatch, isolated_home
 
     monkeypatch.setattr(cli, "_sync_external_configs", proibido_sync)
     monkeypatch.setattr(cli.colab, "orphan_assignments", lambda: [])
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", lambda known=None: [])
     monkeypatch.setattr(cli.colab, "new", lambda *a, **kw: None)
     monkeypatch.setattr(
         cli.colab,
@@ -591,10 +595,97 @@ def test_proximo_passo_apos_up_oferece_chat_primeiro(monkeypatch):
     assert primeira.value == "acao:chat"
 
 
-def test_menu_tem_chat_ao_final_com_atalho_unico():
-    grupos = [g for g, _ in M.GRUPOS_MENU]
-    assert grupos[-1] == "Conversar"
-    assert M.GRUPOS_MENU[-1][1] == ("chat",)
+def test_renderizar_menu_estatico_tem_oito_itens_sem_ajuda():
+    estado = tui.EstadoLocal(
+        config_existe=True,
+        chave_ssh_existe=True,
+        ambiente_configurado=False,
+        perfil_id="inkling-2-mini-q4-gguf",
+        perfil_nome="Inkling 2 Mini (4 bit, GGUF)",
+        gpu_id="L4",
+        gpu_rotulo="L4",
+        sessao_ativa=False,
+        sessao_nome="",
+        sessao_criada_em="",
+    )
+    rec = tui.criar_console(width=100, height=30, record=True)
+    tui.renderizar_menu_estatico(rec, estado)
+    texto = rec.export_text(clear=False)
+    itens = [
+        linha.strip() for linha in texto.splitlines() if re.match(r"^[1-5chq]\.\s", linha.strip())
+    ]
+
+    assert [item.split()[0] for item in itens] == ["1.", "2.", "3.", "4.", "5.", "c.", "h.", "q."]
+    assert itens[0].startswith("1. Preparar ambiente local")
+    assert "★ recomendado" in itens[0]
+    assert itens[1] == "2. Selecionar GPU"
+    assert "[requer preparar ambiente]" in itens[2]
+    assert itens[6] == "h. Configurar harness (OpenCode / dsh)"
+    assert itens[7] == "q. Sair"
+    assert "Ajuda" not in texto
+
+
+def test_submenu_selecionar_gpu_oferece_perfil_gpu_e_voltar(monkeypatch):
+    import questionary
+
+    capturadas: list[Any] = []
+
+    class Pergunta:
+        def ask(self):
+            return "menu"
+
+    def fake_select(mensagem, *, choices, **kwargs):
+        capturadas.extend(choices)
+        return Pergunta()
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    assert tui._executar_selecionar_gpu(rec, tui.ler_estado_local()) == "menu"
+    assert [choice.title for choice in capturadas] == [
+        M.SUBMENU_PERFIL,
+        M.SUBMENU_GPU_MODELOS,
+        "Voltar ao menu principal",
+    ]
+
+
+def test_aplicar_par_gpu_modelo_fixa_gpu_escolhida_sobre_a_do_perfil(isolated_home):
+    perfis = tui.listar_perfis_estruturados(tui.ler_estado_local())
+    item = next(p for p in perfis if p.profile.id == "inkling-2-mini-iq2-gguf")  # perfil declara T4
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    ok, _ = tui._aplicar_perfil_interativo(rec, item, pedir_confirmacao=False, gpu_id="A100-40")
+    assert ok is True
+    cfg = config.load_config()
+    assert (cfg.gpu, cfg.gpu_high_mem, cfg.max_model_len) == ("A100", False, 32768)
+    assert config.check_compatibility(cfg).fits
+
+    ok_alta, _ = tui._aplicar_perfil_interativo(
+        rec, item, pedir_confirmacao=False, gpu_id="A100-80"
+    )
+    assert ok_alta is True
+    cfg = config.load_config()
+    assert (cfg.gpu, cfg.gpu_high_mem) == ("A100", True)
+    assert 'gpu = "A100"' in config.config_path().read_text(encoding="utf-8")
+    assert "gpu_high_mem = true" in config.config_path().read_text(encoding="utf-8")
+
+
+def test_aplicar_par_gpu_modelo_recusa_par_que_nao_cabe_e_nao_grava(isolated_home):
+    perfis = tui.listar_perfis_estruturados(tui.ler_estado_local())
+    item = next(p for p in perfis if p.profile.id == "gemma-4-31b-q4-gguf")  # 30 GiB em T4
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    ok, _ = tui._aplicar_perfil_interativo(rec, item, pedir_confirmacao=False, gpu_id="T4")
+
+    assert ok is False
+    assert not config.config_path().exists()
+    assert "não cabe em T4" in rec.export_text(clear=False)
+
+
+def test_menu_fecha_com_chat_e_harness_antes_de_sair():
+    assert M.MENU_INICIAL[-2:] == ("chat", "harness")
+    assert len(M.MENU_INICIAL) == 7
+    assert set(M.ATALHOS_MENU) == set(M.MENU_INICIAL)
     assert len(set(M.ATALHOS_MENU.values())) == len(M.ATALHOS_MENU)
     assert "chat" in M.ACOES and "chat" in M.PROXIMO_ACAO
 
@@ -676,3 +767,28 @@ def test_chat_tui_com_falha_real_mostra_stderr_nos_detalhes_tecnicos(monkeypatch
     assert "terminou com erro" in saida
     assert "Detalhes técnicos" in saida
     assert "Traceback: boom" in saida
+
+
+def test_up_tui_recusa_quando_outro_up_esta_em_andamento(monkeypatch, isolated_home):
+    """Dois `up` simultâneos não podem alocar duas GPUs."""
+    cfg = config.Config()
+    config.apply_profile(cfg, "gemma-4-12b-q4-gguf")
+    cfg.ssh_key_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.ssh_key_path.write_text("PRIVATE", encoding="utf-8")
+    config.save_config(cfg)
+    alocou = False
+
+    def allocate(*args, **kwargs):
+        nonlocal alocou
+        alocou = True
+
+    monkeypatch.setattr(cli.colab, "new", allocate)
+    monkeypatch.setattr(tui, "_confirmar", lambda *a, **kw: True)
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    with config.up_lock(), pytest.raises(tui._ErroEtapa) as exc:
+        tui._executar_up(rec, cli, tui.ler_estado_local())
+
+    assert "em andamento" in exc.value.falha
+    assert "não alocou GPU" in exc.value.acao
+    assert alocou is False

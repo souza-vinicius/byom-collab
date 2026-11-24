@@ -13,7 +13,7 @@ import re
 import sys
 import time
 import traceback
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -224,7 +224,7 @@ def proximo_passo_recomendado(estado: EstadoLocal) -> str:
     if estado.sessao_ativa:
         return "status"
     if not estado.perfil_id:
-        return "configure"
+        return "selecionar_gpu"
     return "up"
 
 
@@ -341,6 +341,47 @@ def _renderizar_erro(
         )
 
 
+def _carregar_config(con: Console) -> config.Config:
+    """Lê config.toml; arquivo inválido vira painel de erro, nunca exceção genérica.
+
+    É a única forma de o usuário consertar o arquivo pela interface: o painel
+    diz o caminho e a ação, e o menu volta a ser desenhado.
+    """
+    try:
+        return config.load_config()
+    except config.ConfigError as exc:
+        raise _ErroEtapa(
+            "O arquivo config.toml não pôde ser lido.",
+            str(exc),
+            f"Corrija ou mova {M.encurtar_caminho(config.config_path())} e volte ao menu. "
+            "Nada foi alocado nem gravado nesta tentativa.",
+            detalhes_tecnicos=str(exc),
+        ) from exc
+
+
+def _ler_estado_ou_erro() -> tuple[config.State | None, str]:
+    """Lê state.json devolvendo o erro em vez de levantar `StateFileError`."""
+    try:
+        return config.load_state(), ""
+    except config.StateFileError as exc:
+        return None, str(exc)
+
+
+def _partes_erro_estado(erro: str) -> tuple[str, str, str]:
+    """Texto padrão do painel de state.json ilegível (falha, causa, ação)."""
+    return (
+        "O arquivo de estado local (state.json) está ilegível.",
+        erro,
+        "Confira o painel do Google Colab: pode haver uma GPU alocada sem registro. "
+        "Depois rode `byom status` e corrija ou remova o state.json.",
+    )
+
+
+def _renderizar_erro_estado(con: Console, erro: str) -> None:
+    """Painel padrão de state.json ilegível: pode haver GPU alocada sem registro."""
+    _renderizar_erro(con, *_partes_erro_estado(erro), detalhes_tecnicos=erro)
+
+
 def _renderizar_glossario(con: Console, termos: Sequence[str]) -> None:
     itens = M.glossario_para_tela(termos)
     if not itens:
@@ -405,6 +446,24 @@ def _opcoes_down() -> dict[str, Any]:
     return {}
 
 
+@contextlib.contextmanager
+def _guarda_up() -> Iterator[None]:
+    """Segura o lock exclusivo de `up` e traduz a recusa em painel de erro.
+
+    Dois `up` simultâneos alocariam duas GPUs. O lock da CLI é o mesmo arquivo,
+    então a TUI não abre uma janela própria de alocação concorrente.
+    """
+    try:
+        with config.up_lock():
+            yield
+    except config.ConfigError as exc:
+        raise _ErroEtapa(
+            "Já existe um `byom up` em andamento.",
+            str(exc),
+            "Aguarde a outra execução terminar; esta tentativa não alocou GPU.",
+        ) from exc
+
+
 def _opcoes_up() -> dict[str, Any]:
     try:
         state = config.load_state()
@@ -418,7 +477,7 @@ def _opcoes_up() -> dict[str, Any]:
 
 def _mostrar_pre_acao(con: Console, acao_id: str) -> None:
     sim = obter_simbolos(con)
-    if acao_id in ("profiles", "gpus", "models", "status"):
+    if acao_id == "status":
         con.print(M.SOMENTE_LEITURA, style="dim")
         con.print()
         return
@@ -650,6 +709,7 @@ class PerfilView:
     contexto_curto: str
     raciocinio: str
     pesos_gib: float
+    visao_gib: float
     runtime_gib: float
     kv_gib: float
     total_gib: float
@@ -668,12 +728,10 @@ def _tipo_modelo(model_id: str, runtime: str, tem_mmproj: bool) -> str:
     return "Chat"
 
 
-def listar_perfis_estruturados(
-    estado: EstadoLocal, *, filtro_gpu: str | None = None
-) -> list[PerfilView]:
-    """Constrói visão estruturada de todos os perfis (ou apenas os que cabem em filtro_gpu)."""
+def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
+    """Constrói visão estruturada de todos os perfis do catálogo."""
     perfis = config.available_profiles()
-    gpu_ref = filtro_gpu or estado.gpu_id
+    gpu_ref = estado.gpu_id
     itens_brutos: list[PerfilView] = []
 
     ordem_familias = list(M.FAMILIAS_MODELOS.values())
@@ -702,6 +760,7 @@ def listar_perfis_estruturados(
         ctx_doc = variant.context_doc if variant else ctx_servido
         gpu_min = variant.min_gpu if variant else str(p.settings.get("gpu", "L4"))
         pesos = variant.memory_gib if variant else 0.0
+        visao_gib = variant.vision_gib if variant else 0.0
         runtime_gib = catalog.RUNTIME_RESERVE_GIB
         kv_gib = 0.0 if p.runtime == "image" else catalog.kv_cache_gib(ctx_servido)
         total_gib = (
@@ -716,8 +775,6 @@ def listar_perfis_estruturados(
             else None
         )
         cabe = bool(fit_atual.fits) if fit_atual else True
-        if filtro_gpu and not cabe:
-            continue
 
         esforco = p.settings.get("reasoning_effort") or (entry.reasoning_effort if entry else None)
         tem_think = bool(entry and entry.thinking is not None)
@@ -752,6 +809,7 @@ def listar_perfis_estruturados(
                 contexto_curto=M.formatar_contexto(ctx_servido, p.runtime),
                 raciocinio=raciocinio,
                 pesos_gib=pesos,
+                visao_gib=visao_gib,
                 runtime_gib=runtime_gib,
                 kv_gib=kv_gib,
                 total_gib=total_gib,
@@ -814,15 +872,10 @@ def renderizar_perfis(
     con: Console,
     estado: EstadoLocal,
     *,
-    filtro_gpu: str | None = None,
     itens: Sequence[PerfilView] | None = None,
 ) -> list[PerfilView]:
     """Renderiza os perfis em tabela (completa/compacta) ou cartões conforme a largura."""
-    lista = (
-        list(itens)
-        if itens is not None
-        else listar_perfis_estruturados(estado, filtro_gpu=filtro_gpu)
-    )
+    lista = list(itens) if itens is not None else listar_perfis_estruturados(estado)
     sim = obter_simbolos(con)
     modo = _modo_layout(con)
 
@@ -832,17 +885,13 @@ def renderizar_perfis(
             style="dim",
         )
 
-    titulo_lista = (
-        f"Perfis compatíveis com {filtro_gpu} ({len(lista)})"
-        if filtro_gpu
-        else f"Perfis de modelo disponíveis ({len(lista)})"
-    )
+    titulo_lista = f"Perfis de modelo disponíveis ({len(lista)})"
     con.print(titulo_lista, style="bold cyan")
     if not lista:
         con.print(_erro("vazio", origem="catálogo de perfis"), style="yellow")
         return lista
 
-    gpu_alvo = filtro_gpu or estado.gpu_id
+    gpu_alvo = estado.gpu_id
 
     if modo == "cartoes":
         familia_atual = ""
@@ -967,10 +1016,15 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
         )
         add("Contexto", f"Não se aplica (atendido em POST {item.endpoint_aviso}).")
     else:
+        visao = (
+            f" + {M.formatar_gib(item.visao_gib)} para o projetor de visão"
+            if item.visao_gib
+            else ""
+        )
         add(
             "Memória estimada",
             f"{M.formatar_gib(item.total_gib, aproximado=True)} "
-            f"({M.formatar_gib(item.pesos_gib)} para os pesos + "
+            f"({M.formatar_gib(item.pesos_gib)} para os pesos{visao} + "
             f"{M.formatar_gib(item.runtime_gib)} para o motor + "
             f"{M.formatar_gib(item.kv_gib)} para o cache KV).",
         )
@@ -1284,20 +1338,35 @@ def _escolher_perfil(
 
 
 def _aplicar_perfil_interativo(
-    con: Console, item: PerfilView, *, pedir_confirmacao: bool = True
+    con: Console,
+    item: PerfilView,
+    *,
+    pedir_confirmacao: bool = True,
+    gpu_id: str | None = None,
 ) -> tuple[bool, float]:
+    """Aplica um perfil em config.toml; com `gpu_id`, fixa essa GPU por último.
+
+    `apply_profile` copia `profile.settings`, que inclui `gpu`/`gpu_high_mem`.
+    Quando o usuário escolheu a GPU no caminho GPU + modelo, essa escolha
+    sobrescreve o que o perfil declara, e o par precisa passar por
+    `config.check_compatibility` antes de ser gravado.
+    """
     p = item.profile
+    gpu = catalog.gpu_by_id(gpu_id) if gpu_id else None
+    alvo = f"'{item.familia} — {item.variante_curta}'"
     if pedir_confirmacao:
         _mostrar_pre_acao(con, "configure")
-        if not _confirmar(
-            "configure",
-            pergunta=f"Aplicar '{item.familia} — {item.variante_curta}' em config.toml?",
-            default=True,
-        ):
+        origem = f"{gpu.id} + {alvo}" if gpu else alvo
+        if not _confirmar("configure", pergunta=f"Aplicar {origem} em config.toml?", default=True):
             return False, 0.0
 
     inicio = time.monotonic()
-    state = config.load_state()
+    state, erro_estado = _ler_estado_ou_erro()
+    if erro_estado:
+        # Pode haver GPU alocada sem registro: nada é gravado antes de o
+        # usuário conferir o painel do Colab.
+        _renderizar_erro_estado(con, erro_estado)
+        return False, time.monotonic() - inicio
     if state is not None:
         _renderizar_erro(
             con,
@@ -1307,8 +1376,37 @@ def _aplicar_perfil_interativo(
         )
         return False, time.monotonic() - inicio
 
-    cfg = config.load_config()
+    try:
+        cfg = _carregar_config(con)
+    except _ErroEtapa as exc:
+        _renderizar_erro(
+            con, exc.falha, exc.causa, exc.acao, detalhes_tecnicos=exc.detalhes_tecnicos
+        )
+        return False, time.monotonic() - inicio
     config.apply_profile(cfg, p.id)
+    fit: catalog.CompatibilityResult | None = None
+    if gpu is not None:
+        cfg.gpu, cfg.gpu_high_mem = catalog.colab_settings_for_gpu(gpu.id)
+        try:
+            fit = config.check_compatibility(cfg)
+        except ValueError as exc:
+            _renderizar_erro(
+                con,
+                f"{gpu.id} + '{item.familia} — {item.variante_curta}' não é um par válido.",
+                str(exc),
+                "Escolha outro modelo ou outra GPU.",
+                detalhes_tecnicos=str(exc),
+            )
+            return False, time.monotonic() - inicio
+        if not fit.fits:
+            _renderizar_erro(
+                con,
+                f"'{item.familia} — {item.variante_curta}' não cabe em {gpu.id}.",
+                fit.reason,
+                "Escolha um modelo compatível com esta GPU ou volte e escolha outra GPU.",
+            )
+            return False, time.monotonic() - inicio
+
     caminho = config.save_config(cfg)
     duracao = time.monotonic() - inicio
     memoria = "memória estendida" if cfg.gpu_high_mem else "memória padrão"
@@ -1317,6 +1415,13 @@ def _aplicar_perfil_interativo(
         f"Perfil ativo: {item.familia} — {item.variante_curta}",
         f"GPU padrão: {cfg.gpu} ({memoria})",
         f"Contexto servido: {M.formatar_contexto_detalhe(cfg.max_model_len, cfg.runtime)}",
+    ]
+    if fit is not None:
+        detalhes.append(
+            f"Compatível: {M.formatar_gib(fit.required_gib, aproximado=True)} necessários "
+            f"de {M.formatar_gib(fit.available_gib)} disponíveis em {fit.gpu_id}"
+        )
+    detalhes += [
         f"Arquivo salvo: {M.encurtar_caminho(caminho)}",
         f"No OpenCode, use o modelo: {p.opencode_model}",
     ]
@@ -1442,7 +1547,11 @@ def _executar_init(con: Console, cli: Any, estado: EstadoLocal) -> str:
 
         # 4. ssh key
         exec_etapas.iniciar(3)
-        cfg = config.load_config()
+        try:
+            cfg = _carregar_config(con)
+        except _ErroEtapa:
+            exec_etapas.falhar(3, "config.toml inválido")
+            raise
         criou_chave = False
         if not cfg.ssh_key_path.exists():
             cfg.ssh_key_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1505,141 +1614,210 @@ def _executar_init(con: Console, cli: Any, estado: EstadoLocal) -> str:
     return _perguntar_proximo_passo("init", novo_estado)
 
 
-def _executar_profiles(con: Console, estado: EstadoLocal, *, filtro_gpu: str | None = None) -> str:
+def _troca_bloqueada_por_sessao(con: Console) -> str | None:
+    """Devolve o destino quando a troca é bloqueada; None quando é permitida.
+
+    Lê o `state.json` de verdade: a barra de estado marca `sessao_ativa=False`
+    quando o arquivo está ilegível, e liberar a troca nesse caso esconderia
+    uma VM possivelmente alocada.
+    """
+    state, erro_estado = _ler_estado_ou_erro()
+    if erro_estado:
+        _renderizar_erro_estado(con, erro_estado)
+        return "menu"
+    if state is None:
+        return None
+    _painel(
+        con,
+        "Sessão ativa encontrada",
+        f"A sessão '{state.session}' está ativa no momento.\n"
+        "É necessário encerrá-la antes de trocar o perfil de modelo.",
+        estilo="yellow",
+    )
+    if _confirmar(
+        "down", pergunta="Deseja ir para 'Encerrar sessão no Colab' agora?", default=False
+    ):
+        return "acao:down"
+    return "menu"
+
+
+def _executar_configure(con: Console, estado: EstadoLocal) -> str:
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["configure"][0])
+    bloqueio = _troca_bloqueada_por_sessao(con)
+    if bloqueio:
+        return bloqueio
+
     while True:
-        renderizar_cabecalho(
-            con,
-            estado,
-            subtela=f"Modelos compatíveis com {filtro_gpu}"
-            if filtro_gpu
-            else M.ACOES["profiles"][0],
-        )
-        con.print(M.SOMENTE_LEITURA, style="dim")
-        con.print()
-        itens = renderizar_perfis(con, estado, filtro_gpu=filtro_gpu)
+        renderizar_perfis(con, estado)
         con.print()
         try:
-            selecionado = _escolher_perfil(con, estado, itens=itens)
+            selecionado = _escolher_perfil(con, estado)
         except KeyboardInterrupt:
             return "menu"
-        destino = _fluxo_detalhe_perfil(con, selecionado, ler_estado_local())
+        destino = _fluxo_detalhe_perfil(con, selecionado, estado)
         if destino != "lista":
             return destino
+        # "Voltar para a lista" volta para ESTA lista, não para o menu principal.
+        estado = ler_estado_local()
+        renderizar_cabecalho(con, estado, subtela=M.ACOES["configure"][0])
 
 
-def _executar_gpus(con: Console, estado: EstadoLocal) -> str:
+def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView) -> None:
+    """Mostra o par que será gravado, incluindo o mapeamento do catálogo para o config.toml."""
+    sim = obter_simbolos(con)
+    gpu_cfg, high_mem = catalog.colab_settings_for_gpu(gpu.id)
+    memoria = f"pesos {M.formatar_gib(item.pesos_gib)}"
+    if item.visao_gib:
+        memoria += f" + visão {M.formatar_gib(item.visao_gib)}"
+    memoria += f" + motor {M.formatar_gib(item.runtime_gib)}"
+    if item.profile.runtime != "image":
+        memoria += f" + cache KV {M.formatar_gib(item.kv_gib)}"
+
+    corpo = Text()
+    corpo.append("GPU: ", style="bold cyan")
+    corpo.append(
+        f"{gpu.id} ({gpu.label}) {sim.bullet} "
+        f"{M.formatar_gib(gpu.vram_gib, aproximado=gpu.vram_approximate)}\n"
+    )
+    corpo.append("Modelo: ", style="bold cyan")
+    corpo.append(f"{item.familia} — {item.variante_curta}\n")
+    corpo.append("Contexto servido: ", style="bold cyan")
+    corpo.append(f"{M.formatar_contexto_detalhe(item.contexto_servido, item.profile.runtime)}\n")
+    corpo.append("Memória estimada: ", style="bold cyan")
+    corpo.append(f"{M.formatar_gib(item.total_gib, aproximado=True)} ({memoria})\n")
+    corpo.append("config.toml: ", style="bold cyan")
+    corpo.append(f'gpu = "{gpu_cfg}"  {sim.barra}  gpu_high_mem = {str(high_mem).lower()}')
+    _painel(con, "GPU + modelo escolhidos", corpo, estilo="cyan", expand=True)
+
+
+def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) -> str:
+    """Lista os modelos compatíveis e grava o par escolhido; devolve o destino da tela."""
     import questionary
 
+    gpu = catalog.gpu_by_id(gpu_id)
     while True:
-        renderizar_cabecalho(con, estado, subtela=M.ACOES["gpus"][0])
+        renderizar_cabecalho(con, estado, subtela=f"Modelos compatíveis com {gpu.id}")
         con.print(M.SOMENTE_LEITURA, style="dim")
         con.print()
-        views = renderizar_gpus(con, estado)
+        selection, perfis_por_id = renderizar_modelos_por_gpu(con, gpu.id, estado)
         con.print()
-        escolhas = [
-            questionary.Choice(
-                title=(
-                    f"Ver modelos compatíveis com {gv.gpu.id} "
-                    f"({gv.compativeis} de {gv.total_perfis})"
-                ),
-                value=gv.gpu.id,
+
+        escolhas: list[Any] = []
+        for row in selection.rows:
+            pv = perfis_por_id.get(row.profile_id) if row.profile_id else None
+            if pv is None:
+                continue
+            escolhas.append(
+                questionary.Choice(
+                    title=f"{pv.familia} — {pv.variante_curta} ({pv.contexto_curto})",
+                    value=pv,
+                )
             )
-            for gv in views
-        ]
+        if not escolhas:
+            _renderizar_erro(
+                con,
+                f"Nenhum modelo compatível com {gpu.id} tem perfil pronto.",
+                "As variantes que cabem nesta GPU não têm perfil em config.available_profiles().",
+                "Escolha outra GPU ou selecione um perfil de modelo.",
+            )
+            _aguardar_enter(con)
+            return "outra_gpu"
+
+        escolhas.append(questionary.Choice(title="Escolher outra GPU", value="__outra_gpu__"))
         escolhas.append(questionary.Choice(title="Voltar ao menu principal", value="__voltar__"))
         escolha = questionary.select(
-            "Selecione uma GPU para ver os modelos compatíveis:",
+            M.SELECAO_MODELO_GPU,
             choices=escolhas,
+            use_search_filter=True,
             use_jk_keys=False,
             style=_estilo_select(),
-            instruction=M.TECLAS_LISTA,
+            instruction=M.TECLAS_SELECAO,
         ).ask()
         if escolha is None or escolha == "__voltar__":
             return "menu"
-        destino = _executar_models(con, ler_estado_local(), gpu_id=str(escolha))
-        if destino != "lista_gpus":
-            return destino
+        if escolha == "__outra_gpu__":
+            return "outra_gpu"
+        item: PerfilView = escolha
+
+        renderizar_cabecalho(con, estado, subtela="Confirmar GPU e modelo")
+        _renderizar_par_gpu_modelo(con, gpu, item)
+        con.print()
+        escolha_par = questionary.select(
+            "Gravar este par em config.toml?",
+            choices=[
+                questionary.Choice(title=M.USAR_PAR_GPU_MODELO, value="usar"),
+                questionary.Choice(title="Escolher outro modelo", value="modelo"),
+                questionary.Choice(title="Voltar ao menu principal", value="menu"),
+            ],
+            use_jk_keys=False,
+            style=_estilo_select(),
+            instruction=M.TECLAS_DETALHE,
+        ).ask()
+        if escolha_par is None or escolha_par == "menu":
+            return "menu"
+        if escolha_par == "modelo":
+            continue
+
+        ok, _ = _aplicar_perfil_interativo(con, item, pedir_confirmacao=True, gpu_id=gpu.id)
+        if not ok:
+            _aguardar_enter(con)
+            continue
+        return _perguntar_proximo_passo(
+            "configure",
+            ler_estado_local(),
+            extras=[("acao:harness", M.ACOES["harness"][0])],
+        )
 
 
-def _executar_models(con: Console, estado: EstadoLocal, *, gpu_id: str | None = None) -> str:
-    import questionary
+def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
+    """Caminho GPU + modelo: escolhe a GPU, o modelo compatível e confirma o par."""
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
+    bloqueio = _troca_bloqueada_por_sessao(con)
+    if bloqueio:
+        return bloqueio
 
-    if gpu_id is None:
-        renderizar_cabecalho(con, estado, subtela=M.ACOES["models"][0])
+    while True:
+        renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
         con.print(M.SOMENTE_LEITURA, style="dim")
+        con.print()
+        renderizar_gpus(con, estado)
         con.print()
         try:
             gpu_id = _escolher_gpu(con, estado)
         except KeyboardInterrupt:
             return "menu"
-
-    while True:
-        renderizar_cabecalho(con, estado, subtela=f"Modelos compatíveis com {gpu_id}")
-        con.print(M.SOMENTE_LEITURA, style="dim")
-        con.print()
-        selection, perfis_por_id = renderizar_modelos_por_gpu(con, gpu_id, estado)
-        con.print()
-
-        escolhas: list[Any] = []
-        for row in selection.rows:
-            if row.profile_id and row.profile_id in perfis_por_id:
-                pv = perfis_por_id[row.profile_id]
-                escolhas.append(
-                    questionary.Choice(
-                        title=(
-                            f"Abrir detalhe: {pv.familia} — "
-                            f"{pv.variante_curta} ({pv.contexto_curto})"
-                        ),
-                        value=pv,
-                    )
-                )
-        escolhas.append(questionary.Choice(title="Escolher outra GPU", value="__outra_gpu__"))
-        escolhas.append(questionary.Choice(title="Voltar ao menu principal", value="__voltar__"))
-
-        escolha = questionary.select(
-            "Selecione um perfil compatível para ver detalhes ou aplicar:",
-            choices=escolhas,
-            use_jk_keys=False,
-            style=_estilo_select(),
-            instruction=M.TECLAS_LISTA,
-        ).ask()
-
-        if escolha is None or escolha == "__voltar__":
-            return "menu"
-        if escolha == "__outra_gpu__":
-            try:
-                gpu_id = _escolher_gpu(con, estado)
-            except KeyboardInterrupt:
-                return "menu"
+        destino = _escolher_modelo_para_gpu(con, ler_estado_local(), gpu_id)
+        if destino == "outra_gpu":
             continue
-        destino = _fluxo_detalhe_perfil(con, escolha, ler_estado_local())
-        if destino != "lista":
-            return destino
+        if destino == "lista":
+            # "Voltar para a lista" no detalhe do perfil recua para a lista de GPUs.
+            continue
+        return destino
 
 
-def _executar_configure(con: Console, estado: EstadoLocal) -> str:
-    renderizar_cabecalho(con, estado, subtela=M.ACOES["configure"][0])
-    if estado.sessao_ativa:
-        _painel(
-            con,
-            "Sessão ativa encontrada",
-            f"A sessão '{estado.sessao_nome}' está ativa no momento.\n"
-            "É necessário encerrá-la antes de trocar o perfil de modelo.",
-            estilo="yellow",
-        )
-        if _confirmar(
-            "down", pergunta="Deseja ir para 'Encerrar sessão no Colab' agora?", default=False
-        ):
-            return "acao:down"
-        return "menu"
+def _executar_selecionar_gpu(con: Console, estado: EstadoLocal) -> str:
+    """Submenu de GPU: reusa o fluxo de perfil pronto ou o par GPU + modelo."""
+    import questionary
 
-    renderizar_perfis(con, estado)
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
+    _mostrar_pre_acao(con, "selecionar_gpu")
     con.print()
-    try:
-        selecionado = _escolher_perfil(con, estado)
-    except KeyboardInterrupt:
+    escolha = questionary.select(
+        M.SELECAO_SUBMENU_GPU,
+        choices=[
+            questionary.Choice(title=M.SUBMENU_PERFIL, value="perfil"),
+            questionary.Choice(title=M.SUBMENU_GPU_MODELOS, value="gpu"),
+            questionary.Choice(title="Voltar ao menu principal", value="menu"),
+        ],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_LISTA,
+    ).ask()
+    if escolha is None or escolha == "menu":
         return "menu"
-    return _fluxo_detalhe_perfil(con, selecionado, estado)
+    if escolha == "perfil":
+        return _executar_configure(con, ler_estado_local())
+    return _executar_gpu_modelo(con, ler_estado_local())
 
 
 def renderizar_instrucoes_harness(
@@ -1664,7 +1842,7 @@ def renderizar_instrucoes_harness(
     estado_sessao = (
         f"{sim.ok} ativa ({estado.sessao_nome})"
         if estado.sessao_ativa
-        else f"{sim.pendente} inativa (inicie pela opção 7 antes de usar)"
+        else f"{sim.pendente} inativa (inicie pela opção {M.ATALHOS_MENU['up']} antes de usar)"
     )
 
     resumo = Text()
@@ -1858,6 +2036,10 @@ def _aplicar_harness_automatico(con: Console, harness_id: str, cfg: config.Confi
 def _executar_harness(con: Console, cli: Any, estado: EstadoLocal) -> str:
     import questionary
 
+    # A config é lida antes de qualquer pergunta: com config.toml inválido o
+    # painel precisa aparecer já na entrada da tela.
+    cfg = _carregar_config(con)
+
     while True:
         renderizar_cabecalho(con, estado, subtela=M.ACOES["harness"][0])
         _mostrar_pre_acao(con, "harness")
@@ -1881,7 +2063,6 @@ def _executar_harness(con: Console, cli: Any, estado: EstadoLocal) -> str:
         if harness_id is None or harness_id == "__voltar__":
             return "menu"
 
-        cfg = config.load_config()
         suporta_auto = next(
             auto for hid, _n, _d, auto in M.HARNESS_OPCOES if hid == str(harness_id)
         )
@@ -1926,7 +2107,7 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
     con.print(M.SOMENTE_LEITURA, style="dim")
     con.print()
 
-    cfg = config.load_config()
+    cfg = _carregar_config(con)
     detalhes_tecnicos: list[str] = []
 
     with ExecutorEtapas(
@@ -1939,13 +2120,14 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
         ],
     ) as exec_etapas:
         exec_etapas.iniciar(0)
-        state_error: str | None = None
-        try:
-            state = config.load_state()
-        except config.StateFileError as exc:
-            state = None
-            state_error = str(exc)
-        exec_etapas.concluir(0, f"sessão {state.session}" if state else "sem sessão registrada")
+        state, state_error = _ler_estado_ou_erro()
+        if state_error:
+            etapa_local = "estado ilegível"
+        elif state is None:
+            etapa_local = "sem sessão registrada"
+        else:
+            etapa_local = f"sessão {state.session}"
+        exec_etapas.concluir(0, etapa_local, aviso=bool(state_error))
 
         exec_etapas.iniciar(1)
         try:
@@ -2006,12 +2188,7 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
 
     if state is None:
         if state_error:
-            _renderizar_erro(
-                con,
-                "Arquivo de estado local inválido.",
-                state_error,
-                "Verifique ~/.config/byom/state.json ou encerre sessões pendentes no Colab.",
-            )
+            _renderizar_erro_estado(con, state_error)
         else:
             _mostrar_resultado(
                 con,
@@ -2084,7 +2261,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
             return "acao:init"
         return "menu"
 
-    cfg = config.load_config()
+    cfg = _carregar_config(con)
     try:
         fit = config.check_compatibility(cfg)
     except ValueError as exc:
@@ -2130,11 +2307,16 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
     client = cli.remote.Remote(session=name, cfg=cfg)
     buf = io.StringIO()
 
-    with ExecutorEtapas(con, etapas) as exec_etapas:
+    with _guarda_up(), ExecutorEtapas(con, etapas) as exec_etapas:
         try:
             # 1. Preparar sessão
             exec_etapas.iniciar(0)
-            existing = config.load_state()
+            existing, erro_estado = _ler_estado_ou_erro()
+            if erro_estado:
+                exec_etapas.falhar(0, "estado ilegível")
+                raise _ErroEtapa(
+                    *_partes_erro_estado(erro_estado), detalhes_tecnicos=erro_estado
+                )
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 cli._prepare_session(cfg, existing, force)
             exec_etapas.concluir(0, "sem conflitos")
@@ -2183,8 +2365,10 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
         except KeyboardInterrupt:
             exec_etapas.registrar_log(buf.getvalue())
             if allocated:
+                # Mesmo teardown da CLI: `colab stop -s <nome>` não depende do
+                # state.json e é idempotente para uma sessão inexistente.
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                    cli._down(cfg, quiet=True)
+                    cli._stop_allocation(name)
             else:
                 config.clear_state()
             raise
@@ -2196,7 +2380,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                     exec_etapas.falhar(idx, "falhou")
             if allocated:
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                    cli._down(cfg, quiet=True)
+                    cli._stop_allocation(name)
             else:
                 config.clear_state()
             raise _ErroEtapa(
@@ -2275,7 +2459,7 @@ def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
             return "acao:up"
         return "menu"
 
-    cfg = config.load_config()
+    cfg = _carregar_config(con)
     endpoint = f"http://127.0.0.1:{cfg.proxy_port}/v1"
     try:
         resultado = llm_chat.run_setup(url=endpoint, model_name=cfg.served_model_name)
@@ -2407,7 +2591,12 @@ def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
             exec_etapas.concluir(2, "não confirmado", aviso=True)
 
         exec_etapas.iniciar(3)
-        cfg = config.load_config()
+        try:
+            cfg = config.load_config()
+        except config.ConfigError as exc:
+            # `down` precisa funcionar mesmo com config.toml inválido.
+            cfg = config.Config()
+            exec_etapas.registrar_log(f"config.toml inválido; usando padrões locais: {exc}")
         cli._terminate_local(state)
         cli.remote.Remote(session=state.session, cfg=cfg).stop()
         if confirmed:
@@ -2460,38 +2649,34 @@ def _rotulo_item_menu(
     incluir_atalho: bool = True,
 ) -> str:
     atalho = M.ATALHOS_MENU[acao_id]
-    rotulo, desc = M.ACOES[acao_id]
+    rotulo = M.ACOES[acao_id][0]
     prefixo = f"{atalho}. {rotulo}" if incluir_atalho else rotulo
     if acao_id == recomendado:
         prefixo += f" {sim.estrela} recomendado"
 
     aviso = ""
-    if acao_id == "configure" and estado.sessao_ativa:
+    if acao_id == "selecionar_gpu" and estado.sessao_ativa:
         aviso = " [requer encerrar sessão]"
     elif acao_id == "up" and not estado.ambiente_configurado:
         aviso = " [requer preparar ambiente]"
     elif acao_id in ("down", "chat") and not estado.sessao_ativa:
         aviso = " [sem sessão ativa]"
 
-    return f"{prefixo}{aviso} — {desc}"
+    return f"{prefixo}{aviso}"
 
 
 def renderizar_menu_estatico(con: Console, estado: EstadoLocal) -> None:
-    """Renderiza o menu agrupado em texto estruturado (útil para snapshots/testes)."""
+    """Renderiza a tela inicial em texto estruturado (útil para snapshots/testes)."""
     renderizar_cabecalho(con, estado)
     sim = obter_simbolos(con)
     recomendado = proximo_passo_recomendado(estado)
 
-    for grupo, acoes in M.GRUPOS_MENU:
-        con.print(f"[bold cyan]{grupo}[/bold cyan]")
-        for acao_id in acoes:
-            linha = _rotulo_item_menu(acao_id, estado, recomendado, sim, incluir_atalho=True)
-            estilo = "green" if acao_id == recomendado else ""
-            con.print(f"  {linha}", style=estilo)
-        con.print()
+    for acao_id in M.MENU_INICIAL:
+        linha = _rotulo_item_menu(acao_id, estado, recomendado, sim)
+        estilo = "green" if acao_id == recomendado else ""
+        # `markup=False`: os avisos usam colchetes e Rich os trataria como estilo.
+        con.print(f"  {linha}", style=estilo, markup=False)
 
-    con.print("[bold cyan]Outros[/bold cyan]")
-    con.print("  h. Ajuda sobre a interface")
     con.print("  q. Sair")
     con.print()
     con.print(M.TECLAS_MENU, style="dim")
@@ -2503,21 +2688,15 @@ def _construir_escolhas_menu(estado: EstadoLocal, sim: Simbolos) -> tuple[list[A
     recomendado = proximo_passo_recomendado(estado)
     escolhas: list[Any] = []
     escolha_padrao: Any = None
-    for grupo, acoes in M.GRUPOS_MENU:
-        escolhas.append(questionary.Separator(f"── {grupo} ──"))
-        for acao_id in acoes:
-            item = questionary.Choice(
-                title=_rotulo_item_menu(acao_id, estado, recomendado, sim, incluir_atalho=False),
-                value=acao_id,
-                shortcut_key=M.ATALHOS_MENU[acao_id],
-            )
-            if acao_id == recomendado:
-                escolha_padrao = item
-            escolhas.append(item)
-    escolhas.append(questionary.Separator("── Outros ──"))
-    escolhas.append(
-        questionary.Choice(title="Ajuda sobre a interface", value="__ajuda__", shortcut_key="h")
-    )
+    for acao_id in M.MENU_INICIAL:
+        item = questionary.Choice(
+            title=_rotulo_item_menu(acao_id, estado, recomendado, sim, incluir_atalho=False),
+            value=acao_id,
+            shortcut_key=M.ATALHOS_MENU[acao_id],
+        )
+        if acao_id == recomendado:
+            escolha_padrao = item
+        escolhas.append(item)
     escolhas.append(questionary.Choice(title="Sair", value="__sair__", shortcut_key="q"))
     return escolhas, escolha_padrao
 
@@ -2526,12 +2705,8 @@ def _despachar_acao(con: Console, cli: Any, acao_id: str) -> str:
     estado = ler_estado_local()
     if acao_id == "init":
         return _executar_init(con, cli, estado)
-    if acao_id == "profiles":
-        return _executar_profiles(con, estado)
-    if acao_id == "gpus":
-        return _executar_gpus(con, estado)
-    if acao_id == "models":
-        return _executar_models(con, estado)
+    if acao_id == "selecionar_gpu":
+        return _executar_selecionar_gpu(con, estado)
     if acao_id == "configure":
         return _executar_configure(con, estado)
     if acao_id == "harness":
@@ -2575,11 +2750,6 @@ def mostrar_menu(cli: Any) -> None:
                 ).ask()
                 if escolha is None or escolha == "__sair__":
                     break
-                if escolha == "__ajuda__":
-                    renderizar_cabecalho(console, estado, subtela="Ajuda")
-                    _painel(console, "Como usar o byom", M.MENU_AJUDA, estilo="cyan", expand=True)
-                    _aguardar_enter(console)
-                    continue
                 acao_id = str(escolha)
             else:
                 acao_id = proxima_acao

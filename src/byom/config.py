@@ -30,6 +30,11 @@ try:  # pragma: no cover - platform-dependent
 except ImportError:  # pragma: no cover - non-POSIX platforms
     fcntl = None  # type: ignore[assignment]
 
+#: Header que carrega o nonce da sessão nos endpoints internos do gateway.
+#: O forward do byom é `ssh -L 127.0.0.1:<porta>:127.0.0.1:<porta>`, então todo
+#: cliente do túnel aparece como loopback: o header é o que prova identidade.
+NONCE_HEADER = "X-BYOM-Nonce"
+
 #: O valor padrão NÃO é literal aqui: vem da propriedade do modelo no catálogo.
 #: O modelo padrão sem perfil é o Qwen3.8 AWQ (xhigh conforme a página).
 DEFAULTS: dict[str, Any] = {
@@ -251,6 +256,7 @@ WORKER_FIELDS = frozenset(
         "binary_asset",
         "model_repo",
         "model_patterns",
+        "image_roles",
         "main_pattern",
         "mmproj_pattern",
         "drafter_pattern",
@@ -260,6 +266,12 @@ WORKER_FIELDS = frozenset(
         "sampling",
     }
 )
+
+#: Papéis de imagem aceitos em `[worker.image_roles]`, cada um no formato
+#: `repo::pattern`. A flag do sd-server de cada papel está em
+#: `worker/build_vllm_command.py` e foi conferida na documentação da build
+#: fixada (`master-1106-532d2c1`).
+IMAGE_ROLES = ("diffusion", "vae", "text_encoder")
 
 PROFILE_FIELDS = frozenset(
     {
@@ -334,6 +346,24 @@ def available_profiles() -> list[Profile]:
                     for k, v in value.items()
                 ):
                     raise ValueError(f"Invalid [worker].sampling in {path.name}: {value!r}")
+                continue
+            if key == "image_roles":
+                if not isinstance(value, dict) or not value:
+                    raise ValueError(
+                        f"profile {path.name}: [worker.image_roles] must be a non-empty table"
+                    )
+                unknown_roles = set(value) - set(IMAGE_ROLES)
+                if unknown_roles:
+                    raise ValueError(
+                        f"Unknown [worker.image_roles] in {path.name}: "
+                        f"{', '.join(sorted(unknown_roles))}; expected {', '.join(IMAGE_ROLES)}"
+                    )
+                for role, spec in value.items():
+                    if not isinstance(spec, str) or "::" not in spec:
+                        raise ValueError(
+                            f"Invalid [worker].image_roles.{role} in {path.name}: {spec!r}; "
+                            "expected 'repo::pattern'"
+                        )
                 continue
             if not isinstance(value, str | bool | int | list):
                 raise ValueError(f"Invalid [worker].{key} in {path.name}: {value!r}")
@@ -422,7 +452,17 @@ def load_config() -> Config:
     path = config_path()
     if not path.exists():
         return Config()
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        # Sem esta tradução o erro de parse escapa como TOMLDecodeError, que não
+        # é ConfigError: a TUI cairia no handler genérico e fecharia o menu.
+        raise ConfigError(
+            f"config.toml não pode ser interpretado ({path}): {exc}. "
+            "Corrija a sintaxe ou mova o arquivo para fora do diretório do byom."
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(f"config.toml não pode ser lido ({path}): {exc}") from exc
     known = {f.name for f in fields(Config)}
     values = {k: v for k, v in raw.items() if k in known}
     cfg = Config(**values)
@@ -453,6 +493,46 @@ class State:
     created_at: str
     daemon_pid: int | None = None
     watchdog_pid: int | None = None
+    #: Campo 22 de `/proc/<pid>/stat` no instante em que o PID foi registrado.
+    #: Sem ele, um PID reciclado depois de um reboot seria tratado como byom.
+    daemon_start_ticks: int | None = None
+    watchdog_start_ticks: int | None = None
+
+
+def process_start_ticks(pid: int) -> int | None:
+    """Instante de início do processo (campo 22 de `/proc/<pid>/stat`).
+
+    Devolve None quando o processo não existe mais ou quando a plataforma não
+    tem `/proc`; nesse caso o chamador deve tratar o PID como morto.
+    """
+    if pid <= 0:
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    # O campo 2 (`comm`) pode conter espaços e parênteses: o split começa depois
+    # do último `)`, então `fields[0]` é o campo 3 e o campo 22 é `fields[19]`.
+    _, _, rest = raw.rpartition(")")
+    fields = rest.split()
+    if len(fields) < 20:
+        return None
+    try:
+        value = int(fields[19])
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def process_cmdline(pid: int) -> str:
+    """Linha de comando do processo, usada só quando não há start time."""
+    if pid <= 0:
+        return ""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode(errors="replace").strip()
 
 
 def validate_state(state: State) -> None:
@@ -461,12 +541,14 @@ def validate_state(state: State) -> None:
         value = getattr(state, key)
         if not isinstance(value, str) or (key in {"session", "nonce"} and not value):
             raise StateFileError(f"Invalid {key} in state.json: {value!r}; expected a string")
-    for key in ("daemon_pid", "watchdog_pid"):
+    for key in ("daemon_pid", "watchdog_pid", "daemon_start_ticks", "watchdog_start_ticks"):
         value = getattr(state, key)
         if value is not None and (
             isinstance(value, bool) or not isinstance(value, int) or value <= 0
         ):
-            raise StateFileError(f"Invalid {key} in state.json: {value!r}; expected a positive PID")
+            raise StateFileError(
+                f"Invalid {key} in state.json: {value!r}; expected a positive integer"
+            )
 
 
 def load_state() -> State | None:
@@ -489,7 +571,10 @@ def load_state() -> State | None:
         raise StateFileError("state.json is missing required fields (session, nonce)")
     filtered.setdefault("endpoint", "")
     filtered.setdefault("created_at", "")
-    state = State(**filtered)
+    try:
+        state = State(**filtered)
+    except TypeError as exc:  # pragma: no cover - defensivo: as chaves já foram filtradas
+        raise StateFileError(f"state.json inválido: {exc}") from exc
     validate_state(state)
     return state
 
@@ -549,6 +634,38 @@ def state_lock() -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path.with_name(path.name + ".lock"), "a+") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def up_lock_path() -> Path:
+    """Arquivo do lock da transação de `up` (exclusivo do byom)."""
+    return config_dir() / "up.lock"
+
+
+@contextlib.contextmanager
+def up_lock() -> Iterator[None]:
+    """Lock exclusivo e não bloqueante de uma transação `byom up`.
+
+    Dois `up` simultâneos alocariam duas GPUs: o segundo processo é recusado
+    com `ConfigError` em vez de esperar. `flock` é liberado pelo kernel quando
+    o processo morre, então uma execução interrompida não deixa lock preso.
+    """
+    if fcntl is None:  # pragma: no cover - non-POSIX platforms
+        yield
+        return
+    path = up_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ConfigError(
+                f"já existe um up em andamento (lock {path} ocupado); "
+                "aguarde a outra execução ou encerre-a antes de tentar de novo"
+            ) from exc
         try:
             yield
         finally:

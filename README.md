@@ -48,8 +48,15 @@ uv run byom uninstall                              # remove apenas o diretório 
   cliente, consultar as instruções passo a passo para configuração manual e,
   opcionalmente, aplicar a conexão automaticamente (sem alterar arquivos de
   harness durante o `Iniciar sessão no Colab`). A opção **Conversar com o
-  modelo (llm chat)**, no fim do menu (atalho `c`), abre o chat no terminal com
-  a sessão ativa.
+  modelo (llm chat)** (atalho `c`) abre o chat no terminal com a sessão ativa.
+* Na TUI, a opção **Selecionar GPU** (atalho `2`) concentra a escolha de modelo
+  e oferece dois caminhos: **Selecionar perfil de modelo**, que reusa a lista de
+  perfis prontos e a tela de detalhe, e **Selecionar uma GPU para ver os modelos
+  compatíveis**, que mostra a GPU escolhida, a tabela de modelos que cabem nela e
+  um painel de confirmação com o contexto servido e os valores resultantes de
+  `gpu`/`gpu_high_mem`. **Nada é gravado em `config.toml` antes da confirmação**:
+  voltar para a lista, trocar de GPU ou sair pelo menu não deixa resíduo, e um
+  par GPU + modelo que não cabe é recusado sem escrever nada.
 * `byom profiles` lista todos os perfis; `byom gpus` exibe o catálogo estático
   de GPUs. Encerre a sessão antes de trocar de perfil.
 * `byom models --gpu L4` lista apenas as variantes do catálogo cujo contexto
@@ -110,8 +117,12 @@ configuração global do `llm` no seu sistema:
 
 `src/byom/catalog.py` é a fonte única de números de GPU/VRAM e
 modelo/quantização; os comandos apenas os renderizam. `byom up` verifica
-`pesos + 2 GiB de runtime + 2 GiB por 32K de contexto` contra a GPU declarada em
-`config.toml`. Modelos de imagem não reservam cache KV autorregressivo.
+`pesos + projetor de visão (0,65 GiB quando o perfil carrega mmproj) + 2 GiB de
+runtime + 2 GiB por 32K de contexto + folga` contra a GPU declarada em
+`config.toml`. A folga é `max(1 GiB, 5% da VRAM)` — driver, contexto CUDA,
+alocadores e fragmentação —, então 100% da VRAM nunca é aprovado (é heurística
+de engenharia, não número de documentação). Modelos de imagem não reservam cache
+KV autorregressivo.
 
 GPUs (a VRAM é **aproximada para o Colab**: a FAQ oficial do Colab afirma que os
 tipos de GPU variam ao longo do tempo e não publica uma tabela de VRAM; os
@@ -120,7 +131,7 @@ comparison chart", consultado em 2026-11-23):
 
 | GPU (ID no catálogo) | VRAM | bf16 | Valor na Colab CLI |
 | :--- | ---: | :--- | :--- |
-| T4 | 16 GiB | não | `T4` |
+| T4 | 15 GiB (utilizáveis no Colab; o datasheet diz 16) | não | `T4` |
 | L4 | 24 GiB | sim | `L4` |
 | A100 40 GB | 40 GiB | sim | `A100`, `gpu_high_mem=false` |
 | A100 80 GB | 80 GiB | sim | `A100`, `gpu_high_mem=true` |
@@ -134,11 +145,11 @@ para filtrar a listagem; ele não altera a GPU declarada:
 
 | Modelo | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| Inkling 2 Mini | llama.cpp | 2 bit / 4 bit (17,6 GB) / 8 bit | 11 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | T4 / L4 / A100 |
+| Inkling 2 Mini | llama.cpp | 2 bit / 4 bit (17,6 GB) / 8 bit | 11 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | L4 / A100 40 (q4 e q8) |
 | Qwen3.8 27B | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | L4 (A100 para 256K) |
-| Qwen3.8 27B | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | T4 / L4 |
+| Qwen3.8 27B | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | L4 |
 | Gemma 4 | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 a A100 |
-| Muse Glimmer 30B | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | T4 a A100 |
+| Muse Glimmer 30B | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
 | Qwen-Image-2.1 | image | INT8-ConvRot / GGUF Q4_K_M | 20 / 12 GiB | n/a | n/a | L4 / T4 |
 
 A redução é dado estruturado, não texto solto: `src/byom/catalog.py` mantém
@@ -211,13 +222,17 @@ deles cabe em uma única GPU do Colab.
   sugere `--steps 20 --cfg-scale 6.0` para o fluxo via sd-cli; este projeto
   adota os padrões documentados da API (25/1) conforme o briefing, não um valor
   inventado para o sd.cpp. `POST /v1/images/edits` usa multipart e mantém os
-  padrões do servidor. Em uma Colab T4 de 15 GB, uma imagem 1024x1024 em 25
-  passos leva cerca de 120 s em fp16; são usados até ~14 GB de memória de GPU e
-  24 GB de RAM do sistema. A T4 não possui bf16, portanto o treino é recusado
+  padrões do servidor. A página documenta cerca de 120 s por imagem 1024x1024
+  em 25 passos numa Colab T4 de 15 GB; os dois perfis de imagem usam L4 porque o
+  custo total (pesos + encoder + VAE + runtime + folga obrigatória) não cabe nos
+  15 GiB utilizáveis da T4. A T4 não possui bf16, portanto o treino é recusado
   pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior. O nome do
   asset Linux fixado não declara seu backend; verifique o uso de GPU na primeira
   execução real. Se for um build de CPU, compile a partir da tag fixada com
-  `-DSD_CUDA=ON` e aponte `BYOM_SD_SERVER` para o `sd-server` gerado.
+  `-DSD_CUDA=ON` e coloque o binário em `/content/byom/sdcpp/sd-server`: o
+  `runtime_manifest.json` aponta para o symlink `/content/byom/sd-server`, que
+  o `prepare_runtime` cria a partir do diretório `binary_dir` do perfil. Não há
+  variável de ambiente para o caminho do binário — o manifest é a única fonte.
 * Repositórios no Hugging Face e a CLI do Colab são **verificados apenas na
   primeira execução real**: este repositório não os aciona durante os testes
   locais. Confira os arquivos de modelo resolvidos pelos padrões fixados e a GPU
@@ -397,15 +412,18 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   jobs concorrentes (padrão `4`; valores inválidos voltam para `4`); requisições
   excedentes recebem HTTP 503. Defina a variável de ambiente no ambiente da VM
   para alterá-la; ela não faz parte de `session.json`.
-* **Endpoints internos.** `/internal/state` e `/internal/begin-shutdown` aceitam
-  apenas clientes loopback (HTTP 403 caso contrário). Nenhuma autenticação de
-  cliente foi adicionada porque o gateway escuta em `127.0.0.1` e o proxy local
-  não expõe esses caminhos.
-* **SSH.** `init` define a chave privada com permissão `0600` após a geração.
-  `StrictHostKeyChecking=no` com `UserKnownHostsFile=/dev/null` é intencional: o
-  canal é um túnel efêmero `colab ssh --proxy-mode` com uma nova chave de host
-  a cada VM, e a CLI do Colab não expõe opção de `known_hosts`. Verificar chaves
-  de host exigiria mudança na CLI; reavalie se essa opção passar a existir.
+* **Endpoints internos.** `/health`, `/internal/state` e
+  `/internal/begin-shutdown` exigem `X-BYOM-Nonce` igual ao `nonce` da sessão
+  (comparação em tempo constante, HTTP 403 caso contrário) e continuam aceitando
+  apenas clientes loopback. O header é obrigatório porque o forward é
+  `ssh -L 127.0.0.1:<porta>:127.0.0.1:<porta>`: todo cliente do túnel aparece
+  como loopback. O nonce nunca vai em resposta de status nem em log.
+* **SSH.** `init` define a chave privada com permissão `0600` após a geração. A
+  chave de host é fixada **por sessão** em `<config_dir>/known_hosts_<sessão>`
+  com `HostKeyAlias=byom-<sessão>`: `accept-new` na primeira conexão da sessão e
+  `yes` nas seguintes, sem `/dev/null`. Se a chave mudar, o comando falha com
+  "chave de host da sessão mudou; possível MITM — rode `byom down` e `byom up`"
+  em vez de cair para `no`. O arquivo é removido no `down`.
 * **OpenCode V1/V2.** A configuração gerada permanece no formato V1 (`plugin`,
   `provider`, `npm`, `options`, `tool_call`), que o guia de migração V2 indica
   ser normalizado em memória. O plugin de descoberta é fixado em

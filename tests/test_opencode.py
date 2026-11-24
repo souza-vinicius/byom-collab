@@ -173,7 +173,7 @@ def test_up_does_not_allocate_gpu_if_opencode_sync_fails(tmp_path: Path, monkeyp
     monkeypatch.setattr(cli.opencode, "sync_config", fail_sync)
     monkeypatch.setattr(cli.colab, "new", track_allocation)
     # Nunca consultar o Colab real: uma sessão ativa na conta quebraria o teste.
-    monkeypatch.setattr(cli.colab, "orphan_assignments", lambda: [])
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", lambda known=None: [])
     result = CliRunner().invoke(cli.app, ["up", "--opencode-config", str(tmp_path / "bad.json")])
 
     assert result.exit_code == 1

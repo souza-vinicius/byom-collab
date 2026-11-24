@@ -1,5 +1,5 @@
 name = "Muse Glimmer 30B (q4)"
-description = "Muse Glimmer 4 bit com visão; build llama.cpp fixado."
+description = "Muse Glimmer 4 bit com visão; 64K exige A100 de 40 GB (L4 fica 1,2 GiB abaixo da folga)."
 opencode_output_limit = 8192
 runtime = "llama-cpp"
 catalog_model = "muse-glimmer-30b"
@@ -9,7 +9,7 @@ catalog_variant = "q4"
 model = "muse-glimmer-30b"
 served_model_name = "muse-glimmer-30b"
 max_model_len = 65536
-gpu = "L4"
+gpu = "A100"
 gpu_high_mem = false
 vllm_spec = "vllm"
 vllm_enforce_eager = false
