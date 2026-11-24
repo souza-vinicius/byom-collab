@@ -114,6 +114,15 @@ def test_worker_payload_and_command_use_profile_values(tmp_path: Path):
     assert "--tool-call-parser" in args
 
 
+def test_perfis_llama_cpp_nao_declaram_kv_cache_dtype():
+    """O llama-server não recebe --cache-type-k/-v: o KV é f16 e o campo confunde."""
+    for profile in config.available_profiles():
+        if profile.runtime == "llama-cpp":
+            assert "kv_cache_dtype" not in profile.settings, profile.id
+        elif profile.runtime == "vllm":
+            assert profile.settings.get("kv_cache_dtype") == "fp8", profile.id
+
+
 def test_perfis_nao_repetem_reasoning_nem_steps():
     for profile in config.available_profiles():
         assert "reasoning_effort" not in profile.settings, profile.id

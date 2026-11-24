@@ -726,6 +726,7 @@ class PerfilView:
     visao_gib: float
     runtime_gib: float
     kv_gib: float
+    kv_dtype: str
     total_gib: float
     cabe_gpu_atual: bool
     motivo_contexto: str
@@ -776,15 +777,30 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
         pesos = variant.memory_gib if variant else 0.0
         visao_gib = variant.vision_gib if variant else 0.0
         runtime_gib = catalog.RUNTIME_RESERVE_GIB
-        kv_gib = 0.0 if p.runtime == "image" else catalog.kv_cache_gib(ctx_servido)
+        kv_dtype = catalog.effective_kv_dtype(p.runtime, p.settings.get("kv_cache_dtype"))
+        kv_gib = (
+            0.0
+            if p.runtime == "image"
+            else catalog.kv_cache_gib(
+                ctx_servido, kv_cache_dtype=p.settings.get("kv_cache_dtype"), runtime=p.runtime
+            )
+        )
         total_gib = (
-            catalog.required_vram_gib(variant, ctx_servido, p.runtime)
+            catalog.required_vram_gib(
+                variant, ctx_servido, p.runtime, kv_cache_dtype=p.settings.get("kv_cache_dtype")
+            )
             if variant
             else pesos + runtime_gib + kv_gib
         )
 
         fit_atual = (
-            catalog.check_fit(p.catalog_model, p.catalog_variant, gpu_ref, ctx_servido)
+            catalog.check_fit(
+                p.catalog_model,
+                p.catalog_variant,
+                gpu_ref,
+                ctx_servido,
+                kv_cache_dtype=p.settings.get("kv_cache_dtype"),
+            )
             if p.catalog_model and p.catalog_variant
             else None
         )
@@ -826,6 +842,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 visao_gib=visao_gib,
                 runtime_gib=runtime_gib,
                 kv_gib=kv_gib,
+                kv_dtype=kv_dtype,
                 total_gib=total_gib,
                 cabe_gpu_atual=cabe,
                 motivo_contexto=motivo,
@@ -1685,7 +1702,7 @@ def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView)
         memoria += f" + visão {M.formatar_gib(item.visao_gib)}"
     memoria += f" + motor {M.formatar_gib(item.runtime_gib)}"
     if item.profile.runtime != "image":
-        memoria += f" + cache KV {M.formatar_gib(item.kv_gib)}"
+        memoria += f" + cache KV {M.formatar_gib(item.kv_gib)} ({item.kv_dtype})"
 
     corpo = Text()
     corpo.append("GPU: ", style="bold cyan")

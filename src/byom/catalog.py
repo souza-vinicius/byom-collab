@@ -58,10 +58,19 @@ GENERATION_SOURCE_IMAGE = (
 )
 
 # Margens determinísticas (heurística de engenharia, não valor de documentação):
-# 2 GiB para runtime/processo e 2 GiB por 32K de contexto (mínimo 1 GiB).
+# 2 GiB para runtime/processo e 2 GiB por 32K de contexto em f16 (mínimo 1 GiB).
 RUNTIME_RESERVE_GIB = 2.0
 KV_CACHE_GIB_PER_32K = 2.0
 MIN_KV_CACHE_GIB = 1.0
+
+#: Fator do KV por dtype. O número acima (2 GiB/32K) é f16; `fp8` ocupa metade.
+#: `vllm` respeita `--kv-cache-dtype` do perfil; `llama-cpp` usa o default do
+#: llama-server, que é f16 (docs de `--cache-type-k/-v`: default f16, consultadas
+#: em 2026-11-24) — por isso os perfis llama-cpp não declaram `kv_cache_dtype`.
+KV_CACHE_DTYPE_FACTORS = {"fp8": 0.5, "f16": 1.0}
+
+#: dtype efetivo por runtime, usado na conta e nas mensagens.
+KV_CACHE_RUNTIME_DEFAULT = {"vllm": "fp8", "llama-cpp": "f16", "image": ""}
 
 #: Folga obrigatória entre o que o modelo ocupa e a VRAM utilizável da GPU.
 #: HEURÍSTICA, não número de documentação: driver, contexto CUDA, alocadores e
@@ -605,10 +614,31 @@ def variant_by_id(model_id: str, variant_id: str) -> Variant:
     raise ValueError(f"Variante {variant_id!r} desconhecida para {model_id!r}")
 
 
-def kv_cache_gib(max_model_len: int) -> float:
+def effective_kv_dtype(runtime: str, declared: str | None) -> str:
+    """dtype que o runtime realmente usa para o KV.
+
+    `llama-cpp` ignora `kv_cache_dtype` (o llama-server não recebe
+    `--cache-type-k/-v`, logo fica no default f16); `vllm` recebe
+    `--kv-cache-dtype` com o valor do perfil.
+    """
+    if runtime != "vllm":
+        return KV_CACHE_RUNTIME_DEFAULT.get(runtime, "f16")
+    candidate = (declared or "").strip().lower()
+    if candidate in KV_CACHE_DTYPE_FACTORS:
+        return candidate
+    # Sem valor declarado, o argv do worker usa o default de `build_args`.
+    return KV_CACHE_RUNTIME_DEFAULT["vllm"]
+
+
+def kv_cache_gib(
+    max_model_len: int, *, kv_cache_dtype: str | None = None, runtime: str = "vllm"
+) -> float:
+    """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato."""
     if max_model_len <= 0:
         return MIN_KV_CACHE_GIB
-    return max(MIN_KV_CACHE_GIB, KV_CACHE_GIB_PER_32K * max_model_len / 32768)
+    dtype = effective_kv_dtype(runtime, kv_cache_dtype)
+    factor = KV_CACHE_DTYPE_FACTORS.get(dtype, 1.0)
+    return max(MIN_KV_CACHE_GIB, KV_CACHE_GIB_PER_32K * factor * max_model_len / 32768)
 
 
 def vram_headroom_gib(vram_gib: float) -> float:
@@ -616,47 +646,80 @@ def vram_headroom_gib(vram_gib: float) -> float:
     return round(max(VRAM_HEADROOM_MIN_GIB, VRAM_HEADROOM_FRACTION * vram_gib), 2)
 
 
-def required_vram_gib(variant: Variant, max_model_len: int, runtime: str = "") -> float:
+def required_vram_gib(
+    variant: Variant,
+    max_model_len: int,
+    runtime: str = "",
+    *,
+    kv_cache_dtype: str | None = None,
+) -> float:
     """Pesos + projetor de visão + runtime + KV; sem folga (ver `check_fit`)."""
-    kv = 0.0 if runtime == "image" else kv_cache_gib(max_model_len)
+    kv = (
+        0.0
+        if runtime == "image"
+        else kv_cache_gib(max_model_len, kv_cache_dtype=kv_cache_dtype, runtime=runtime)
+    )
     return round(
         variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv, 2
     )
 
 
-def _fits(variant: Variant, runtime: str, gpu: Gpu, max_model_len: int) -> bool:
+def _fits(
+    variant: Variant,
+    runtime: str,
+    gpu: Gpu,
+    max_model_len: int,
+    kv_cache_dtype: str | None = None,
+) -> bool:
     """Pesos + visão + runtime + KV precisam caber com a folga da GPU."""
-    required = required_vram_gib(variant, max_model_len, runtime)
+    required = required_vram_gib(
+        variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype
+    )
     return variant.available and required + vram_headroom_gib(gpu.vram_gib) <= gpu.vram_gib
 
 
 def check_fit(
-    model_id: str, variant_id: str, gpu_id: str, max_model_len: int = 32768
+    model_id: str,
+    variant_id: str,
+    gpu_id: str,
+    max_model_len: int = 32768,
+    *,
+    kv_cache_dtype: str | None = None,
 ) -> CompatibilityResult:
     """Verifique se a variante cabe na GPU declarada, sem realocar nada."""
     variant = variant_by_id(model_id, variant_id)
     gpu = gpu_by_id(gpu_id)
     runtime = model_by_id(model_id).runtime
-    required = required_vram_gib(variant, max_model_len, runtime)
+    required = required_vram_gib(
+        variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype
+    )
     headroom = vram_headroom_gib(gpu.vram_gib)
     alternatives: list[str] = []
     if variant.available:
         for other in model_by_id(model_id).variants:
             if other.id == variant.id or not other.available:
                 continue
-            if _fits(other, runtime, gpu, max_model_len):
+            if _fits(other, runtime, gpu, max_model_len, kv_cache_dtype):
                 alternatives.append(f"{model_id}:{other.id}")
-    fits = _fits(variant, runtime, gpu, max_model_len)
+    fits = _fits(variant, runtime, gpu, max_model_len, kv_cache_dtype)
     reason = ""
     if not variant.available:
         reason = variant.reason
     elif not fits:
-        kv = 0.0 if runtime == "image" else kv_cache_gib(max_model_len)
+        kv = (
+            0.0
+            if runtime == "image"
+            else kv_cache_gib(
+                max_model_len, kv_cache_dtype=kv_cache_dtype, runtime=runtime
+            )
+        )
+        dtype = effective_kv_dtype(runtime, kv_cache_dtype)
+        cache = f"KV ~{kv:.1f} em {dtype}" if dtype else f"KV ~{kv:.1f}"
         visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
         reason = (
             f"{variant.label} precisa de ~{required:.1f} GiB "
             f"(pesos {variant.memory_gib:g}{visao} + runtime {RUNTIME_RESERVE_GIB:g} + "
-            f"KV ~{kv:.1f}) mais {headroom:.1f} GiB de margem, "
+            f"{cache}) mais {headroom:.1f} GiB de margem, "
             f"mas {gpu.label} tem {gpu.vram_gib} GiB utilizáveis."
         )
     return CompatibilityResult(

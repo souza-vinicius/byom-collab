@@ -339,6 +339,13 @@ def available_profiles() -> list[Profile]:
         worker = raw.get("worker", {})
         if not isinstance(worker, dict):
             raise ValueError(f"profile {path.name}: [worker] must be a table")
+        if runtime != "vllm" and "kv_cache_dtype" in settings:
+            # O llama-server não recebe `--cache-type-k/-v`; declarar fp8 ali
+            # fazia o orçamento cobrar metade do KV que o runtime não usa.
+            raise ValueError(
+                f"{path.name} declares kv_cache_dtype, but runtime {runtime!r} always "
+                "uses the f16 KV cache; remove the field or use runtime 'vllm'"
+            )
         unknown_worker = set(worker) - WORKER_FIELDS
         if unknown_worker:
             raise ValueError(
@@ -429,7 +436,9 @@ def check_compatibility(cfg: Config) -> catalog.CompatibilityResult:
     """Check the declared GPU against the active variant before any allocation."""
     model_id, variant_id = active_catalog_ref(cfg)
     gpu = catalog.resolve_gpu(cfg.gpu, cfg.gpu_high_mem)
-    return catalog.check_fit(model_id, variant_id, gpu.id, cfg.max_model_len)
+    return catalog.check_fit(
+        model_id, variant_id, gpu.id, cfg.max_model_len, kv_cache_dtype=cfg.kv_cache_dtype
+    )
 
 
 def _toml_value(value: Any) -> str:
