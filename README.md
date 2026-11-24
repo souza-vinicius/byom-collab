@@ -118,8 +118,12 @@ configuração global do `llm` no seu sistema:
 `src/byom/catalog.py` é a fonte única de números de GPU/VRAM e
 modelo/quantização; os comandos apenas os renderizam. `byom up` verifica
 `pesos + projetor de visão (0,65 GiB quando o perfil carrega mmproj) + 2 GiB de
-runtime + 2 GiB por 32K de contexto + folga` contra a GPU declarada em
-`config.toml`. A folga é `max(1 GiB, 5% da VRAM)` — driver, contexto CUDA,
+runtime + cache KV + drafter DSpark (0,47 GiB, só com `dspark = true`) + folga`
+contra a GPU declarada em
+`config.toml`. O KV é `2 GiB por 32K` (heurístico, em f16) para quem não declara
+`ModelEntry.kv_shape`, e pela arquitetura — `2 × kv_heads × head_dim × bytes ×
+(camadas completas × ctx + locais × min(ctx, janela))` — para quem declara.
+A folga é `max(1 GiB, 5% da VRAM)` — driver, contexto CUDA,
 alocadores e fragmentação —, então 100% da VRAM nunca é aprovado (é heurística
 de engenharia, não número de documentação). Modelos de imagem não reservam cache
 KV autorregressivo.
@@ -145,8 +149,8 @@ para filtrar a listagem; ele não altera a GPU declarada:
 
 | Modelo | Fornecedor | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
 | :--- | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| Inkling 2 Mini | Thinking Machines Lab | llama.cpp | 2 bit (7,90 GiB) / 4 bit / 8 bit — pesos Unsloth | 7,9 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | **T4** / A100 40 (q4 e q8) |
-| Inkling 2 Mini | Thinking Machines Lab | llama.cpp | AD-Q6_K / AD-Q4_K / AD-IQ2_XXS — pesos AtomicChat | 22,2 / 15,4 / 9,7 GiB | 1.000.000 | 131.072 / 32.768 / 16.384 | A100 40 / **L4** / **T4** |
+| Inkling 2 Mini | Thinking Machines Lab | llama.cpp | 2 bit (7,90 GiB) / 4 bit / 8 bit — pesos Unsloth | 7,9 / 18 / 24 GiB | 1.000.000 | 32.768 / 65.536 / 131.072 | **T4** / **L4** / A100 40 |
+| Inkling 2 Mini | Thinking Machines Lab | llama.cpp | AD-Q6_K / AD-Q4_K / AD-IQ2_XXS — pesos AtomicChat | 22,2 / 15,4 / 9,7 GiB | 1.000.000 | 131.072 / 32.768 / 32.768 | A100 40 / **L4** / **T4** |
 | Qwen3.8 27B | Qwen (Alibaba Cloud) | vLLM (AWQ) | W4A16-AWQ | 17 GiB | 262.144 | 32.768 ou 262.144 | A100 40 / A100 80 (256K) |
 | Qwen3.8 27B | Qwen (Alibaba Cloud) | llama.cpp | 3 bit / 4 bit | 12 / 17 GiB | 262.144 | 32.768 | L4 |
 | Gemma 4 | Google DeepMind | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
@@ -169,8 +173,9 @@ Unsloth: esses arquivos já estão no layout merged do PR #32694. Ficaram de for
 `Inkling-2-Mini-Q4_K_M.gguf` (17,38 GB) e `Q5_K_M` (19,81 GB), que continuam no
 layout antigo do PR #32695 e **não carregam** em b12600+; o drafter DSpark
 (`dspark-Inkling-2-Mini-Q8_0.gguf`) exige um build do PR #32218 e também não tem
-perfil. O `AD-IQ2_XXS` serve 16K porque em 32K o KV estoura os 15 GiB da T4 —
-o motivo está em `Variant.context_reason`.
+perfil. O `AD-IQ2_XXS` serve **32K** na T4 porque o KV do Inkling é contado pela
+arquitetura (0,58 GiB em 32K, e não os 2 GiB do heurístico) — o motivo está em
+`Variant.context_reason`.
 
 Memória e GPU são conta, não estimativa de página: cada número vem dos bytes
 publicados no Hugging Face (conferidos em 2026-11-24) e o perfil declara a GPU
@@ -179,12 +184,21 @@ de cada perfil está em [docs/log.md](docs/log.md#2026-11-24).
 
 A redução é dado estruturado, não texto solto: `src/byom/catalog.py` mantém
 `Variant.context_doc`, `Variant.context` e `PROFILE_CONTEXTS`, uma entrada por
-perfil com a GPU e o motivo (o cache KV cresce com o contexto: 2 GiB por 32K em
-f16, 1 GiB em fp8 — o orçamento usa o dtype que o runtime realmente pede no
-argv: `--kv-cache-dtype` nos perfis vLLM, f16 fixo nos llama-cpp). `byom models` mostra ambos os números; `byom profiles` e
-`byom configure` exibem o par documentado/servido com a justificativa. As
-checagens de compatibilidade continuam usando o contexto SERVIDO — o máximo
-documentado nunca é usado para alocar uma GPU incapaz de comportar o cache KV.
+perfil com a GPU e o motivo. O cache KV cresce com o contexto **e com a
+arquitetura**: sem `ModelEntry.kv_shape` vale o heurístico de 2 GiB por 32K em
+f16 (1 GiB em fp8, o dtype que o argv pede — `--kv-cache-dtype` nos perfis
+vLLM, f16 fixo nos llama-cpp); com `kv_shape`, a conta é
+`2 × kv_heads × head_dim × bytes × (camadas completas × ctx + camadas locais ×
+min(ctx, janela))`, arredondada para cima. O Inkling 2 Mini declara a forma do
+`config.json` oficial (`4` camadas completas + `20` com janela de 1024, 16 KiB
+por token e 80 MiB fixos): 16K = 0,33 GiB, 32K = 0,58, 128K = 2,08 — contra
+1/2/8 do heurístico. `byom models` mostra ambos os números; `byom profiles` e
+`byom configure` exibem o par documentado/servido com a justificativa, e a TUI
+mostra a procedência do KV (arquitetura com URL e data, ou "heurístico"). O
+perfil que liga `[worker] dspark = true` também soma os 0,47 GiB do drafter
+DSpark. As checagens de compatibilidade continuam usando o contexto SERVIDO — o
+máximo documentado nunca é usado para alocar uma GPU incapaz de comportar o
+cache KV.
 
 `reasoning_effort` também é uma propriedade do modelo no catálogo, com a fonte
 registrada em `ModelEntry.reasoning_source` (todas conferidas em 2026-11-23):
@@ -210,8 +224,11 @@ NVFP4 por especialista na segunda e terceira passadas em loop e produzem saída
 incorreta. Os perfis `inkling-2-mini-ad-*` usam o **mesmo** `b12611` porque os
 arquivos `AD-*` da AtomicChat já estão no layout merged do PR #32694 e o
 publicador exige `b12600` ou mais novo com `--jinja`; nenhum perfil usa
-`Q4_K_M`/`Q5_K_M`. DSpark fica desativado: o suporte mainline ainda é um pull
-request aberto (PR #32218), então o drafter não tem perfil. Muse Glimmer usa o
+`Q4_K_M`/`Q5_K_M`. DSpark continua desativado nos TOMLs: o suporte mainline é
+um pull request aberto (PR #32218), então o drafter não tem perfil — mas o custo
+dele (0,47 GiB) já entra no orçamento de qualquer perfil que ligue
+`[worker] dspark = true`, e `available_profiles` recusa o campo sem
+`drafter_pattern`. Muse Glimmer usa o
 release fixado `b12649` do upstream.
 Qwen3.8 mantém o perfil AWQ existente para vLLM e adiciona opções GGUF. Os
 perfis do Gemma 4 carregam uma chave explícita `thinking_policy` vinda do
@@ -413,7 +430,7 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   registradas no catálogo e nas tabelas acima. Nenhum perfil repete `medium`,
   `25` ou um máximo de contexto documentado.
 * **O contexto não é reduzido silenciosamente.** `PROFILE_CONTEXTS` lista todos
-  os 15 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
+  os 18 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
   imprime ambos; `check_fit` continua usando o valor servido de `config.toml`.
   Elevar um perfil ao máximo documentado sem uma GPU maior está explicitamente
   fora de escopo.

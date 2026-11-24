@@ -273,7 +273,11 @@ def models(
         selected = catalog.parse_gpu_choice(gpu)
     except ValueError as exc:
         _die(str(exc))
-    _say(catalog.format_compatible_models(selected.id, _package_owners()))
+    _say(
+        catalog.format_compatible_models(
+            selected.id, _package_owners(), config.drafter_gib_by_profile()
+        )
+    )
 
 
 @app.command()

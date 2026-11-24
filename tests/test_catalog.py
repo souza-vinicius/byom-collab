@@ -44,23 +44,29 @@ def test_colab_settings_for_gpu_fecha_o_ciclo_com_resolve_gpu():
 
 
 def test_compatibilidade_com_margem_e_alternativas():
-    # 24,0 de 24,0 GiB era aprovado antes da regra de folga; agora reprova.
-    no_limite = catalog.check_fit("inkling-2-mini", "q4", "L4", 65536)
-    assert no_limite.required_gib == pytest.approx(24.65)
-    assert no_limite.available_gib == 24.0
-    assert not no_limite.fits
-    assert "margem" in no_limite.reason
-
-    com_folga = catalog.check_fit("inkling-2-mini", "q4", "A100-40", 65536)
+    # 18 + 0,65 de visão + 2 de runtime + 1,08 de KV em 64K (pela arquitetura)
+    # = 21,73: com a folga de 1,2 GiB da L4 dá 22,93 <= 24 e a A100-40 deixou
+    # de ser necessária para o q4 — era 24,65 com o heurístico de 2 GiB/32K.
+    com_folga = catalog.check_fit("inkling-2-mini", "q4", "L4", 65_536)
+    assert com_folga.required_gib == pytest.approx(21.73)
+    assert com_folga.available_gib == 24.0
     assert com_folga.fits
-    assert com_folga.headroom_gib == pytest.approx(2.0)
+    assert com_folga.headroom_gib == pytest.approx(1.2)
 
-    # Em L4 a alternativa q2 (com visão) ainda cabe em 65.536; em T4 só o q2 cabe.
-    assert "inkling-2-mini:q2" in no_limite.alternatives
+    # Quem não cabe na L4 é o q8: 28,73 GiB de pesos+KV contra 24 GiB.
+    sem_folga = catalog.check_fit("inkling-2-mini", "q8", "L4", 131_072)
+    assert sem_folga.required_gib == pytest.approx(28.73)
+    assert not sem_folga.fits
+    assert "margem" in sem_folga.reason
+    assert "arquitetura" in sem_folga.reason
+    assert "inkling-2-mini:q4" in sem_folga.alternatives
+
+    # Em T4 o q4 não cabe nem em 32K; as alternativas são as variantes menores
+    # que caberiam no mesmo contexto.
     too_big = catalog.check_fit("inkling-2-mini", "q4", "T4", 32768)
     assert not too_big.fits
     assert "GiB" in too_big.reason
-    assert too_big.alternatives == ("inkling-2-mini:q2",)
+    assert too_big.alternatives == ("inkling-2-mini:q2", "inkling-2-mini:ad-iq2xxs")
 
     with pytest.raises(ValueError):
         catalog.check_fit("modelo-inexistente", "q4", "L4")
@@ -271,17 +277,21 @@ def test_contexto_documentado_servido_e_motivo():
     assert served["qwen3.8-27b-256k"] == 262_144
     assert served["inkling-2-mini-ad-q6k"] == 131_072
     assert served["inkling-2-mini-ad-q4k"] == 32_768
-    assert served["inkling-2-mini-ad-iq2xxs"] == 16_384
+    assert served["inkling-2-mini-ad-iq2xxs"] == 32_768
     assert all(item.reason for item in catalog.PROFILE_CONTEXTS)
     assert len(served) == 18
 
 
 def test_compatibilidade_continua_usando_contexto_servido():
-    # 65.536 servidos (com visão e folga) cabem em A100-40, não em L4;
-    # 1.000.000 documentados não cabem em nenhuma das duas.
-    assert catalog.check_fit("inkling-2-mini", "q4", "A100-40", 65_536).fits
-    assert not catalog.check_fit("inkling-2-mini", "q4", "L4", 65_536).fits
-    assert not catalog.check_fit("inkling-2-mini", "q4", "A100-40", 1_000_000).fits
+    # 65.536 servidos do q4 (21,73 com o KV da arquitetura) cabem na L4; a T4
+    # não comporta nem 32K do mesmo arquivo.
+    assert catalog.check_fit("inkling-2-mini", "q4", "L4", 65_536).fits
+    assert not catalog.check_fit("inkling-2-mini", "q4", "T4", 65_536).fits
+    assert not catalog.check_fit("inkling-2-mini", "q4", "T4", 32_768).fits
+    # 1M continua sendo checado contra a GPU: 18 + 0,65 + 2 + 15,34 = 35,99
+    # cabe na A100-40 por 2,01 GiB além da folga e não cabe na L4.
+    assert catalog.check_fit("inkling-2-mini", "q4", "A100-40", 1_000_000).fits
+    assert not catalog.check_fit("inkling-2-mini", "q4", "L4", 1_000_000).fits
     ref = catalog.profile_context("inkling-2-mini-q4-gguf")
     assert ref.context_served == 65_536
     assert ref.context_doc == 1_000_000
@@ -315,7 +325,7 @@ def test_numeros_das_variantes_atomicchat_vem_do_tree_do_hf():
     esperado = {
         "ad-q6k": (22.15, 131_072, "A100-40"),
         "ad-q4k": (15.39, 32_768, "L4"),
-        "ad-iq2xxs": (9.71, 16_384, "T4"),
+        "ad-iq2xxs": (9.71, 32_768, "T4"),
     }
     for variant_id, (gib, context, gpu) in esperado.items():
         variant = catalog.variant_by_id("inkling-2-mini", variant_id)
@@ -343,11 +353,15 @@ def test_variantes_atomicchat_nao_oferecem_os_presets_do_layout_antigo():
     assert all(variant.label.startswith("AD-") for variant in ad)
 
 
-def test_variante_ad_iq2xxs_so_cabe_na_t4_com_contexto_reduzido():
-    # 9,71 + 0,65 visão + 2 runtime + 2 de KV em 32K = 14,36 > 15 - 1,0 de folga.
-    assert not catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "T4", 32_768).fits
-    assert catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "T4", 16_384).fits
-    # Na L4 o mesmo arquivo serviria 32K com folga de 8,4 GiB.
+def test_variante_ad_iq2xxs_cabe_na_t4_em_32k_com_o_kv_da_arquitetura():
+    # 9,71 + 0,65 visão + 2 runtime + 0,58 de KV (arquitetura) = 12,94;
+    # com a folga de 1,0 GiB dá 13,94 <= 15 GiB da T4.
+    em_32k = catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "T4", 32_768)
+    assert em_32k.required_gib == pytest.approx(12.94)
+    assert em_32k.fits
+    # 128K no mesmo arquivo já estoura: 9,71 + 0,65 + 2 + 2,08 = 14,44, mais
+    # a folga de 1,0 = 15,44 > 15 GiB.
+    assert not catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "T4", 131_072).fits
     assert catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "L4", 32_768).fits
 
 
@@ -355,3 +369,200 @@ def test_variante_ad_q6k_nao_cabe_em_l4_nem_na_t4():
     assert not catalog.check_fit("inkling-2-mini", "ad-q6k", "T4", 32_768).fits
     assert not catalog.check_fit("inkling-2-mini", "ad-q6k", "L4", 32_768).fits
     assert catalog.check_fit("inkling-2-mini", "ad-q6k", "A100-40", 131_072).fits
+
+
+# ---------------------------------------------------------------------------
+# KV por arquitetura (`KvProfile`/`ModelEntry.kv_shape`)
+# ---------------------------------------------------------------------------
+
+def _entrada_sintetica(shape: catalog.KvProfile | None) -> catalog.ModelEntry:
+    """Entrada mínima do catálogo, só para exercitar a conta do KV."""
+    return catalog.ModelEntry(
+        "sintetico",
+        "Sintético",
+        "llama-cpp",
+        (catalog.Variant("v", "v", 1.0, 1024, "T4"),),
+        "tests",
+        kv_shape=shape,
+    )
+
+
+def _shape_hibrido() -> catalog.KvProfile:
+    """Forma de atenção híbrida: 4 completas + 20 locais de 1024 tokens."""
+    return catalog.KvProfile(
+        layers_full=4,
+        layers_local=20,
+        kv_heads=8,
+        head_dim=128,
+        window=1024,
+        bytes_per_elem=2,
+        source="https://exemplo/config.json",
+        checked_at="2026-11-24",
+    )
+
+
+def test_kv_por_arquitetura_so_cresce_nas_camadas_completas():
+    shape = _shape_hibrido()
+
+    # 2 (K,V) × 8 heads × 128 dim × 2 B = 4 KiB por token em UMA camada completa;
+    # com 4 camadas completas são 16 KiB por token.
+    assert shape.bytes_per_token(2) == 4 * 1024
+    assert shape.bytes_per_token(2) * shape.layers_full == 16 * 1024
+    # 20 camadas locais × 1024 tokens = 80 MiB fixos (não crescem com o ctx).
+    apenas_locais = (
+        shape.layers_local * shape.bytes_per_token(2) * shape.window / catalog.GIB
+    )
+    assert apenas_locais == pytest.approx(80 / 1024)
+
+    assert shape.cache_gib(16_384) == pytest.approx(0.33, abs=0.005)
+    assert shape.cache_gib(32_768) == pytest.approx(0.58, abs=0.005)
+    assert shape.cache_gib(131_072) == pytest.approx(2.08, abs=0.005)
+
+
+def test_kv_por_arquitetura_arredonda_para_cima_e_respeita_o_dtype():
+    shape = _shape_hibrido()
+    # 0,328125 GiB brutos: o orçamento nunca arredonda para baixo.
+    assert shape.cache_gib(16_384) == 0.33
+
+    modelo = _entrada_sintetica(shape)
+    f16 = catalog.kv_cache_gib(32_768, modelo, runtime="llama-cpp")
+    fp8 = catalog.kv_cache_gib(32_768, modelo, runtime="vllm", kv_cache_dtype="fp8")
+    assert f16 == 0.58
+    assert fp8 == 0.29  # metade do KV, arredondado para cima
+
+
+def test_modelo_sem_kv_shape_continua_no_heurístico():
+    modelo = _entrada_sintetica(None)
+    assert catalog.kv_cache_gib(32_768, modelo, runtime="llama-cpp") == 2.0
+    assert catalog.kv_cache_gib(8_192, modelo, runtime="llama-cpp") == 1.0  # piso
+    assert catalog.required_vram_gib(
+        catalog.Variant("v", "v", 9.71, 32_768, "T4", vision_gib=0.65),
+        32_768,
+        "llama-cpp",
+        model=modelo,
+    ) == pytest.approx(14.36)
+
+
+def test_required_vram_usa_o_kv_da_arquitetura_quando_existe():
+    modelo = _entrada_sintetica(_shape_hibrido())
+    variante = catalog.Variant("v", "v", 9.71, 32_768, "T4", vision_gib=0.65)
+    assert catalog.required_vram_gib(
+        variante, 32_768, "llama-cpp", model=modelo
+    ) == pytest.approx(12.94)
+
+
+def test_kv_shape_invalido_falha_na_validacao():
+    with pytest.raises(ValueError, match="sem fonte datada"):
+        catalog._check_kv_shape(
+            "x", catalog.KvProfile(4, 20, 8, 128, 1024, source="", checked_at="")
+        )
+    with pytest.raises(ValueError, match="sem janela"):
+        catalog._check_kv_shape(
+            "x", catalog.KvProfile(4, 20, 8, 128, 0, source="u", checked_at="2026-11-24")
+        )
+    with pytest.raises(ValueError, match="sem camadas"):
+        catalog._check_kv_shape(
+            "x", catalog.KvProfile(0, 0, 8, 128, 1024, source="u", checked_at="2026-11-24")
+        )
+    catalog._check_kv_shape("x", _shape_hibrido())
+
+
+def test_kv_shape_note_diz_a_procedencia_do_numero():
+    assert "heurístico" in catalog.kv_shape_note(_entrada_sintetica(None))
+    nota = catalog.kv_shape_note(_entrada_sintetica(_shape_hibrido()))
+    assert "arquitetura" in nota and "4 camadas" in nota
+    assert "2026-11-24" in nota
+
+
+# ---------------------------------------------------------------------------
+# Inkling 2 Mini: KV lido do config.json e perfis revalidados
+# ---------------------------------------------------------------------------
+
+INKLING_CONFIG_URL = (
+    "https://huggingface.co/thinkingmachines/Inkling-2-Mini/raw/main/config.json"
+)
+
+
+def test_kv_do_inkling_vem_do_config_json_e_bate_com_a_conta_manual():
+    modelo = catalog.model_by_id("inkling-2-mini")
+    shape = modelo.kv_shape
+    assert shape == catalog.inkling_kv_profile()
+    assert (
+        shape.layers_full,
+        shape.layers_local,
+        shape.kv_heads,
+        shape.head_dim,
+        shape.window,
+    ) == (4, 20, 8, 128, 1024)
+    assert shape.layers_total == 24  # num_hidden_layers do text_config
+    assert shape.bytes_per_elem == 2  # torch_dtype bfloat16
+    assert INKLING_CONFIG_URL in shape.source
+    assert shape.checked_at == "2026-11-24"
+
+    # A conta à mão: 16 KiB/token nas 4 completas + 80 MiB fixos das 20 locais.
+    assert catalog.kv_cache_gib(16_384, modelo, runtime="llama-cpp") == pytest.approx(0.33)
+    assert catalog.kv_cache_gib(32_768, modelo, runtime="llama-cpp") == pytest.approx(0.58)
+    assert catalog.kv_cache_gib(131_072, modelo, runtime="llama-cpp") == pytest.approx(2.08)
+    # O 1M do catálogo é 1.000.000 tokens (context_doc); 1.048.576 é o
+    # `model_max_length` do config.json.
+    assert catalog.kv_cache_gib(1_000_000, modelo, runtime="llama-cpp") == pytest.approx(15.34)
+    assert catalog.kv_cache_gib(1_048_576, modelo, runtime="llama-cpp") == pytest.approx(16.08)
+
+
+def test_modelos_sem_kv_shape_seguem_no_heurístico_de_2_gib_por_32k():
+    for model_id in ("qwen3.8-27b-gguf", "gemma-4", "muse-glimmer-30b"):
+        modelo = catalog.model_by_id(model_id)
+        assert modelo.kv_shape is None, model_id
+        assert catalog.kv_cache_gib(32_768, modelo, runtime="llama-cpp") == 2.0
+    # vLLM segue o fp8 do argv: metade do KV, ainda pelo heurístico.
+    awq = catalog.model_by_id("qwen3.8-27b-awq")
+    assert awq.kv_shape is None
+    assert catalog.kv_cache_gib(32_768, awq, runtime="vllm", kv_cache_dtype="fp8") == 1.0
+    # O heurístico cobra o mesmo em 128K para qualquer arquitetura: 8 GiB.
+    assert catalog.kv_cache_gib(
+        131_072, catalog.model_by_id("gemma-4"), runtime="llama-cpp"
+    ) == 8.0
+
+
+def test_kv_da_arquitetura_muda_o_veredito_do_inkling_em_32k():
+    """Antes: 2 GiB de KV em 32K reprovavam o AD-IQ2_XXS na T4. Agora cabe."""
+    antes = 9.71 + 0.65 + catalog.RUNTIME_RESERVE_GIB + 2.0  # heurístico antigo
+    assert antes + catalog.vram_headroom_gib(15) == pytest.approx(15.36)
+    assert antes + catalog.vram_headroom_gib(15) > 15  # reprovava
+
+    depois = catalog.check_fit("inkling-2-mini", "ad-iq2xxs", "T4", 32_768)
+    assert depois.required_gib == pytest.approx(12.94)
+    assert depois.fits is True
+
+    perfil = config.load_profile("inkling-2-mini-ad-iq2xxs")
+    assert perfil.settings["max_model_len"] == 32_768
+    assert perfil.settings["gpu"] == "T4"
+    assert catalog.profile_context(perfil.id).context_served == 32_768
+
+
+def test_perfis_de_inkling_ficam_na_gpu_mais_barata_que_cabe():
+    perfis = [
+        perfil
+        for perfil in config.available_profiles()
+        if perfil.catalog_model == "inkling-2-mini"
+    ]
+    assert {perfil.id for perfil in perfis} == {
+        "inkling-2-mini-iq2-gguf",
+        "inkling-2-mini-q4-gguf",
+        "inkling-2-mini-q8-gguf",
+        "inkling-2-mini-ad-q6k",
+        "inkling-2-mini-ad-q4k",
+        "inkling-2-mini-ad-iq2xxs",
+    }
+    for perfil in perfis:
+        contexto = int(perfil.settings["max_model_len"])
+        atual = catalog.resolve_gpu(
+            str(perfil.settings["gpu"]), bool(perfil.settings.get("gpu_high_mem"))
+        )
+        mais_barata = catalog.min_gpu_for(
+            perfil.catalog_model, perfil.catalog_variant, contexto
+        )
+        assert atual.id == mais_barata, (perfil.id, atual.id, mais_barata)
+        assert catalog.check_fit(
+            perfil.catalog_model, perfil.catalog_variant, atual.id, contexto
+        ).fits

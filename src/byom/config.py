@@ -320,11 +320,19 @@ PROFILE_FIELDS = frozenset(
 )
 
 
-def available_profiles() -> list[Profile]:
-    """Returns validated model profiles packaged with the `byom` module."""
-    profile_dir = resources.files("byom").joinpath("profiles")
+def available_profiles(directory: Path | None = None) -> list[Profile]:
+    """Returns validated model profiles packaged with the `byom` module.
+
+    `directory` troca a pasta embarcada por outra (usado nos testes para validar
+    um TOML temporário sem instalá-lo); o resto da validação é o mesmo.
+    """
+    path_list = (
+        list(Path(directory).iterdir())
+        if directory is not None
+        else list(resources.files("byom").joinpath("profiles").iterdir())
+    )
     profiles: list[Profile] = []
-    for path in sorted(profile_dir.iterdir(), key=lambda item: item.name):
+    for path in sorted(path_list, key=lambda item: item.name):
         if not path.is_file() or not path.name.endswith(".toml"):
             continue
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -380,6 +388,20 @@ def available_profiles() -> list[Profile]:
             raise ValueError(
                 f"Unknown [worker] fields in {path.name}: {', '.join(sorted(unknown_worker))}"
             )
+        if worker.get("dspark"):
+            # DSpark precisa dos DOIS lados: o drafter para baixar/emitir e o
+            # runtime llama-cpp para receber `--model-draft`.
+            if not worker.get("drafter_pattern"):
+                raise ValueError(
+                    f"profile {path.name}: [worker] dspark = true requires "
+                    "drafter_pattern (the drafter file that prepare_runtime downloads "
+                    "and build_llama_args passes as --model-draft)"
+                )
+            if runtime != "llama-cpp":
+                raise ValueError(
+                    f"profile {path.name}: [worker] dspark = true only works with "
+                    f"runtime 'llama-cpp' (this profile declares {runtime!r})"
+                )
         for key, value in worker.items():
             if key == "sampling":
                 if not isinstance(value, dict) or not all(
@@ -466,8 +488,21 @@ def check_compatibility(cfg: Config) -> catalog.CompatibilityResult:
     model_id, variant_id = active_catalog_ref(cfg)
     gpu = catalog.resolve_gpu(cfg.gpu, cfg.gpu_high_mem)
     return catalog.check_fit(
-        model_id, variant_id, gpu.id, cfg.max_model_len, kv_cache_dtype=cfg.kv_cache_dtype
+        model_id,
+        variant_id,
+        gpu.id,
+        cfg.max_model_len,
+        kv_cache_dtype=cfg.kv_cache_dtype,
+        drafter_gib=drafter_gib_by_profile().get(cfg.profile, 0.0),
     )
+
+
+def drafter_gib_by_profile() -> dict[str, float]:
+    """Custo do drafter DSpark por perfil (0,0 quando `[worker] dspark` não existe)."""
+    return {
+        profile.id: catalog.drafter_gib(profile.worker)
+        for profile in available_profiles()
+    }
 
 
 def _toml_value(value: Any) -> str:

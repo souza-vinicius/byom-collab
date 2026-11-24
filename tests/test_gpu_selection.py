@@ -82,11 +82,11 @@ def test_t4_filtra_modelos_grandes():
 
 
 def test_inkling_q2_cabe_na_t4_com_o_kv_contado():
-    """7,90 + 0,65 visão + 2 runtime + 2 KV = 12,55; + 1,0 = 13,55 <= 15 GiB."""
+    """7,90 + 0,65 visão + 2 runtime + 0,58 de KV = 11,13; + 1,0 = 12,13 <= 15."""
     fit = catalog.check_fit("inkling-2-mini", "q2", "T4", 32768)
 
     assert fit.fits is True
-    assert fit.required_gib == 12.55
+    assert fit.required_gib == 11.13
     assert fit.available_gib == 15.0
     variante = catalog.variant_by_id("inkling-2-mini", "q2")
     assert variante.memory_gib == 7.90

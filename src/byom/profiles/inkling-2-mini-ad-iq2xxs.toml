@@ -1,5 +1,5 @@
 name = "Inkling 2 Mini (AD-IQ2_XXS, GGUF)"
-description = "GGUF AD-IQ2_XXS da AtomicChat para T4: 88,5% de top-1 contra o BF16; 16K de contexto é o que cabe nos 15 GiB com o KV e a folga."
+description = "GGUF AD-IQ2_XXS da AtomicChat para T4: 88,5% de top-1 contra o BF16; com o KV medido pela arquitetura (0,58 GiB em 32K) os 32K cabem nos 15 GiB com 2,06 GiB de sobra."
 opencode_output_limit = 8192
 runtime = "llama-cpp"
 catalog_model = "inkling-2-mini"
@@ -8,7 +8,7 @@ catalog_variant = "ad-iq2xxs"
 [config]
 model = "inkling-2-mini"
 served_model_name = "inkling-2-mini"
-max_model_len = 16384
+max_model_len = 32768
 gpu = "T4"
 gpu_high_mem = false
 vllm_spec = "vllm"

@@ -16,9 +16,12 @@ explicitamente registrada em `PROFILE_CONTEXTS`.
 from __future__ import annotations
 
 import contextlib
+import math
 from dataclasses import dataclass, field
 
 RUNTIMES = ("vllm", "llama-cpp", "image")
+
+GIB = 2**30
 
 #: União dos valores documentados pelas páginas conferidas em 2026-11-23.
 #: Inkling: blog HF + chat_template.jinja; Qwen3.8 e Muse: páginas Unsloth.
@@ -59,6 +62,9 @@ GENERATION_SOURCE_IMAGE = (
 
 # Margens determinísticas (heurística de engenharia, não valor de documentação):
 # 2 GiB para runtime/processo e 2 GiB por 32K de contexto em f16 (mínimo 1 GiB).
+# O heurístico é o padrão de quem NÃO declarou `ModelEntry.kv_shape`: ele é
+# conservador de propósito (superestima modelos com janela local), não uma
+# medição. Modelo com `kv_shape` sai do heurístico (ver `KvProfile.cache_gib`).
 RUNTIME_RESERVE_GIB = 2.0
 KV_CACHE_GIB_PER_32K = 2.0
 MIN_KV_CACHE_GIB = 1.0
@@ -102,6 +108,19 @@ VISION_PROJECTOR_GIB_BY_MODEL = {
 #: `mmproj-Qwen3VL-8B-Instruct-F16.gguf`, 1.159.029.824 B = 1,08 GiB (API do HF,
 #: 2026-11-24).
 IMAGE_VISION_GIB = 1.08
+
+#: Custo do drafter DSpark em VRAM quando o perfil declara `[worker] dspark`.
+#: É o peso do próprio drafter, que o llama-server carrega ao lado do modelo
+#: (`--model-draft`): `unsloth/Inkling-2-Mini-GGUF/dspark-Inkling-2-Mini-Q8_0.gguf`,
+#: 503.889.952 B = 0,47 GiB (tree da API do HF, consultado em 2026-11-24). O
+#: arquivo é baixado pelo `prepare_runtime` e vive no manifest como `drafter`.
+DSPARK_DRAFTER_GIB = 0.47
+
+
+def drafter_gib(worker: dict[str, object] | None) -> float:
+    """VRAM extra do drafter declarado no `[worker]`; zero sem `dspark`."""
+    dados = worker or {}
+    return DSPARK_DRAFTER_GIB if dados.get("dspark") else 0.0
 
 GPU_SOURCE = (
     "Google Cloud, Compute Engine > GPU machine types > General comparison chart "
@@ -155,6 +174,53 @@ class Variant:
 
 
 @dataclass(frozen=True)
+class KvProfile:
+    """Forma do KV cache de um modelo híbrido: atenção completa + janela local.
+
+    O heurístico `KV_CACHE_GIB_PER_32K` cobra o mesmo por token em TODAS as
+    camadas e ignora a janela. Isso é conservador para um transformer denso e
+    grosseiramente errado para um modelo de atenção híbrida: as camadas locais
+    param de crescer em `window` tokens. Cada campo abaixo vem do `config.json`
+    oficial do modelo (`source` + `checked_at`, no mesmo formato das outras
+    fontes datadas do catálogo) — nada é inferido do nome do modelo.
+
+    `bytes_per_elem` é o dtype nativo do config (`torch_dtype`); o fator do
+    `kv_cache_dtype` do runtime entra depois, em `cache_gib`.
+    """
+
+    layers_full: int
+    layers_local: int
+    kv_heads: int
+    head_dim: int
+    window: int
+    bytes_per_elem: int = 2
+    source: str = ""
+    checked_at: str = ""
+
+    @property
+    def layers_total(self) -> int:
+        return self.layers_full + self.layers_local
+
+    def bytes_per_token(self, bytes_per_elem: float) -> float:
+        """K + V de uma camada de atenção completa, em bytes por token."""
+        return 2 * self.kv_heads * self.head_dim * bytes_per_elem
+
+    def cache_gib(self, max_model_len: int, dtype_factor: float = 1.0) -> float:
+        """KV em GiB, arredondado PARA CIMA no centésimo.
+
+        `2 (K,V) × kv_heads × head_dim × bytes × (full × ctx + local × min(ctx, janela))`.
+        Arredondar para cima é deliberado: o orçamento nunca pode prometer
+        memória a menos do que o runtime vai alocar.
+        """
+        bytes_per_elem = self.bytes_per_elem * dtype_factor
+        elementos = self.layers_full * max_model_len + self.layers_local * min(
+            max_model_len, self.window
+        )
+        bruto = self.bytes_per_token(bytes_per_elem) * elementos / GIB
+        return math.ceil(bruto * 100) / 100
+
+
+@dataclass(frozen=True)
 class ModelEntry:
     id: str
     name: str
@@ -173,6 +239,9 @@ class ModelEntry:
     thinking: ThinkingPolicy | None = None
     generation_defaults: dict[str, int | float] = field(default_factory=dict)
     generation_source: str = ""
+    #: None = KV pelo heurístico `KV_CACHE_GIB_PER_32K` (não medido).
+    #: Preenchido só com o `config.json` oficial em mãos.
+    kv_shape: KvProfile | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +284,28 @@ IMAGE_SOURCE = "https://unsloth.ai/docs/models/qwen-image-2.1.md"
 SDCPP_SOURCE = (
     "https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md"
 )
+
+#: Forma do KV do Inkling 2 Mini, lida no `config.json` oficial. `text_config`:
+#: `num_hidden_layers` 24, `num_key_value_heads` 8, `head_dim` 128,
+#: `local_layer_ids` com 20 entradas (0-4, 6-10, 12-16, 18-22) → 4 camadas de
+#: atenção completa (5, 11, 17, 23) e 20 locais, `sliding_window_size` 1024,
+#: `torch_dtype` bfloat16 → 2 bytes por elemento. Por token: 2 × 8 × 128 × 2 ×
+#: 4 = 16 KiB; as locais somam 2 × 8 × 128 × 2 × 1024 × 20 = 80 MiB fixos.
+INKLING_KV_SOURCE = "https://huggingface.co/thinkingmachines/Inkling-2-Mini/raw/main/config.json"
+
+
+def inkling_kv_profile() -> KvProfile:
+    """`ModelEntry.kv_shape` do Inkling 2 Mini (config.json, 2026-11-24)."""
+    return KvProfile(
+        layers_full=4,
+        layers_local=20,
+        kv_heads=8,
+        head_dim=128,
+        window=1024,
+        bytes_per_elem=2,
+        source=INKLING_KV_SOURCE,
+        checked_at="2026-11-24",
+    )
 
 #: Fonte de cada `ModelEntry.provider`: o card/repositório OFICIAL de quem
 #: desenvolve o modelo, todos conferidos em 2026-11-24. Regra do repositório:
@@ -312,26 +403,29 @@ MODELS: tuple[ModelEntry, ...] = (
             Variant("q2", "UD-IQ2_XXS (2 bit)", 7.90, 32_768, "T4",
                     context_doc=1_000_000,
                     needs_custom_build=True,
-                    context_reason="1M pediria ~64 GiB de KV; 32K cabe nos 15 GiB da T4 "
-                                   "com 2,45 GiB de sobra.",
+                    context_reason="1M pediria 15,34 GiB de KV (só as 4 camadas completas "
+                                   "crescem); 32K custa 0,58 e cabe nos 15 GiB da T4.",
                     notes=("`Mainline_Support/Inkling-2-Mini-UD-IQ2_XXS.gguf_file` tem "
                            "8.486.237.632 B = 7,90 GiB (não 10-11 GB); build loopado "
                            "obrigatório nos arquivos da raiz.",
-                           "Com o KV contado: 7,90 + 0,65 de visão + 2 de runtime + 2 de KV "
-                           "em 32K = 12,55, mais 1,0 de folga = 13,55 <= 15 GiB utilizáveis "
-                           "da T4. A GPU mínima volta a ser T4."),
+                           "Com o KV medido pela arquitetura: 7,90 + 0,65 de visão + 2 de "
+                           "runtime + 0,58 de KV em 32K = 11,13, mais 1,0 de folga = 12,13 "
+                           "<= 15 GiB utilizáveis da T4. A GPU mínima é T4."),
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
-            Variant("q4", "UD-Q4_K_XL (4 bit)", 18.0, 65_536, "A100-40",
+            Variant("q4", "UD-Q4_K_XL (4 bit)", 18.0, 65_536, "L4",
                     context_doc=1_000_000,
                     needs_custom_build=True,
-                    context_reason="18 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 24,65: "
-                                   "L4 (24 GiB) não comporta com a folga de 1,2 GiB.",
+                    context_reason="18 GiB pesos + 0,65 visão + 2 runtime + 1,08 de KV em "
+                                   "64K = 21,73: com a folga de 1,2 GiB dá 22,93 <= 24 GiB "
+                                   "da L4. Em 128K (2,08 de KV) o total é 22,73 e passaria "
+                                   "raspando (23,93 de 24): o perfil fica em 64K.",
                     notes=("17,6 GB recomendados; mmproj-F16.gguf adiciona 639 MB.",),
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
             Variant("q8", "UD-Q8_K_XL (8 bit)", 24.0, 131_072, "A100-40",
                     context_doc=1_000_000,
-                    context_reason="24 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 34,65: "
-                                   "cabe na A100-40 com 2 GiB de margem.",
+                    context_reason="24 GiB pesos + 0,65 visão + 2 runtime + 2,08 de KV em "
+                                   "128K = 28,73: cabe na A100-40 com 11,27 GiB de margem; "
+                                   "a L4 (24 GiB) não comporta os pesos.",
                     notes=("Faixa de 8 bit: 24 GB.",),
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
             # --- Publicador AtomicChat: mesmo modelo, receita AD por tensor ---
@@ -339,9 +433,9 @@ MODELS: tuple[ModelEntry, ...] = (
             # convertidos para GiB dividindo por 2^30.
             Variant("ad-q6k", "AD-Q6_K (6 bit)", 22.15, 131_072, "A100-40",
                     context_doc=1_000_000,
-                    context_reason="22,15 GiB pesos + 0,65 visão + 2 runtime + 8 KV em "
-                                   "128K = 32,80 GiB; a A100-40 fica com 5,20 de margem. "
-                                   "Na L4 (24 GiB) nem em 32K: 26,80 + 1,2 de folga.",
+                    context_reason="22,15 GiB pesos + 0,65 visão + 2 runtime + 2,08 de KV em "
+                                   "128K = 26,88 GiB; a A100-40 fica com 13,12 de margem. "
+                                   "Na L4 (24 GiB) nem em 32K: 25,38 + 1,2 de folga.",
                     notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
                            "`Inkling-2-Mini-AD-Q6_K.gguf` tem 23.787.472.864 B = 22,15 GiB.",
                            "Qualidade medida pelo publicador contra o próprio BF16: 97,6% "
@@ -351,9 +445,9 @@ MODELS: tuple[ModelEntry, ...] = (
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
             Variant("ad-q4k", "AD-Q4_K (4 bit)", 15.39, 32_768, "L4",
                     context_doc=1_000_000,
-                    context_reason="15,39 GiB pesos + 0,65 visão + 2 runtime + 2 KV em 32K "
-                                   "= 20,04; na L4 (24 GiB) sobram 2,76 GiB além da folga "
-                                   "de 1,2. Na T4 (15 GiB) não cabe nem em 32K.",
+                    context_reason="15,39 GiB pesos + 0,65 visão + 2 runtime + 0,58 de KV em "
+                                   "32K = 18,62; na L4 (24 GiB) sobram 5,38 GiB, dos quais "
+                                   "1,2 é a folga. Na T4 (15 GiB) não cabe.",
                     notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
                            "`Inkling-2-Mini-AD-Q4_K.gguf` tem 16.525.559.776 B = 15,39 GiB.",
                            "Quant recomendado pelo publicador: 96,3% de top-1 e KLD média "
@@ -363,12 +457,12 @@ MODELS: tuple[ModelEntry, ...] = (
                            "Requer llama.cpp b12600 ou mais novo, com o layout merged do PR "
                            "#32694 (o perfil fixa b12611) e `--jinja`."),
                     vision_gib=VISION_PROJECTOR_GIB_BY_MODEL["inkling-2-mini"]),
-            Variant("ad-iq2xxs", "AD-IQ2_XXS (2 bit)", 9.71, 16_384, "T4",
+            Variant("ad-iq2xxs", "AD-IQ2_XXS (2 bit)", 9.71, 32_768, "T4",
                     context_doc=1_000_000,
-                    context_reason="9,71 GiB pesos + 0,65 visão + 2 runtime + 1 de KV em "
-                                   "16K = 13,36; com a folga de 1,0 GiB dá 14,36 <= 15 GiB "
-                                   "da T4. Em 32K o KV sobe para 2 e passa do limite "
-                                   "(15,36). Na L4 o mesmo arquivo serviria 32K.",
+                    context_reason="9,71 GiB pesos + 0,65 visão + 2 runtime + 0,58 de KV em "
+                                   "32K = 12,94; com a folga de 1,0 GiB dá 13,94 <= 15 GiB "
+                                   "da T4. O KV medido pela arquitetura é o que permite 32K "
+                                   "(pelo heurístico de 2 GiB/32K seriam 15,36).",
                     notes=("AtomicChat/Inkling-2-Mini-GGUF (consultado em 2026-11-24): "
                            "`Inkling-2-Mini-AD-IQ2_XXS.gguf` tem 10.425.495.136 B = 9,71 GiB.",
                            "88,5% de top-1 e KLD média 0,084 no mesmo teste do publicador: "
@@ -381,6 +475,8 @@ MODELS: tuple[ModelEntry, ...] = (
         provider="Thinking Machines Lab",
         notes=(
             "26,4B MoE (5,4B ativos), visão, 1M de contexto.",
+            "Atenção híbrida: 4 camadas completas + 20 com janela de 1024 tokens; o KV "
+            "cresce só nas completas (0,58 GiB em 32K, 2,08 em 128K).",
             "Requer llama.cpp mainline b12611+ com os arquivos Mainline_Support; "
             "builds anteriores perdem os scales NVFP4 nas passadas 2 e 3 do loop.",
             "Sampling: temperature 1.0, top_p 1.0, top_k 0, min_p 0.",
@@ -388,6 +484,7 @@ MODELS: tuple[ModelEntry, ...] = (
         sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0},
         reasoning_effort="high",
         reasoning_source=REASONING_SOURCE_INKLING,
+        kv_shape=inkling_kv_profile(),
     ),
     ModelEntry(
         "qwen3.8-27b-awq", "Qwen3.8 27B (AWQ, vLLM)", "vllm",
@@ -575,27 +672,32 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
     ProfileContext("qwen3.8-27b-256k", "qwen3.8-27b-awq", "q4-awq", 262_144, 262_144,
                    "A100-80", "Contexto máximo documentado mantido em A100 80 GB (high_mem)."),
     ProfileContext("inkling-2-mini-iq2-gguf", "inkling-2-mini", "q2", 1_000_000, 32_768,
-                   "T4", "7,90 GiB de pesos + 0,65 visão + 2 runtime + 2 de KV em 32K = "
-                         "12,55, mais 1,0 de folga = 13,55 <= 15 GiB utilizáveis da T4."),
+                   "T4", "7,90 GiB de pesos + 0,65 visão + 2 runtime + 0,58 de KV em 32K "
+                         "(medido pela arquitetura) = 11,13, mais 1,0 de folga = 12,13 <= "
+                         "15 GiB utilizáveis da T4."),
     ProfileContext("inkling-2-mini-q4-gguf", "inkling-2-mini", "q4", 1_000_000, 65_536,
-                   "A100-40", "18 GiB pesos + 0,65 visão + 2 runtime + 4 KV = 24,65: não "
-                              "cabe em L4 (24 GiB) com a folga de 1,2 GiB."),
+                   "L4", "18 GiB pesos + 0,65 visão + 2 runtime + 1,08 de KV em 64K = "
+                         "21,73, mais 1,2 de folga = 22,93 <= 24 GiB da L4: a A100-40 "
+                         "deixou de ser necessária."),
     ProfileContext("inkling-2-mini-q8-gguf", "inkling-2-mini", "q8", 1_000_000, 131_072,
-                   "A100-40", "24 GiB pesos + 0,65 visão + 2 runtime + 8 KV = 34,65 na "
-                              "A100-40, com 2 GiB de margem."),
+                   "A100-40", "24 GiB pesos + 0,65 visão + 2 runtime + 2,08 de KV em 128K "
+                              "= 28,73 na A100-40, com 11,27 GiB de margem; a L4 não "
+                              "comporta os pesos."),
     ProfileContext("inkling-2-mini-ad-q6k", "inkling-2-mini", "ad-q6k", 1_000_000, 131_072,
-                   "A100-40", "22,15 GiB pesos + 0,65 visão + 2 runtime + 8 KV em 128K = "
-                              "32,80, mais 2,0 de folga = 34,80 <= 40 GiB da A100-40. A L4 "
-                              "não comporta nem em 32K (26,80 + 1,2 de folga > 24)."),
+                   "A100-40", "22,15 GiB pesos + 0,65 visão + 2 runtime + 2,08 de KV em "
+                              "128K = 26,88, mais 2,0 de folga = 28,88 <= 40 GiB da "
+                              "A100-40. A L4 não comporta nem em 32K (25,38 + 1,2)."),
     ProfileContext("inkling-2-mini-ad-q4k", "inkling-2-mini", "ad-q4k", 1_000_000, 32_768,
-                   "L4", "15,39 GiB pesos + 0,65 visão + 2 runtime + 2 KV em 32K = 20,04, "
-                         "mais 1,2 de folga = 21,24 <= 24 GiB da L4. 32K é o contexto do "
-                         "exemplo de execução do publicador (`-c 32768`)."),
+                   "L4", "15,39 GiB pesos + 0,65 visão + 2 runtime + 0,58 de KV em 32K = "
+                         "18,62, mais 1,2 de folga = 19,82 <= 24 GiB da L4 (5,38 de sobra). "
+                         "32K é o contexto do exemplo de execução do publicador "
+                         "(`-c 32768`)."),
     ProfileContext("inkling-2-mini-ad-iq2xxs", "inkling-2-mini", "ad-iq2xxs", 1_000_000,
-                   16_384, "T4",
-                   "9,71 GiB pesos + 0,65 visão + 2 runtime + 1 de KV em 16K = 13,36, mais "
-                   "1,0 de folga = 14,36 <= 15 GiB da T4. Em 32K o KV dobra para 2 e o "
-                   "total (15,36) passa dos 15 GiB: por isso o contexto servido é 16K."),
+                   32_768, "T4",
+                   "9,71 GiB pesos + 0,65 visão + 2 runtime + 0,58 de KV em 32K = 12,94, "
+                   "mais 1,0 de folga = 13,94 <= 15 GiB da T4. O KV medido pela arquitetura "
+                   "(4 camadas completas, 20 com janela de 1024) é o que torna 32K "
+                   "possível: pelo heurístico seriam 15,36 e o perfil ficaria em 16K."),
     ProfileContext("qwen3.8-27b-q3-gguf", "qwen3.8-27b-gguf", "q3", 262_144, 32_768,
                    "L4", "12 GiB pesos + 2 runtime + 2 KV = 16 GiB: não cabe nos 15 GiB "
                          "utilizáveis da T4."),
@@ -804,13 +906,25 @@ def effective_kv_dtype(runtime: str, declared: str | None) -> str:
 
 
 def kv_cache_gib(
-    max_model_len: int, *, kv_cache_dtype: str | None = None, runtime: str = "vllm"
+    max_model_len: int,
+    model: ModelEntry | None = None,
+    *,
+    kv_cache_dtype: str | None = None,
+    runtime: str = "vllm",
 ) -> float:
-    """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato."""
+    """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato.
+
+    Com `model.kv_shape` a conta segue a arquitetura (`KvProfile.cache_gib`):
+    só as camadas de atenção completa crescem com o contexto. Sem `kv_shape`,
+    vale o heurístico de `KV_CACHE_GIB_PER_32K` — conservador, não medido.
+    """
     if max_model_len <= 0:
         return MIN_KV_CACHE_GIB
     dtype = effective_kv_dtype(runtime, kv_cache_dtype)
     factor = KV_CACHE_DTYPE_FACTORS.get(dtype, 1.0)
+    shape = getattr(model, "kv_shape", None)
+    if shape is not None:
+        return shape.cache_gib(max_model_len, factor)
     return max(MIN_KV_CACHE_GIB, KV_CACHE_GIB_PER_32K * factor * max_model_len / 32768)
 
 
@@ -819,21 +933,49 @@ def vram_headroom_gib(vram_gib: float) -> float:
     return round(max(VRAM_HEADROOM_MIN_GIB, VRAM_HEADROOM_FRACTION * vram_gib), 2)
 
 
+def kv_shape_note(model: ModelEntry | None) -> str:
+    """Procedência do KV: arquitetura datada do `config.json` ou heurístico.
+
+    O texto é o que a interface usa para dizer de onde veio o número — sem isso
+    um KV de 0,58 GiB parece um chute ao lado do heurístico de 2 GiB.
+    """
+    shape = getattr(model, "kv_shape", None)
+    if shape is None:
+        return (
+            f"heurístico de {KV_CACHE_GIB_PER_32K:g} GiB por 32K (não medido: "
+            "o modelo não tem `kv_shape` no catálogo)"
+        )
+    return (
+        f"arquitetura: {shape.layers_full} camadas de atenção completa + "
+        f"{shape.layers_local} com janela de {shape.window} tokens; "
+        f"fonte {shape.source} ({shape.checked_at})"
+    )
+
+
 def required_vram_gib(
     variant: Variant,
     max_model_len: int,
     runtime: str = "",
     *,
     kv_cache_dtype: str | None = None,
+    model: ModelEntry | None = None,
+    drafter_gib: float = 0.0,
 ) -> float:
-    """Pesos + projetor de visão + runtime + KV; sem folga (ver `check_fit`)."""
+    """Pesos + projetor de visão + runtime + KV + drafter; sem folga.
+
+    `model` é a entrada do catálogo: é dela que sai o `kv_shape` (quando existe)
+    — sem ele a conta cai no heurístico de 2 GiB/32K. `drafter_gib` é o custo do
+    drafter DSpark que o perfil carrega (`catalog.drafter_gib(worker)`).
+    """
     kv = (
         0.0
         if runtime == "image"
-        else kv_cache_gib(max_model_len, kv_cache_dtype=kv_cache_dtype, runtime=runtime)
+        else kv_cache_gib(
+            max_model_len, model, kv_cache_dtype=kv_cache_dtype, runtime=runtime
+        )
     )
     return round(
-        variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv, 2
+        variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv + drafter_gib, 2
     )
 
 
@@ -843,27 +985,38 @@ def _fits(
     gpu: Gpu,
     max_model_len: int,
     kv_cache_dtype: str | None = None,
+    model: ModelEntry | None = None,
+    drafter_gib: float = 0.0,
 ) -> bool:
-    """Pesos + visão + runtime + KV precisam caber com a folga da GPU."""
+    """Pesos + visão + runtime + KV + drafter precisam caber com a folga da GPU."""
     required = required_vram_gib(
-        variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype
+        variant,
+        max_model_len,
+        runtime,
+        kv_cache_dtype=kv_cache_dtype,
+        model=model,
+        drafter_gib=drafter_gib,
     )
     # `<` e não `<=`: com igualdade a folga é zero, que é justamente o caso que
     # a folga existe para reprovar.
     return variant.available and required + vram_headroom_gib(gpu.vram_gib) < gpu.vram_gib
 
 
-def min_gpu_for(model_id: str, variant_id: str, max_model_len: int) -> str:
+def min_gpu_for(
+    model_id: str, variant_id: str, max_model_len: int, *, drafter_gib: float = 0.0
+) -> str:
     """Menor GPU do catálogo que comporta a variante NO contexto do perfil.
 
     `Variant.min_gpu` é calibrado no menor contexto servido; exibir esse valor
     como "GPU mínima" num perfil de 131K produzia "Exige pelo menos L4; não cabe
     em L4". Quando nenhuma GPU comporta, devolve a maior (o chamador mostra o
-    motivo de `check_fit`).
+    motivo de `check_fit`). `drafter_gib` entra na conta do perfil DSpark.
     """
     order = sorted(GPUS, key=lambda gpu: (gpu.vram_gib, gpu.id))
     for gpu in order:
-        if check_fit(model_id, variant_id, gpu.id, max_model_len).fits:
+        if check_fit(
+            model_id, variant_id, gpu.id, max_model_len, drafter_gib=drafter_gib
+        ).fits:
             return gpu.id
     return order[-1].id
 
@@ -875,23 +1028,34 @@ def check_fit(
     max_model_len: int = 32768,
     *,
     kv_cache_dtype: str | None = None,
+    drafter_gib: float = 0.0,
 ) -> CompatibilityResult:
     """Verifique se a variante cabe na GPU declarada, sem realocar nada."""
     variant = variant_by_id(model_id, variant_id)
     gpu = gpu_by_id(gpu_id)
-    runtime = model_by_id(model_id).runtime
+    entry = model_by_id(model_id)
+    runtime = entry.runtime
     required = required_vram_gib(
-        variant, max_model_len, runtime, kv_cache_dtype=kv_cache_dtype
+        variant,
+        max_model_len,
+        runtime,
+        kv_cache_dtype=kv_cache_dtype,
+        model=entry,
+        drafter_gib=drafter_gib,
     )
     headroom = vram_headroom_gib(gpu.vram_gib)
     alternatives: list[str] = []
     if variant.available:
-        for other in model_by_id(model_id).variants:
+        for other in entry.variants:
             if other.id == variant.id or not other.available:
                 continue
-            if _fits(other, runtime, gpu, max_model_len, kv_cache_dtype):
+            if _fits(
+                other, runtime, gpu, max_model_len, kv_cache_dtype, entry, drafter_gib
+            ):
                 alternatives.append(f"{model_id}:{other.id}")
-    fits = _fits(variant, runtime, gpu, max_model_len, kv_cache_dtype)
+    fits = _fits(
+        variant, runtime, gpu, max_model_len, kv_cache_dtype, entry, drafter_gib
+    )
     reason = ""
     if not variant.available:
         reason = variant.reason
@@ -900,16 +1064,25 @@ def check_fit(
             0.0
             if runtime == "image"
             else kv_cache_gib(
-                max_model_len, kv_cache_dtype=kv_cache_dtype, runtime=runtime
+                max_model_len,
+                entry,
+                kv_cache_dtype=kv_cache_dtype,
+                runtime=runtime,
             )
         )
         dtype = effective_kv_dtype(runtime, kv_cache_dtype)
-        cache = f"KV ~{kv:.1f} em {dtype}" if dtype else f"KV ~{kv:.1f}"
+        cache = f"KV ~{kv:.2f} GiB em {dtype}" if dtype else f"KV ~{kv:.2f} GiB"
+        if entry.kv_shape is not None:
+            cache += (
+                f" calculado pela arquitetura ({entry.kv_shape.layers_full} camadas "
+                f"de atenção completa, janela de {entry.kv_shape.window})"
+            )
         visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
+        drafter = f" + drafter {drafter_gib:g}" if drafter_gib else ""
         reason = (
-            f"{variant.label} precisa de ~{required:.1f} GiB "
+            f"{variant.label} precisa de ~{required:.2f} GiB "
             f"(pesos {variant.memory_gib:g}{visao} + runtime {RUNTIME_RESERVE_GIB:g} + "
-            f"{cache}) mais {headroom:.1f} GiB de margem, "
+            f"{cache}{drafter}) mais {headroom:.1f} GiB de margem, "
             f"mas {gpu.label} tem {gpu.vram_gib} GiB utilizáveis."
         )
     return CompatibilityResult(
@@ -980,14 +1153,21 @@ class CompatibleSelection:
         return len(self.rows)
 
 
-def compatible_variants(gpu_id: str) -> CompatibleSelection:
+def compatible_variants(
+    gpu_id: str, drafters: dict[str, float] | None = None
+) -> CompatibleSelection:
     """Filtre variantes disponíveis com `check_fit` em cada contexto servido.
 
     Uma variante passa se pelo menos um contexto servido couber na GPU. O
     perfil exibido é o daquele contexto, preferindo o registrado para a própria
     GPU quando houver mais de um. Variantes indisponíveis são ignoradas.
+
+    `drafters` mapeia profile_id -> GiB do drafter DSpark. O catálogo não lê
+    `[worker]` (a tabela vive no perfil, e `config` importa este módulo), então
+    quem chama passa o custo — do mesmo jeito que `packages`.
     """
     gpu = gpu_by_id(gpu_id)
+    custo_drafter = drafters or {}
     rows: list[CompatibleVariant] = []
     dropped = 0
     for model in MODELS:
@@ -996,9 +1176,6 @@ def compatible_variants(gpu_id: str) -> CompatibleSelection:
                 continue
             candidates: list[tuple[int, int, str, int, CompatibilityResult]] = []
             for context in served_contexts_for(model.id, variant.id):
-                fit = check_fit(model.id, variant.id, gpu.id, context)
-                if not fit.fits:
-                    continue
                 refs = [
                     item
                     for item in PROFILE_CONTEXTS
@@ -1009,8 +1186,20 @@ def compatible_variants(gpu_id: str) -> CompatibleSelection:
                 if not refs:
                     # Sem perfil registrado, served_contexts_for já devolveu
                     # Variant.context como contexto de referência.
-                    candidates.append((1, -context, "", context, fit))
+                    fit = check_fit(model.id, variant.id, gpu.id, context)
+                    if fit.fits:
+                        candidates.append((1, -context, "", context, fit))
+                    continue
                 for ref in refs:
+                    fit = check_fit(
+                        model.id,
+                        variant.id,
+                        gpu.id,
+                        context,
+                        drafter_gib=custo_drafter.get(ref.profile_id, 0.0),
+                    )
+                    if not fit.fits:
+                        continue
                     candidates.append(
                         (
                             0 if ref.gpu_id == gpu.id else 1,
@@ -1043,16 +1232,19 @@ def compatible_variants(gpu_id: str) -> CompatibleSelection:
 
 
 def format_compatible_models(
-    gpu_id: str, packages: dict[str, str] | None = None
+    gpu_id: str,
+    packages: dict[str, str] | None = None,
+    drafters: dict[str, float] | None = None,
 ) -> str:
     """Tabela de compatíveis no mesmo estilo de colunas de `format_models`.
 
     `packages` mapeia profile_id -> publicador dos pesos (derivado do repositório
     de onde o byom baixa). A coluna "Pacote" só aparece quando algum perfil desta
     GPU publica os pesos em nome de outra org — repetir a coluna com o mesmo
-    valor do fornecedor seria ruído.
+    valor do fornecedor seria ruído. `drafters` leva o custo do drafter DSpark
+    por perfil para o orçamento (ver `compatible_variants`).
     """
-    selection = compatible_variants(gpu_id)
+    selection = compatible_variants(gpu_id, drafters)
     gpu = gpu_by_id(gpu_id)
     pacotes = packages or {}
     linha_pacote = {
@@ -1105,6 +1297,18 @@ def format_compatible_models(
     return "\n".join(lines)
 
 
+def _check_kv_shape(model_id: str, shape: KvProfile) -> None:
+    """Invariantes do `kv_shape`: números positivos e fonte datada."""
+    if min(shape.kv_heads, shape.head_dim, shape.bytes_per_elem) <= 0:
+        raise ValueError(f"kv_shape inválido (heads/dim/bytes): {model_id}")
+    if shape.layers_full < 0 or shape.layers_local < 0 or not shape.layers_total:
+        raise ValueError(f"kv_shape sem camadas: {model_id}")
+    if shape.layers_local and shape.window <= 0:
+        raise ValueError(f"kv_shape com camadas locais e sem janela: {model_id}")
+    if not shape.source or not shape.checked_at:
+        raise ValueError(f"kv_shape sem fonte datada: {model_id}")
+
+
 def validate_catalog() -> None:
     """Falhe rápido se o catálogo tiver IDs duplicados ou números impossíveis."""
     seen_gpus: set[str] = set()
@@ -1120,6 +1324,8 @@ def validate_catalog() -> None:
             raise ValueError(f"Modelo sem fornecedor declarado: {model.id}")
         if model.id not in PROVIDER_SOURCES:
             raise ValueError(f"Fornecedor sem fonte registrada: {model.id}")
+        if model.kv_shape is not None:
+            _check_kv_shape(model.id, model.kv_shape)
         seen_models.add(model.id)
         if model.reasoning_effort is not None and model.reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"reasoning_effort não documentado: {model.id}")
