@@ -348,7 +348,7 @@ def _carregar_config(con: Console) -> config.Config:
     diz o caminho e a ação, e o menu volta a ser desenhado.
     """
     try:
-        return config.load_config()
+        cfg = config.load_config()
     except config.ConfigError as exc:
         raise _ErroEtapa(
             "O arquivo config.toml não pôde ser lido.",
@@ -357,6 +357,11 @@ def _carregar_config(con: Console) -> config.Config:
             "Nada foi alocado nem gravado nesta tentativa.",
             detalhes_tecnicos=str(exc),
         ) from exc
+    aviso = config.describe_extra_keys(cfg)
+    if aviso:
+        # Chave desconhecida não some em silêncio: é preservada, mas o usuário vê.
+        con.print(f"[yellow]{aviso}[/yellow]")
+    return cfg
 
 
 def _ler_estado_ou_erro() -> tuple[config.State | None, str]:

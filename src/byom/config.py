@@ -91,6 +91,11 @@ STRING_FIELDS = frozenset(
 )
 
 
+#: Atributo (fora dos campos do dataclass) que guarda as chaves desconhecidas
+#: lidas de `config.toml`, para devolvê-las no próximo `save_config`.
+EXTRA_KEYS_ATTR = "extra_keys"
+
+
 class ConfigError(ValueError):
     """A configuration value failed boundary validation."""
 
@@ -456,7 +461,28 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, str):
         # JSON strings are valid basic TOML strings (quotes and escapes match).
         return json.dumps(value)
-    raise TypeError(f"Unsupported value in config.toml: {value!r}")
+    if isinstance(value, list | tuple) and all(
+        not isinstance(item, dict | list | tuple) for item in value
+    ):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    raise ConfigError(f"Unsupported value in config.toml: {value!r}")
+
+
+def _extra_keys(cfg: Config) -> dict[str, Any]:
+    """Chaves presentes no arquivo que não são campos de `Config`."""
+    return dict(getattr(cfg, EXTRA_KEYS_ATTR, {}) or {})
+
+
+def describe_extra_keys(cfg: Config) -> str:
+    """Texto do aviso sobre chaves desconhecidas preservadas no round-trip."""
+    extras = _extra_keys(cfg)
+    if not extras:
+        return ""
+    nomes = ", ".join(sorted(extras))
+    return (
+        f"config.toml tem chaves desconhecidas ({nomes}); o byom não as interpreta, "
+        "mas elas são preservadas na próxima gravação"
+    )
 
 
 def dumps_config(cfg: Config) -> str:
@@ -466,6 +492,22 @@ def dumps_config(cfg: Config) -> str:
         if value is None:
             continue
         lines.append(f"{key} = {_toml_value(value)}")
+    # Chaves que o byom não conhece voltam como vieram: apagá-las na primeira
+    # gravação destruía configuração do usuário em silêncio.
+    for key, value in sorted(_extra_keys(cfg).items()):
+        if isinstance(value, dict):
+            raise ConfigError(
+                f"config.toml: a chave desconhecida {key!r} é uma tabela; o byom não "
+                "reescreve tabelas. Remova-a do arquivo (ou mova para outro arquivo) "
+                "antes de gravar pela interface."
+            )
+        try:
+            lines.append(f"{key} = {_toml_value(value)}")
+        except ConfigError as exc:
+            raise ConfigError(
+                f"config.toml: a chave desconhecida {key!r} não pode ser reescrita ({exc}); "
+                "remova-a antes de gravar pela interface."
+            ) from exc
     return "\n".join(lines) + "\n"
 
 
@@ -496,7 +538,12 @@ def load_config() -> Config:
         raise ConfigError(f"config.toml não pode ser lido ({path}): {exc}") from exc
     known = {f.name for f in fields(Config)}
     values = {k: v for k, v in raw.items() if k in known}
+    extras = {k: v for k, v in raw.items() if k not in known}
     cfg = Config(**values)
+    if extras:
+        # Não some com o campo do usuário: avisa e mantém para o round-trip.
+        setattr(cfg, EXTRA_KEYS_ATTR, extras)
+        print(f"Warning: {describe_extra_keys(cfg)}", file=sys.stderr)
     if "reasoning_effort" not in values and cfg.profile:
         # Perfil ativo sem valor no arquivo: herda a propriedade do modelo.
         try:

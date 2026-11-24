@@ -38,13 +38,15 @@ def test_round_trip_do_config():
     assert loaded == cfg
 
 
-def test_chaves_desconhecidas_sao_ignoradas():
+def test_chaves_desconhecidas_sao_ignoradas(capsys):
     path = config.config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('model = "x"\nchave_nova = 1\n', encoding="utf-8")
     cfg = config.load_config()
     assert cfg.model == "x"
     assert not hasattr(cfg, "chave_nova")
+    # Aviso no stderr: não é mais silencioso.
+    assert "chave_nova" in capsys.readouterr().err
 
 
 def test_estado_ausente():
@@ -360,3 +362,58 @@ def test_atomic_write_em_alvo_de_outro_sistema_de_arquivos(tmp_path):
         for item in pasta.iterdir():
             item.unlink()
         pasta.rmdir()
+
+
+# -- 5.10: chave desconhecida é avisada e preservada, não apagada ------------
+def test_round_trip_preserva_chaves_desconhecidas(capsys):
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'model = "x"\nmax_model_len = 16384\nchave_nova = 1\n'
+        'outra = "valor"\nlista = ["a", "b"]\n',
+        encoding="utf-8",
+    )
+    cfg = config.load_config()
+    aviso = capsys.readouterr().err
+    assert "chave_nova, lista, outra" in aviso
+    assert "preservadas" in aviso
+
+    cfg.proxy_port = 4123
+    config.save_config(cfg)
+    texto = path.read_text(encoding="utf-8")
+
+    assert 'chave_nova = 1' in texto
+    assert 'outra = "valor"' in texto
+    assert 'lista = ["a", "b"]' in texto
+    assert "proxy_port = 4123" in texto
+    # E o round-trip continua estável: recarregar não perde nada.
+    recarregado = config.load_config()
+    assert recarregado.proxy_port == 4123
+    assert 'chave_nova = 1' in config.dumps_config(recarregado)
+
+
+def test_chave_desconhecida_em_tabela_recusa_a_gravacao():
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('model = "x"\n[custom]\nflag = true\n', encoding="utf-8")
+    cfg = config.load_config()
+
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.save_config(cfg)
+
+    assert "custom" in str(excinfo.value)
+    assert "não reescreve tabelas" in str(excinfo.value)
+
+
+def test_tui_mostra_o_aviso_das_chaves_desconhecidas():
+    from byom import tui
+
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('model = "x"\nchave_nova = 1\n', encoding="utf-8")
+    con = tui.criar_console(width=100, height=30, record=True)
+
+    cfg = tui._carregar_config(con)
+
+    assert cfg.model == "x"
+    assert "chave_nova" in con.export_text()
