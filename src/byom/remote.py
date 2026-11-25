@@ -18,14 +18,17 @@ master owns that slot. A stray `colab ssh` kills the master.
 from __future__ import annotations
 
 import contextlib
+import logging
 import shlex
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import colab, config
+
+log = logging.getLogger("byom.remote")
 
 #: The VM's sshd refuses the handshake right after another connection ends
 #: (`Connection timed out during banner exchange`), and the runtime answers
@@ -52,6 +55,34 @@ class RemoteError(RuntimeError):
     """Error raised when a VM operation fails."""
 
 
+def validate_ssh_key(path: Path) -> str | None:
+    """Return a problem description when `path` is not a usable private key.
+
+    The Colab CLI derives the public key with `ssh-keygen -y`. A file that is
+    not a real private key makes every handshake fail with an opaque
+    `Connection closed`, after minutes of retries. Checking first fails fast.
+    """
+    if not path.is_file():
+        return f"a chave SSH não existe em {path}"
+    try:
+        proc = subprocess.run(
+            ["ssh-keygen", "-y", "-f", str(path)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None  # sem ssh-keygen não dá para validar; o init já exige o cliente ssh
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return f"não foi possível validar a chave: {exc}"
+    if proc.returncode == 0 and proc.stdout.strip():
+        return None
+    detail = proc.stderr.decode(errors="replace").strip().splitlines()
+    reason = detail[-1] if detail else "formato inválido"
+    return f"o arquivo {path} não é uma chave privada SSH válida ({reason})"
+
+
 @dataclass
 class RemoteResult:
     """Result of a remote command."""
@@ -73,6 +104,43 @@ def socket_path(session: str) -> Path:
     return config.config_dir() / f"cm-{session}.sock"
 
 
+def tunnel_socket_path(session: str) -> Path:
+    """Control socket of the daemon's tunnel, kept apart from command masters.
+
+    `byom up` para o próprio master ao terminar a transação. Com um socket
+    compartilhado, esse `ssh -O exit` derrubava o master que o túnel do daemon
+    acabara de abrir, e a API ficava alguns segundos indisponível logo depois
+    do `up` reportar "Worker ready".
+    """
+    return config.config_dir() / f"cm-{session}-tunnel.sock"
+
+
+def known_hosts_path(session: str) -> Path:
+    """Per-session `known_hosts`, removed by `byom down` with the rest of state."""
+    return config.config_dir() / f"known_hosts_{session}"
+
+
+def host_key_alias(session: str) -> str:
+    """Alias used in `known_hosts` instead of the ephemeral host name."""
+    return f"byom-{session}"
+
+
+#: Host key changed: either a recycled VM or a MITM. There is no safe fallback
+#: to `no`, so the message tells the user to recreate the session.
+HOST_KEY_CHANGED_MESSAGE = (
+    "Host key verification failed: chave de host da sessão mudou; possível MITM "
+    "— rode `byom down` e `byom up`"
+)
+
+
+def forget_session_host_key(session: str) -> None:
+    """Drop the pinned host key of a finished session. Idempotent."""
+    if not session or Path(session).name != session:
+        return
+    with contextlib.suppress(OSError):
+        known_hosts_path(session).unlink(missing_ok=True)
+
+
 class Remote:
     """Commands and forwards on the VM over an OpenSSH master connection."""
 
@@ -83,11 +151,13 @@ class Remote:
         cfg: config.Config,
         ssh_bin: str = "ssh",
         log_path: Path | None = None,
+        socket: Path | None = None,
     ) -> None:
         self.session = session
         self.cfg = cfg
         self.ssh_bin = ssh_bin
-        self.socket = socket_path(session)
+        self.socket = socket or socket_path(session)
+        self.known_hosts = known_hosts_path(session)
         if log_path is None:
             log_path = config.config_dir() / "logs" / f"ssh-{session}.log"
         self.log_path = log_path
@@ -126,10 +196,7 @@ class Remote:
             f"ProxyCommand={self.proxy_command()}",
             "-o",
             "ExitOnForwardFailure=yes",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
+            *self.host_key_options(),
             "-o",
             "BatchMode=yes",
             "-o",
@@ -138,6 +205,33 @@ class Remote:
             "ServerAliveCountMax=3",
             "-S",
             str(self.socket),
+        ]
+
+    def first_connection(self) -> bool:
+        """True while this session has no pinned host key yet."""
+        try:
+            content = self.known_hosts.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return True
+        return host_key_alias(self.session) not in content
+
+    def host_key_options(self) -> list[str]:
+        """Pin the host key of this session in its own `known_hosts` file.
+
+        The Colab CLI does not expose the VM's host key, so the first connection
+        of the session accepts it (`accept-new`) and later ones require the same
+        key (`yes`). A changed key becomes a readable error — never a silent
+        fallback to `no`, which would let a MITM read prompts, `session.json`
+        and the nonce.
+        """
+        mode = "accept-new" if self.first_connection() else "yes"
+        return [
+            "-o",
+            f"StrictHostKeyChecking={mode}",
+            "-o",
+            f"UserKnownHostsFile={self.known_hosts}",
+            "-o",
+            f"HostKeyAlias={host_key_alias(self.session)}",
         ]
 
     def master_command(self, forwards: Sequence[Forward] = ()) -> list[str]:
@@ -164,9 +258,11 @@ class Remote:
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=yes",
             "-o",
-            "UserKnownHostsFile=/dev/null",
+            f"UserKnownHostsFile={self.known_hosts}",
+            "-o",
+            f"HostKeyAlias={host_key_alias(self.session)}",
             "-l",
             "root",
             self.session,
@@ -191,8 +287,16 @@ class Remote:
         tail = [line for line in content.strip().splitlines() if line.strip()][-lines:]
         return " | ".join(tail)
 
-    def start(self, forwards: Sequence[Forward] = ()) -> None:
-        """Start the master, backing off for a refused banner and for 429s."""
+    def start(
+        self,
+        forwards: Sequence[Forward] = (),
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
+        """Start the master, backing off for a refused banner and for 429s.
+
+        `on_progress` receives short status strings (attempt N of M) so a UI can
+        show that a slow connection is still working.
+        """
         self.stop()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_path.unlink(missing_ok=True)
@@ -201,11 +305,13 @@ class Remote:
         backoff = START_BACKOFF_MIN_S
         for attempt in range(1, START_ATTEMPTS + 1):
             self._clear_socket()
+            if on_progress is not None:
+                on_progress(f"tentativa {attempt} de {START_ATTEMPTS}")
             try:
                 # No pipes: the master detached by `-f` keeps the inherited
                 # descriptors open, and `capture_output` would wait for an EOF
                 # that never arrives. The failure reason comes from the `-E` log.
-                proc = subprocess.run(  # noqa: S603
+                proc = subprocess.run(
                     self.master_command(forwards),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -220,8 +326,14 @@ class Remote:
                     self._forwards = tuple(forwards)
                     return
                 reason = self.log_tail() or f"ssh exited with code {proc.returncode}"
+                if "host key verification failed" in reason.lower():
+                    # Chave trocada não melhora com retry, e aceitar em
+                    # silêncio entregaria o túnel a um MITM.
+                    raise RemoteError(HOST_KEY_CHANGED_MESSAGE)
 
             if attempt < START_ATTEMPTS:
+                if on_progress is not None:
+                    on_progress(f"tentativa {attempt} falhou; nova tentativa em {int(backoff)}s")
                 time.sleep(backoff)
                 backoff = min(START_BACKOFF_MAX_S, backoff * 2)
 
@@ -232,7 +344,7 @@ class Remote:
         if not self.socket.exists():
             return False
         try:
-            proc = subprocess.run(  # noqa: S603
+            proc = subprocess.run(
                 self.control_command("check"),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -240,7 +352,8 @@ class Remote:
                 timeout=CHECK_TIMEOUT_S,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log.debug("SSH master check failed for %s: %s", self.session, exc)
             return False
         return proc.returncode == 0
 
@@ -248,7 +361,7 @@ class Remote:
         """Stop the master and remove the socket. Idempotent."""
         if self.socket.exists():
             with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                subprocess.run(  # noqa: S603
+                subprocess.run(
                     self.control_command("exit"),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -284,7 +397,7 @@ class Remote:
             kwargs["input"] = input_bytes
 
         try:
-            proc = subprocess.run(  # noqa: S603
+            proc = subprocess.run(
                 self.client_command(command),
                 capture_output=True,
                 timeout=timeout,

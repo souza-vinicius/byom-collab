@@ -29,19 +29,27 @@ from typing import Any
 
 SESSION_FILE = "/content/byom/session.json"
 POLL_S = 10.0
+#: O gateway exige o nonce no header: o forward chega como loopback, então o
+#: endereço de origem não prova identidade. O nonce nunca é impresso.
+NONCE_HEADER = "X-BYOM-Nonce"
 
 
 def _log(message: str) -> None:
     print(f"[byom-watchdog] {message}", flush=True)
 
 
-def _get(url: str, timeout: float = 5.0) -> dict[str, Any]:
-    with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - loopback
+def _get(url: str, nonce: str, timeout: float = 5.0) -> dict[str, Any]:
+    request = urllib.request.Request(  # noqa: S310 - loopback
+        url, headers={NONCE_HEADER: nonce}, method="GET"
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - loopback
         return json.loads(response.read().decode())
 
 
-def _post(url: str, timeout: float = 5.0) -> dict[str, Any]:
-    request = urllib.request.Request(url, data=b"", method="POST")  # noqa: S310 - loopback
+def _post(url: str, nonce: str, timeout: float = 5.0) -> dict[str, Any]:
+    request = urllib.request.Request(  # noqa: S310 - loopback
+        url, data=b"", headers={NONCE_HEADER: nonce}, method="POST"
+    )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - loopback
         return json.loads(response.read().decode())
 
@@ -61,9 +69,32 @@ def _unassign() -> bool:
     return True
 
 
+def _load_session() -> dict[str, Any] | None:
+    """Leia o `session.json`; ausente significa VM reciclada, não traceback."""
+    path = Path(SESSION_FILE)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _log(
+            "VM reciclada: session.json ausente; nada a supervisionar. "
+            "Rode `byom down` e `byom up`."
+        )
+        return None
+    except (OSError, ValueError) as exc:
+        _log(f"session.json ilegível ({exc}); encerrando sem desalocar")
+        return None
+    if not isinstance(payload, dict):
+        _log("session.json inválido (esperado um objeto JSON); encerrando sem desalocar")
+        return None
+    return payload
+
+
 def main() -> int:
-    cfg = json.loads(Path(SESSION_FILE).read_text(encoding="utf-8"))
+    cfg = _load_session()
+    if cfg is None:
+        return 1
     base = f"http://127.0.0.1:{cfg.get('gateway_port', 8001)}"
+    nonce = str(cfg.get("nonce") or "")
     idle_timeout_s = float(cfg.get("idle_timeout_min", 20)) * 60
     watchdog_timeout_s = float(cfg.get("watchdog_timeout_s", 60))
 
@@ -74,7 +105,7 @@ def main() -> int:
 
     while True:
         try:
-            state = _get(f"{base}/internal/state")
+            state = _get(f"{base}/internal/state", nonce)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             # A failed poll is not idleness: the gateway may still be starting.
             if silent_since is None:
@@ -97,15 +128,16 @@ def main() -> int:
 
         if ready_seen and idle_s >= idle_timeout_s:
             try:
-                decision = _post(f"{base}/internal/begin-shutdown")
+                decision = _post(f"{base}/internal/begin-shutdown", nonce)
             except (urllib.error.URLError, OSError, ValueError) as exc:
                 _log(f"begin-shutdown failed: {exc}")
             else:
-                if decision.get("accepted"):
+                if decision.get("accepted") and not state.get("active_jobs", 0):
                     _log(f"Idle for {idle_s:.0f}s; deallocating runtime")
                     if _unassign():
                         return 0
                     return 1
+                _log("Shutdown was not accepted; keeping the runtime")
 
         time.sleep(POLL_S)
 

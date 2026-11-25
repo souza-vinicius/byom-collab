@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import subprocess
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -22,8 +22,31 @@ RESTART_BACKOFF_MIN_S = 1.0
 RESTART_BACKOFF_MAX_S = 30.0
 HEALTH_TIMEOUT_S = 2.0
 
+#: Falhas consecutivas de execução sem nenhum heartbeat válido antes de parar
+#: de relançar. Depois de uma reciclagem da VM o `session.json` some e a célula
+#: sai com código 1: relançar para sempre só gasta o slot do `colab exec`.
+MAX_CONSECUTIVE_FAILURES = 5
+
 ProcessFactory = Callable[..., subprocess.Popen[bytes]]
 HeartbeatProbe = Callable[[], Awaitable[float | None]]
+
+
+@dataclass
+class WatchdogState:
+    """Estado observável do supervisor, lido por `byom status`."""
+
+    state: str = "stopped"
+    failures: int = 0
+    last_error: str | None = None
+    pid: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "state": self.state,
+            "failures": self.failures,
+            "last_error": self.last_error,
+            "pid": self.pid,
+        }
 
 
 def watchdog_file() -> Path:
@@ -59,24 +82,41 @@ class WatchdogSupervisor:
         self.check_interval_s = min(check_interval_s, max(0.5, self.restart_after_s / 2))
         self.log_path = config.config_dir() / "logs" / "watchdog.log"
         self.process: subprocess.Popen[bytes] | None = None
+        self.status = WatchdogState()
 
     async def run(self, stop: asyncio.Event) -> None:
-        """Start and supervise the watchdog until `stop` is signaled."""
+        """Start and supervise the watchdog until `stop` is signaled.
+
+        After `MAX_CONSECUTIVE_FAILURES` executions that die without a single
+        valid heartbeat — the case of a recycled VM whose `session.json`
+        disappeared — the supervisor stops relaunching and records why, so
+        `byom status` shows the cause instead of an endless restart loop.
+        """
         backoff = RESTART_BACKOFF_MIN_S
+        self._reset_log()
         try:
             while not stop.is_set():
                 if self.process is None:
                     try:
                         self.process = await asyncio.to_thread(self._start_process)
-                    except Exception:
+                    except Exception as exc:
                         log.exception("Could not start watchdog")
-                        await _sleep_or_stop(stop, backoff)
+                        self._record_failure(f"falha ao iniciar: {exc}")
+                        if self.status.state == "gave_up":
+                            return
+                        await config.sleep_or_stop(stop, backoff)
                         backoff = min(RESTART_BACKOFF_MAX_S, backoff * 2)
                         continue
-                    self._save_pid(self.process.pid)
+                    if not self._save_pid(self.process.pid):
+                        log.error("State.json is not this session's anymore; stopping watchdog")
+                        await self._stop_process()
+                        self.status.state = "stopped"
+                        return
+                    self.status.pid = self.process.pid
+                    self.status.state = "running"
                     log.info("Watchdog started (pid %s)", self.process.pid)
 
-                await _sleep_or_stop(stop, self.check_interval_s)
+                await config.sleep_or_stop(stop, self.check_interval_s)
                 if stop.is_set():
                     break
 
@@ -88,11 +128,42 @@ class WatchdogSupervisor:
                 log.warning("Restarting watchdog: %s", reason)
                 await self._stop_process()
                 self._save_pid(None)
-                await _sleep_or_stop(stop, backoff)
+                self.status.pid = None
+                self._record_failure(reason)
+                if self.status.state == "gave_up":
+                    return
+                await config.sleep_or_stop(stop, backoff)
                 backoff = min(RESTART_BACKOFF_MAX_S, backoff * 2)
         finally:
             await self._stop_process()
             self._save_pid(None)
+            self.status.pid = None
+            if self.status.state != "gave_up":
+                self.status.state = "stopped"
+
+    def _reset_log(self) -> None:
+        """Cada sessão começa com `watchdog.log` vazio.
+
+        Cada relançamento do `colab exec` fazia append no mesmo arquivo e ele
+        crescia sem limite; truncar no início da sessão mantém só a atual.
+        """
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self.log_path.write_text("", encoding="utf-8")
+        except OSError as exc:
+            log.warning("Could not reset %s: %s", self.log_path, exc)
+
+    def _record_failure(self, reason: str) -> None:
+        self.status.failures += 1
+        self.status.last_error = reason
+        if self.status.failures < MAX_CONSECUTIVE_FAILURES:
+            return
+        self.status.state = "gave_up"
+        self.status.last_error = (
+            f"watchdog desistiu após {self.status.failures} reinícios: {reason}. "
+            "Rode `byom down` e `byom up` para recriar a sessão."
+        )
+        log.error("%s", self.status.last_error)
 
     def _start_process(self) -> subprocess.Popen[bytes]:
         return self.process_factory(
@@ -110,26 +181,40 @@ class WatchdogSupervisor:
             return f"`colab exec` exited with code {returncode}"
 
         silence_s = await self.heartbeat_probe()
-        if silence_s is not None and silence_s >= self.restart_after_s:
+        if silence_s is None:
+            return None
+        if silence_s >= self.restart_after_s:
             return f"No heartbeat for {silence_s:.0f}s"
+        # Heartbeat válido: zera o contador de falhas consecutivas.
+        self.status.failures = 0
+        self.status.last_error = None
         return None
 
     async def _probe_heartbeat(self) -> float | None:
         url = f"http://127.0.0.1:{self.cfg.tunnel_port}/health"
+        headers = {config.NONCE_HEADER: self.state.nonce}
         try:
             async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
-                response = await client.get(url)
-        except httpx.HTTPError:
+                response = await client.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            log.warning("Watchdog heartbeat probe failed: %s", exc)
             return None
         if response.status_code != 200:
+            log.warning("Watchdog heartbeat probe returned HTTP %s", response.status_code)
             return None
         try:
             payload = response.json()
-            if payload.get("nonce") != self.state.nonce:
-                return None
+        except ValueError as exc:
+            log.warning("Watchdog heartbeat probe returned invalid JSON: %s", exc)
+            return None
+        if "nonce" in payload and not config.nonce_matches(payload, self.state):
+            log.warning("Watchdog heartbeat probe returned a different session nonce")
+            return None
+        try:
             value = payload.get("watchdog_silence_s")
             return None if value is None else float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            log.warning("Watchdog heartbeat probe returned an invalid silence value: %s", exc)
             return None
 
     async def _stop_process(self) -> None:
@@ -150,17 +235,37 @@ class WatchdogSupervisor:
                 return
             await asyncio.to_thread(process.wait)
 
-    def _save_pid(self, pid: int | None) -> None:
-        current = config.load_state()
-        if current is None or current.session != self.state.session:
-            return
-        current.watchdog_pid = pid
+    def _save_pid(self, pid: int | None) -> bool:
+        """Grava o PID só no state da própria sessão; False = sessão morreu."""
         try:
-            config.save_state(current)
-        except OSError:
-            log.exception("Could not save watchdog PID")
+            if pid is None:
+                current = config.update_state(
+                    expected_session=self.state.session,
+                    watchdog_pid=None,
+                    watchdog_start_ticks=None,
+                )
+            else:
+                # O start time identifica o PID mesmo depois de reciclado.
+                current = config.update_state(
+                    expected_session=self.state.session,
+                    watchdog_pid=pid,
+                    watchdog_start_ticks=config.process_start_ticks(pid),
+                )
+        except (config.StateFileError, OSError) as exc:
+            # `StateFileError` pode ser "state de outra sessão" (minha sessão
+            # morreu) ou arquivo ausente: nos dois casos não há o que salvar.
+            log.warning("Could not save watchdog PID: %s", exc)
+            return pid is None or not self._owns_state()
+        if current.session != self.state.session:
+            log.warning("State session changed while saving watchdog PID")
+            return False
+        return True
 
+    def _owns_state(self) -> bool:
+        """True quando o `state.json` ainda é desta sessão."""
+        try:
+            current = config.load_state()
+        except config.StateFileError:
+            return False
+        return current is not None and current.session == self.state.session
 
-async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(stop.wait(), timeout=seconds)

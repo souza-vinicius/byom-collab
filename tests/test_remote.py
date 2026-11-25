@@ -252,3 +252,126 @@ def test_stop_stops_and_removes_the_socket(cfg, fake_ssh):
 def test_stop_without_master_is_noop(cfg, fake_ssh):
     build(cfg).stop()
     assert fake_ssh.calls == []
+
+
+_real_validate_ssh_key = remote.validate_ssh_key
+
+
+def test_validate_ssh_key_rejects_fake_and_accepts_real_key(tmp_path):
+    import shutil
+
+    if shutil.which("ssh-keygen") is None:
+        pytest.skip("ssh-keygen not available")
+    fake = tmp_path / "fake"
+    fake.write_text("ssh-ed25519 AAAA test", encoding="utf-8")
+    fake.chmod(0o600)
+    assert "não é uma chave privada SSH válida" in (_real_validate_ssh_key(fake) or "")
+    assert "não existe" in (_real_validate_ssh_key(tmp_path / "missing") or "")
+
+    real = tmp_path / "real"
+    subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-q", "-f", str(real)], check=True)
+    assert _real_validate_ssh_key(real) is None
+
+
+def test_start_reports_progress_for_each_attempt(cfg, fake_ssh):
+    client = build(cfg)
+    fake_ssh.socket = client.socket
+    fake_ssh.master_returncode = 255
+    messages: list[str] = []
+
+    with pytest.raises(remote.RemoteError):
+        client.start(on_progress=messages.append)
+
+    assert messages[0] == f"tentativa 1 de {remote.START_ATTEMPTS}"
+    assert any("nova tentativa em" in m for m in messages)
+    assert messages[-1] == f"tentativa {remote.START_ATTEMPTS} de {remote.START_ATTEMPTS}"
+
+
+# -- pin da chave de host por sessão --------------------------------------
+def _option(command: list[str], name: str) -> str:
+    prefix = f"{name}="
+    return next(item.removeprefix(prefix) for item in command if item.startswith(prefix))
+
+
+def test_primeira_conexao_usa_accept_new_com_arquivo_da_sessao(cfg):
+    client = build(cfg)
+    assert client.known_hosts == config.config_dir() / "known_hosts_byom-x"
+
+    command = client.master_command()
+
+    assert _option(command, "StrictHostKeyChecking") == "accept-new"
+    assert _option(command, "UserKnownHostsFile") == str(client.known_hosts)
+    assert _option(command, "HostKeyAlias") == "byom-byom-x"
+    # Nada de /dev/null: a chave é memorizada, não descartada.
+    assert "/dev/null" not in command
+
+
+def test_segunda_conexao_exige_a_chave_memorizada(cfg):
+    client = build(cfg)
+    client.known_hosts.parent.mkdir(parents=True, exist_ok=True)
+    client.known_hosts.write_text(
+        "byom-byom-x ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\n", encoding="utf-8"
+    )
+
+    command = client.master_command()
+
+    assert _option(command, "StrictHostKeyChecking") == "yes"
+    assert _option(command, "UserKnownHostsFile") == str(client.known_hosts)
+    assert _option(command, "HostKeyAlias") == "byom-byom-x"
+    # O comando de controle usa o mesmo arquivo.
+    assert _option(client.control_command("check"), "UserKnownHostsFile") == str(
+        client.known_hosts
+    )
+
+
+def test_chave_de_host_que_mudou_vira_erro_legivel(cfg, fake_ssh):
+    client = build(cfg)
+    fake_ssh.socket = client.socket
+    fake_ssh.master_returncode = 255
+    fake_ssh.master_log_text = (
+        "@@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED\n"
+        "Host key verification failed.\n"
+    )
+
+    with pytest.raises(remote.RemoteError) as excinfo:
+        client.start()
+
+    mensagem = str(excinfo.value)
+    assert "chave de host da sessão mudou" in mensagem
+    assert "possível MITM" in mensagem
+    assert "byom down" in mensagem
+    # Não insiste: uma chave trocada não melhora com retry.
+    assert len(fake_ssh.master_calls()) == 1
+
+
+def test_down_remove_o_known_hosts_da_sessao(cfg):
+    client = build(cfg)
+    client.known_hosts.parent.mkdir(parents=True, exist_ok=True)
+    client.known_hosts.write_text("byom-byom-x ssh-ed25519 AAAA\n", encoding="utf-8")
+    assert client.known_hosts.exists()
+
+    remote.forget_session_host_key("byom-x")
+    assert not client.known_hosts.exists()
+    # Idempotente e sem escapar do config dir.
+    remote.forget_session_host_key("byom-x")
+    remote.forget_session_host_key("../../etc/passwd")
+
+
+def test_tunel_tem_socket_de_controle_proprio(cfg):
+    """`byom up` para o master dele; o túnel não pode usar o mesmo socket.
+
+    Com um socket compartilhado, o `ssh -O exit` do fim do `up` derrubava o
+    master que o daemon tinha acabado de abrir, e a API ficava indisponível
+    por alguns segundos depois de "Worker ready".
+    """
+    from byom import tunnel
+
+    supervisor = tunnel.TunnelSupervisor(session="byom-x", endpoint="endpoint", cfg=cfg)
+    comando = supervisor.remote.master_command([(4101, 8001)])
+    socket_do_tunel = Path(comando[comando.index("-S") + 1])
+
+    assert socket_do_tunel == remote.tunnel_socket_path("byom-x")
+    assert socket_do_tunel != remote.socket_path("byom-x")
+    assert socket_do_tunel != build(cfg).socket
+    # O master do `up` continua no socket curto de sempre.
+    assert build(cfg).socket.name == "cm-byom-x.sock"

@@ -1,10 +1,10 @@
 """Local proxy: stable endpoint used by coding agents.
 
 It listens only on `127.0.0.1:4000` and forwards `/v1/*` through the tunnel
-to the worker gateway. Before forwarding anything, it checks that the
-gateway's `/health` returns the nonce of the session registered in
-`state.json`: this ensures the destination is that session's worker, not some
-other machine.
+to the worker gateway. Nothing is forwarded before the destination proves it is
+this session's worker: the gateway only answers `/health` for a request that
+carries the session nonce in `X-BYOM-Nonce`, and the nonce is never returned in
+a payload.
 
 It also exposes `GET /__byom/status`, used by `byom status`. That endpoint is
 local, does not cross the tunnel, and does not count as activity.
@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -27,10 +28,45 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import config
 from .tunnel import TunnelSupervisor
+from .watchdog_supervisor import WatchdogState
 
 log = logging.getLogger("byom.proxy")
 
 VERIFY_INTERVAL_S = 5.0
+
+#: Cabeçalhos do cliente repassados ao gateway. `host` e `authorization` nunca
+#: entram: o destino é loopback e o gateway não autentica o cliente, então
+#: repassá-los só aumentaria a superfície de ataque.
+FORWARDED_REQUEST_HEADERS = ("accept", "openai-beta", "user-agent")
+
+#: Segmentos de caminho aceitos. Qualquer outro caractere (barra invertida,
+#: `%`, NUL) é recusado antes de montar a URL.
+ALLOWED_PATH_CHARS = re.compile(r"[A-Za-z0-9._~/-]+")
+
+#: Únicos valores aceitos em `Host`. Bloqueia DNS rebinding: um navegador que
+#: resolva um domínio público para 127.0.0.1 envia o domínio nesse header.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+
+#: Timeout do cliente que fala com o gateway. Sem `read`: um SSE legítimo fica
+#: quieto entre eventos, e um read timeout mataria a geração no meio.
+PROXY_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0)
+
+#: Deadline do primeiro byte de uma resposta em STREAM. Cobre a VM pausada pelo
+#: Colab: o `send` espera os headers e, sem prazo, o request penduraria para
+#: sempre. Em SSE o primeiro byte chega no começo da geração, então 60 s bastam.
+FIRST_BYTE_DEADLINE_S = 60.0
+
+#: Deadline do primeiro byte de uma resposta NON-STREAM. Aqui os headers só
+#: chegam no fim: o gateway faz `await post(...)` e devolve `JSONResponse`
+#: (`worker/gateway.py:_forward_image`), então o prazo precisa cobrir a geração
+#: inteira. 10 min é teto de paciência local; o limite real de trabalho é
+#: `max_job_min` no worker, que recusa o job antes disso.
+NONSTREAM_DEADLINE_S = 600.0
+
+#: Caminhos que aceitam `"stream": true` no corpo. `/v1/images/*` e
+#: `/v1/models` nunca são stream, qualquer que seja o corpo.
+STREAM_CAPABLE_PATHS = frozenset({"chat/completions", "completions"})
+
 
 
 @dataclass
@@ -81,13 +117,21 @@ class Runtime:
     cfg: config.Config
     tunnel: TunnelSupervisor
     worker: WorkerStatus = field(default_factory=WorkerStatus)
+    #: Estado do supervisor do watchdog, quando o daemon o injeta. Não há
+    #: endpoint novo: ele entra no `/__byom/status` que `byom status` já lê.
+    watchdog: WatchdogState | None = None
 
     @property
     def base_url(self) -> str:
         return self.tunnel.local_base_url
 
     async def verify(self) -> None:
-        """Read `/health` through the tunnel and validate the session nonce."""
+        """Read `/health` through the tunnel and validate the session identity.
+
+        A 200 already proves identity: the gateway only answers with this
+        session's `X-BYOM-Nonce`, and the payload no longer carries the nonce.
+        A payload that still carries one (an older gateway) has to match.
+        """
         payload = await self.tunnel.probe_health()
         self.worker.checked_at = time.monotonic()
         if payload is None:
@@ -97,8 +141,7 @@ class Runtime:
                 self.tunnel.status.last_error or "Gateway is inaccessible through the tunnel"
             )
             return
-        nonce = str(payload.get("nonce", ""))
-        if not nonce or nonce != self.state.nonce:
+        if "nonce" in payload and not config.nonce_matches(payload, self.state):
             # Never forward to a destination of unknown identity.
             self.worker.verified = False
             self.worker.model_ready = False
@@ -129,19 +172,25 @@ class Runtime:
 
     async def verify_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            with contextlib.suppress(Exception):
+            try:
                 await self.verify()
+            except Exception as exc:
+                # Never log the nonce or any response body, only the cause.
+                log.warning("Worker verification failed: %s", exc)
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=VERIFY_INTERVAL_S)
 
     def status_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "session": self.state.session,
             "endpoint": self.state.endpoint,
             "created_at": self.state.created_at,
             "tunnel": self.tunnel.status.to_dict(),
             "worker": self.worker.to_dict(),
         }
+        if self.watchdog is not None:
+            payload["watchdog"] = self.watchdog.to_dict()
+        return payload
 
     def refuse_reason(self) -> str | None:
         if self.worker.error is not None:
@@ -165,7 +214,7 @@ def create_app(
     def make_client() -> httpx.AsyncClient:
         if client_factory is not None:
             return client_factory()
-        return httpx.AsyncClient(transport=transport, timeout=None)
+        return httpx.AsyncClient(transport=transport, timeout=PROXY_TIMEOUT)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -180,61 +229,223 @@ def create_app(
     app = FastAPI(lifespan=lifespan)
 
     @app.get("/__byom/status")
-    async def status() -> dict[str, Any]:
+    async def status(request: Request) -> Any:
+        if not _host_allowed(request):
+            return _bad_host()
         return runtime.status_payload()
 
     @app.api_route("/v1/{path:path}", methods=["GET", "POST"])
     async def forward(path: str, request: Request) -> Any:
+        if not _host_allowed(request):
+            return _bad_host()
+        # A recusa acontece antes de qualquer coisa sair: o Starlette casa
+        # `{path:path}` com `../internal/state`, e o httpx normaliza `..` ao
+        # montar a URL, entregando o endpoint interno do gateway.
+        url, path_error = _forward_url(runtime.base_url, path, request.url.query)
+        if url is None:
+            return _bad_path(path_error or "Invalid request path")
         reason = runtime.refuse_reason()
         if reason is not None:
             return JSONResponse(
                 status_code=503,
                 content={"error": {"message": reason, "type": "byom_unavailable"}},
             )
-        return await _forward(runtime, make_client(), path, request)
+        return await _forward(runtime, make_client(), url, request, path)
+
 
     return app
+
+
+def _bad_path(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"error": {"message": message, "type": "byom_bad_path"}},
+    )
+
+
+def _bad_host() -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={
+            "error": {
+                "message": "Host not allowed: the proxy only accepts 127.0.0.1 or localhost",
+                "type": "byom_bad_host",
+            }
+        },
+    )
+
+
+def _host_allowed(request: Request) -> bool:
+    """Aceite apenas loopback no `Host`, com porta opcional."""
+    raw = request.headers.get("host", "").strip().lower()
+    if not raw or raw.startswith("["):
+        return False
+    name, _, port = raw.partition(":")
+    if name not in LOOPBACK_HOSTS:
+        return False
+    if not port:
+        return True
+    return port.isdigit() and 1 <= int(port) <= 65535
+
+
+def _path_error(path: str) -> str | None:
+    """Motivo para recusar `path`, ou None quando ele é seguro."""
+    if not path:
+        return "Empty request path"
+    if "\\" in path:
+        return "Backslash is not allowed in the request path"
+    if "\x00" in path:
+        return "NUL byte is not allowed in the request path"
+    if "%" in path:
+        # O caminho chega decodificado; um `%` restante é dupla codificação.
+        return "Percent-encoding is not allowed in the request path"
+    if not ALLOWED_PATH_CHARS.fullmatch(path):
+        return "Character outside [A-Za-z0-9._~/-] in the request path"
+    if any(segment in {".", ".."} for segment in path.split("/")):
+        return "Dot segments are not allowed in the request path"
+    return None
+
+
+def _forward_url(
+    base_url: str, path: str, query: str
+) -> tuple[httpx.URL | None, str | None]:
+    """URL de destino validada, preservando a query string do cliente."""
+    error = _path_error(path)
+    if error is not None:
+        return None, error
+    raw = f"{base_url}/v1/{path}"
+    if query:
+        raw = f"{raw}?{query}"
+    try:
+        url = httpx.URL(raw)
+    except (httpx.InvalidURL, ValueError) as exc:
+        return None, f"Invalid request URL: {exc}"
+    # Defesa em profundidade: depois da normalização do httpx, o caminho
+    # encaminhado continua obrigatoriamente dentro de /v1/.
+    if not url.path.startswith("/v1/") or "/../" in url.path:
+        return None, "Request path escapes /v1/"
+    return url, None
+
+
+def _forward_headers(request: Request) -> dict[str, str]:
+    """Allowlist de headers de entrada; o stream nunca é comprimido."""
+    headers = {
+        name: request.headers[name]
+        for name in FORWARDED_REQUEST_HEADERS
+        if name in request.headers
+    }
+    headers["content-type"] = request.headers.get("content-type", "application/json")
+    headers["accept-encoding"] = "identity"
+    return headers
+
+
+def _is_stream_request(path: str, body: bytes) -> bool:
+    """A resposta é SSE? Decide o prazo ANTES de enviar a requisição.
+
+    Em non-stream os headers só chegam no fim da geração (`_forward_image` faz
+    `await post(...)` e devolve `JSONResponse`), então aplicar 60 s ali
+    descartaria trabalho de GPU já feito. O fallback é conservador: corpo
+    ilegível, `stream` que não é `true` ou caminho que não aceita stream usam o
+    prazo longo.
+    """
+    normalized = path.strip("/")
+    if normalized.startswith("v1/"):
+        normalized = normalized[len("v1/") :]
+    if normalized not in STREAM_CAPABLE_PATHS:
+        return False
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return payload.get("stream") is True
 
 
 async def _forward(
     runtime: Runtime,
     client: httpx.AsyncClient,
-    path: str,
+    url: httpx.URL,
     request: Request,
+    path: str = "",
 ) -> Any:
-    url = f"{runtime.base_url}/v1/{path}"
     body = await request.body()
-    headers = {"content-type": request.headers.get("content-type", "application/json")}
-    upstream = client.build_request(request.method, url, content=body, headers=headers)
+    is_stream = _is_stream_request(path, body)
+    deadline = FIRST_BYTE_DEADLINE_S if is_stream else NONSTREAM_DEADLINE_S
+    upstream = client.build_request(
+        request.method, url, content=body, headers=_forward_headers(request)
+    )
+    # O gerador do stream passa a ser o dono do cliente: fechá-lo aqui
+    # abortaria uma resposta que ainda está sendo lida.
+    streamed = False
     try:
-        response = await client.send(upstream, stream=True)
-    except httpx.HTTPError as exc:
-        await client.aclose()
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": f"Tunnel unavailable: {exc}", "type": "byom_tunnel"}},
-        )
-
-    if response.status_code != 200:
-        payload = await response.aread()
-        await response.aclose()
-        await client.aclose()
         try:
-            content = json.loads(payload)
-        except ValueError:
-            content = {"error": {"message": payload.decode(errors="replace")[:2000]}}
-        return JSONResponse(status_code=response.status_code, content=content)
+            response = await asyncio.wait_for(
+                client.send(upstream, stream=True), deadline
+            )
+        except TimeoutError:
+            # `asyncio.TimeoutError` é `TimeoutError` desde o Python 3.11.
+            return _deadline_expired(deadline)
+        except httpx.HTTPError as exc:
+            return _tunnel_unavailable(f"Tunnel unavailable: {exc}")
 
-    media_type = response.headers.get("content-type", "text/event-stream")
 
-    async def stream() -> AsyncIterator[bytes]:
-        # Forward each event as it arrives instead of waiting for the end of
-        # the response. Closing the stream aborts the request on the worker.
-        try:
-            async for chunk in response.aiter_raw():
-                yield chunk
-        finally:
+        if response.status_code != 200:
+            payload = await response.aread()
             await response.aclose()
+            try:
+                content = json.loads(payload)
+            except ValueError:
+                content = {"error": {"message": payload.decode(errors="replace")[:2000]}}
+            return JSONResponse(status_code=response.status_code, content=content)
+
+        media_type = response.headers.get("content-type", "text/event-stream")
+
+        async def stream() -> AsyncIterator[bytes]:
+            # Forward each event as it arrives instead of waiting for the end
+            # of the response. Closing the stream aborts the request on the
+            # worker.
+            try:
+                async for chunk in response.aiter_raw():
+                    yield chunk
+            finally:
+                await response.aclose()
+                await client.aclose()
+
+        streamed = True
+        return StreamingResponse(stream(), status_code=response.status_code, media_type=media_type)
+    finally:
+        # Qualquer saída — erro, deadline, `CancelledError` durante o `send` —
+        # fecha o cliente. `aclose` é idempotente, então o `finally` do gerador
+        # de stream pode chamá-lo de novo.
+        if not streamed:
             await client.aclose()
 
-    return StreamingResponse(stream(), status_code=response.status_code, media_type=media_type)
+
+def _tunnel_unavailable(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"error": {"message": message, "type": "byom_tunnel"}},
+    )
+
+
+def _deadline_expired(seconds: float) -> JSONResponse:
+    """503 por prazo de primeira resposta — distinto de falha do túnel.
+
+    Culpar o túnel aqui mandava o usuário depurar SSH quando a causa é uma
+    geração longa em non-stream ou o gateway parado.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "message": (
+                    f"o gateway não respondeu em {int(seconds)}s "
+                    "(prazo de primeira resposta); a geração pode seguir na GPU — "
+                    "confira `byom status` antes de repetir o pedido"
+                ),
+                "type": "byom_deadline",
+            }
+        },
+    )
+

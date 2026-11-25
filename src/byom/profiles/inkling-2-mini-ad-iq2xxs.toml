@@ -1,0 +1,32 @@
+name = "Inkling 2 Mini (AD-IQ2_XXS, GGUF)"
+description = "GGUF AD-IQ2_XXS da AtomicChat para T4: 88,5% de top-1 contra o BF16; com o KV medido pela arquitetura (0,58 GiB em 32K) os 32K cabem nos 15 GiB com 2,06 GiB de sobra."
+opencode_output_limit = 8192
+runtime = "llama-cpp"
+catalog_model = "inkling-2-mini"
+catalog_variant = "ad-iq2xxs"
+
+[config]
+model = "inkling-2-mini"
+served_model_name = "inkling-2-mini"
+max_model_len = 32768
+gpu = "T4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+# Mesmo binário dos perfis inkling-2-mini-* da Unsloth: o arquivo AD já está no
+# layout merged do PR #32694 e o publicador exige llama.cpp b12600 ou mais novo.
+[worker]
+binary_url = "https://github.com/ggml-org/llama.cpp/releases/download/b12611/llama-b12611-bin-ubuntu-cuda-12.8-x64.tar.gz"
+binary_sha256 = "7f45fec1288a3332d78c48f77ef1a8a08008e0681ff95eae2285432b90dc956d"
+binary_dir = "llama.cpp"
+model_repo = "AtomicChat/Inkling-2-Mini-GGUF"
+model_patterns = ["Inkling-2-Mini-AD-IQ2_XXS.gguf", "mmproj-Inkling-2-Mini-F16.gguf"]
+main_pattern = "Inkling-2-Mini-AD-IQ2_XXS.gguf"
+mmproj_pattern = "mmproj-Inkling-2-Mini-F16.gguf"
+llama_jinja = true

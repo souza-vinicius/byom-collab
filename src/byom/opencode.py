@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
-import stat
-import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +13,10 @@ from typing import Any
 from . import config
 
 PLUGIN_NAME = "opencode-models-discovery"
-PLUGIN_SPEC = f"{PLUGIN_NAME}@latest"
+# Pinned on 23/11/2026: `latest` made `up` non-reproducible. npm lists 2.2.1
+# as latest and its README documents a separate OpenCode v1 adapter, but V1
+# plugin execution under V2 was not verified here (see README).
+PLUGIN_SPEC = f"{PLUGIN_NAME}@2.2.1"
 PROVIDER_ID = "byom"
 
 
@@ -31,8 +31,29 @@ class SyncResult:
     changed: bool
 
 
-def resolve_config_path(explicit_path: Path | None = None) -> Path:
-    """Resolve the primary global OpenCode config file without editing project configs."""
+#: Mensagem única para o arquivo JSONC. O byom edita o JSON como texto
+#: (preservando o resto do arquivo), então reescrever um `.jsonc` apagaria os
+#: comentários: recusar é a opção conservadora.
+JSONC_MESSAGE = (
+    "o byom não reescreve {path}: arquivo JSONC (comentários/vírgulas finais) "
+    "perderia comentários. Use um caminho .json — por exemplo "
+    "`byom up --opencode-config <dir>/opencode.json` ou a variável OPENCODE_CONFIG"
+)
+
+
+def _reject_jsonc(path: Path) -> Path:
+    if path.suffix.lower() == ".jsonc":
+        raise OpenCodeConfigError(JSONC_MESSAGE.format(path=path))
+    return path
+
+
+def config_path(explicit_path: Path | None = None) -> Path:
+    """Resolve o arquivo global do OpenCode sem validar o formato.
+
+    Serve para exibir o caminho e o bloco manual na TUI: um `.jsonc` é um alvo
+    válido de instrução, mesmo que o sync automático se recuse a reescrevê-lo.
+    `.json` continua tendo precedência quando os dois existem.
+    """
     if explicit_path is not None:
         return explicit_path.expanduser()
 
@@ -49,11 +70,21 @@ def resolve_config_path(explicit_path: Path | None = None) -> Path:
         config_home = Path.home() / ".config"
 
     opencode_dir = config_home / "opencode"
-    for name in ("opencode.jsonc", "opencode.json"):
+    for name in ("opencode.json", "opencode.jsonc"):
         candidate = opencode_dir / name
         if candidate.exists():
             return candidate
     return opencode_dir / "opencode.json"
+
+
+def resolve_config_path(explicit_path: Path | None = None) -> Path:
+    """Caminho para o sync automático: `.jsonc` é recusado sem ser tocado.
+
+    `.json` tem precedência; se só existir `.jsonc`, o sync recusa com o caminho
+    e a forma de apontar outro arquivo, em vez de apagar os comentários. A
+    leitura do caminho para instruções manuais usa `config_path`.
+    """
+    return _reject_jsonc(config_path(explicit_path))
 
 
 def sync_config(cfg: config.Config, explicit_path: Path | None = None) -> SyncResult:
@@ -71,6 +102,29 @@ def sync_config(cfg: config.Config, explicit_path: Path | None = None) -> SyncRe
     if changed:
         _atomic_write(path, json.dumps(updated, ensure_ascii=False, indent=2) + "\n")
     return SyncResult(path=path, model=updated["model"], changed=changed)
+
+
+def restore_default_model(path: Path, model: str | None) -> bool:
+    """Devolve `model` ao valor anterior (ou remove a chave, se não havia).
+
+    Usado pelo `down` via `harness_state`: o provedor `byom` pode ficar no
+    arquivo (aponta para um proxy parado, sem efeito), mas o modelo PADRÃO do
+    agente não pode continuar sendo o do byom.
+    """
+    if path.suffix.lower() == ".jsonc":
+        raise OpenCodeConfigError(JSONC_MESSAGE.format(path=path))
+    if not path.exists():
+        return False
+    original = _read_config(path)
+    atual = original.get("model")
+    if model == atual:
+        return False
+    if model is None:
+        original.pop("model", None)
+    else:
+        original["model"] = model
+    _atomic_write(path, json.dumps(original, ensure_ascii=False, indent=2) + "\n")
+    return True
 
 
 def _read_config(path: Path) -> dict[str, Any]:
@@ -200,22 +254,6 @@ def _merge_model(models: dict[str, Any], model_id: str, template: dict[str, Any]
 
 def _atomic_write(path: Path, contents: str) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        target = path.resolve()
-        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
-        fd, temporary = tempfile.mkstemp(
-            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as output:
-                os.fchmod(output.fileno(), mode)
-                output.write(contents)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, target)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary)
-            raise
+        config.atomic_write_text(path, contents)
     except OSError as exc:
         raise OpenCodeConfigError(f"Could not write {path}: {exc}") from exc

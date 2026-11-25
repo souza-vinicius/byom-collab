@@ -1,12 +1,14 @@
 name = "Qwen3.8 27B (256k)"
 description = "Full native context for a high-memory A100."
 opencode_output_limit = 8192
+runtime = "vllm"
+catalog_model = "qwen3.8-27b-awq"
+catalog_variant = "q4-awq"
 
 [config]
 model = "philbert440/Qwen3.8-27B-W4A16-AWQ"
 served_model_name = "qwen3.8-27b"
 max_model_len = 262144
-reasoning_effort = "medium"
 gpu = "A100"
 gpu_high_mem = true
 gpu_memory_utilization = 0.92

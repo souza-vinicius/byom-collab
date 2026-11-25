@@ -15,7 +15,6 @@ when the name is not in the local store. That is why the supervisor checks
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -24,7 +23,8 @@ from pathlib import Path
 import httpx
 
 from . import colab, config
-from .remote import Remote, RemoteError
+from .config import NONCE_HEADER
+from .remote import Remote, RemoteError, tunnel_socket_path
 
 log = logging.getLogger("byom.tunnel")
 
@@ -34,6 +34,29 @@ HEALTH_TIMEOUT_S = 3.0
 CONNECT_TIMEOUT_S = 30.0
 MONITOR_INTERVAL_S = 2.0
 ENDPOINT_RECHECK_S = 5.0
+
+#: Ciclos consecutivos sem nenhum health OK antes de declarar a sessão
+#: indisponível. Sem este teto, uma VM reciclada gera retry eterno — e cada
+#: ciclo `remote.start` tenta 6 vezes em ~95 s, disputando o slot único do
+#: `colab ssh` (HTTP 429).
+MAX_CONSECUTIVE_FAILURES = 10
+
+#: Falhas que não melhoram com retry. Repetir só queima o slot do `colab ssh`.
+FATAL_HINTS = {
+    "address already in use": "a porta local do túnel já está em uso",
+    "cannot listen": "o ssh não conseguiu abrir a porta local do forward",
+    "permission denied": "o ssh foi recusado na autenticação (chave inválida?)",
+    "host key verification failed": "a chave de host da sessão não confere",
+}
+
+
+def _fatal_reason(text: str) -> str | None:
+    """Motivo legível quando a falha é permanente, ou None se é transitória."""
+    lowered = text.lower()
+    for pattern, hint in FATAL_HINTS.items():
+        if pattern in lowered:
+            return hint
+    return None
 
 
 @dataclass
@@ -64,17 +87,24 @@ class TunnelSupervisor:
         session: str,
         endpoint: str,
         cfg: config.Config,
+        nonce: str = "",
         ssh_bin: str = "ssh",
         log_path: Path | None = None,
     ) -> None:
         self.session = session
         self.endpoint = endpoint
         self.cfg = cfg
+        #: Nonce da sessão, enviado em `X-BYOM-Nonce` no probe de `/health`.
+        #: Nunca vai para log nem para relatório de status.
+        self.nonce = nonce
         self.remote = Remote(
             session=session,
             cfg=cfg,
             ssh_bin=ssh_bin,
             log_path=log_path,
+            # Socket próprio: `byom up` para o master dele no fim da transação
+            # e não pode levar a conexão do túnel junto.
+            socket=tunnel_socket_path(session),
         )
         self.status = TunnelState()
 
@@ -97,63 +127,106 @@ class TunnelSupervisor:
             return False
 
     async def probe_health(self) -> dict[str, object] | None:
-        """Read `/health` through the tunnel and measure latency."""
+        """Read `/health` through the tunnel and measure latency.
+
+        The request carries the session nonce: the gateway answers 403 without
+        it, because every client of the forwarded port sees loopback.
+        """
         started = time.monotonic()
+        headers = {NONCE_HEADER: self.nonce} if self.nonce else {}
         try:
             async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
-                response = await client.get(f"{self.local_base_url}/health")
-        except httpx.HTTPError:
+                response = await client.get(f"{self.local_base_url}/health", headers=headers)
+        except httpx.HTTPError as exc:
+            log.debug("Gateway health probe failed: %s", exc)
             return None
         self.status.latency_ms = round((time.monotonic() - started) * 1000, 1)
         if response.status_code != 200:
+            # 403 = nonce ausente ou divergente: outra sessão, ou proxy no meio.
+            log.debug("Gateway health probe returned HTTP %s", response.status_code)
+            if response.status_code in {401, 403}:
+                self.status.last_error = (
+                    "Gateway rejected the session nonce (HTTP "
+                    f"{response.status_code}); the tunnel may point at another session"
+                )
             return None
         try:
             return response.json()
-        except ValueError:
+        except ValueError as exc:
+            log.warning("Gateway health probe returned invalid JSON: %s", exc)
             return None
 
     # -- lifecycle --------------------------------------------------------
     async def run(self, stop: asyncio.Event) -> None:
-        """Supervise the tunnel until `stop` is signaled."""
+        """Supervise the tunnel until `stop` is signaled or the failure is final.
+
+        Fatal failures (port taken, key rejected, host key changed) and a run of
+        transient failures without any health OK end the loop with
+        `state = "failed"` and a readable `last_error`: the daemon stays up so
+        `byom status` can show the cause instead of "reconnecting" forever.
+        """
         backoff = BACKOFF_MIN_S
+        failures = 0
         while not stop.is_set():
             if not await self.session_allocated():
                 self.status.state = "stopped"
                 self.status.last_error = "Session is no longer allocated by the backend"
                 self.status.since = time.monotonic()
-                await _sleep_or_stop(stop, ENDPOINT_RECHECK_S)
+                await config.sleep_or_stop(stop, ENDPOINT_RECHECK_S)
                 continue
 
             self.status.state = "connecting" if self.status.reconnects == 0 else "reconnecting"
             self.status.since = time.monotonic()
 
+            fatal: str | None = None
             try:
                 await asyncio.to_thread(self.remote.start, forwards=self.forwards)
             except RemoteError as exc:
                 self.status.last_error = str(exc)
+                fatal = _fatal_reason(f"{exc} {self.remote.log_tail()}")
             else:
                 if await self._wait_healthy(stop):
                     self.status.state = "connected"
                     self.status.last_error = None
                     self.status.since = time.monotonic()
                     backoff = BACKOFF_MIN_S
+                    failures = 0
                 else:
                     detail = self.remote.log_tail()
-                    self.status.last_error = (
+                    message = (
                         f"Tunnel failed to connect: {detail}"
                         if detail
                         else "Gateway did not respond through the tunnel"
                     )
+                    self.status.last_error = message
+                    fatal = _fatal_reason(f"{message} {detail}")
                 await self._monitor(stop)
 
             await asyncio.to_thread(self.remote.stop)
 
             if stop.is_set():
                 break
+            if fatal is not None:
+                self.status.state = "failed"
+                self.status.last_error = (
+                    f"{fatal} ({self.status.last_error}); não haverá nova tentativa"
+                )
+                log.error("SSH tunnel failed permanently: %s", self.status.last_error)
+                return
+
+            failures += 1
             self.status.reconnects += 1
             self.status.state = "reconnecting"
             self.status.since = time.monotonic()
-            await _sleep_or_stop(stop, backoff)
+            if failures >= MAX_CONSECUTIVE_FAILURES:
+                self.status.state = "failed"
+                self.status.last_error = (
+                    f"Desisti após {failures} falhas consecutivas sem health OK: "
+                    f"{self.status.last_error}. Rode `byom down` e `byom up`."
+                )
+                log.error("%s", self.status.last_error)
+                return
+            await config.sleep_or_stop(stop, backoff)
             backoff = min(BACKOFF_MAX_S, backoff * 2)
 
         await asyncio.to_thread(self.remote.stop)
@@ -166,7 +239,7 @@ class TunnelSupervisor:
                 return False
             if await self.probe_health() is not None:
                 return True
-            await _sleep_or_stop(stop, 0.5)
+            await config.sleep_or_stop(stop, 0.5)
         return False
 
     async def _monitor(self, stop: asyncio.Event) -> None:
@@ -175,7 +248,7 @@ class TunnelSupervisor:
             if not await asyncio.to_thread(self.remote.alive):
                 self.status.last_error = "SSH connection dropped"
                 return
-            await _sleep_or_stop(stop, MONITOR_INTERVAL_S)
+            await config.sleep_or_stop(stop, MONITOR_INTERVAL_S)
             if stop.is_set():
                 return
             if not await asyncio.to_thread(self.remote.alive):
@@ -184,8 +257,3 @@ class TunnelSupervisor:
             if await self.probe_health() is None:
                 self.status.last_error = "Gateway did not respond through the tunnel"
                 self.status.state = "reconnecting"
-
-
-async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(stop.wait(), timeout=seconds)
