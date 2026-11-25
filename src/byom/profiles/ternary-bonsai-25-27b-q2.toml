@@ -1,0 +1,44 @@
+name = "Ternary Bonsai 2.5 27B (Q2_0, upstream)"
+description = "GGUF Q2_0 do Bonsai 2.5 (ternário, 1,76 bit/peso, 7,15 GiB): roda no llama.cpp upstream b11556+; 32K na T4."
+opencode_output_limit = 8192
+runtime = "llama-cpp"
+catalog_model = "ternary-bonsai-2.5-27b"
+catalog_variant = "q2"
+
+[config]
+model = "ternary-bonsai-2.5-27b"
+served_model_name = "ternary-bonsai-2.5-27b"
+max_model_len = 32768
+gpu = "T4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+# `Q2_0` roda no llama.cpp upstream: o piso é b11556 (card e docs, 2026-11-24;
+# b11555 não existe em nenhuma página conferida) e o build pinado é o mesmo
+# b12611 dos perfis Inkling, mais novo que o piso. Builds anteriores ao piso
+# carregam o arquivo e geram lixo em silêncio.
+[worker]
+binary_url = "https://github.com/ggml-org/llama.cpp/releases/download/b12611/llama-b12611-bin-ubuntu-cuda-12.8-x64.tar.gz"
+binary_sha256 = "7f45fec1288a3332d78c48f77ef1a8a08008e0681ff95eae2285432b90dc956d"
+binary_dir = "llama.cpp"
+model_repo = "prism-ml/Ternary-Bonsai-2.5-27B-GGUF"
+model_patterns = ["Ternary-Bonsai-2.5-27B-Q2_0.gguf", "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf"]
+main_pattern = "Ternary-Bonsai-2.5-27B-Q2_0.gguf"
+mmproj_pattern = "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf"
+llama_jinja = true
+flash_attn = true
+
+# Thinking do 27B: 1.0 / 0.95 / 20 / 0.0, sem presence nem repeat penalty
+# (esses são dos modelos pequenos). `min_p` vai explícito porque o default do
+# llama.cpp é 0.05 e o valor recomendado é 0.0 — card e docs, 2026-11-24.
+[worker.sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0

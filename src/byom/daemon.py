@@ -9,10 +9,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import logging.handlers
 import os
 import signal
 import sys
 import time
+from collections.abc import Awaitable
 from pathlib import Path
 
 import uvicorn
@@ -24,9 +26,86 @@ from .watchdog_supervisor import WatchdogSupervisor
 
 log = logging.getLogger("byom.daemon")
 
+#: Teto de `daemon.log`. Um append por sessão e por restart crescia sem limite.
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUP_COUNT = 2
+
+
+#: Código de saída do uvicorn quando não consegue abrir a porta.
+PORT_BUSY_EXIT_CODE = 3
+
+
+class _Stopped(Exception):
+    """Sinal interno: `stop` foi acionado (SIGTERM/SIGINT ou tarefa que falhou)."""
+
 
 def _log_path(name: str) -> Path:
     return config.config_dir() / "logs" / f"{name}.log"
+
+
+async def _guard(nome: str, awaitable: Awaitable[None], stop: asyncio.Event) -> None:
+    """Toda tarefa passa por aqui: falha vira log + `stop`, nunca silêncio.
+
+    Antes, uma exceção só aparecia no `gather` final — com `await stop.wait()`
+    antes dele, o daemon ficava de pé com uma tarefa morta.
+    """
+    try:
+        await awaitable
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:  # inclui SystemExit do uvicorn (porta ocupada)
+        log.error("Task %s ended with %s: %s", nome, type(exc).__name__, exc)
+        stop.set()
+        raise
+
+
+async def _stop_watch(stop: asyncio.Event) -> None:
+    """Converte o `stop` em exceção para que `asyncio.wait` volte na hora."""
+    await stop.wait()
+    raise _Stopped()
+
+
+async def _supervise(
+    tarefas: dict[str, Awaitable[None]], stop: asyncio.Event
+) -> list[BaseException]:
+    """Roda as tarefas até a primeira exceção ou até `stop`; devolve as exceções.
+
+    `return_when=FIRST_EXCEPTION` é o que faz uma tarefa morta terminar o loop
+    de imediato, em vez de esperar o `gather` do fim.
+    """
+    guardadas = {
+        nome: asyncio.create_task(_guard(nome, coro, stop), name=nome)
+        for nome, coro in tarefas.items()
+    }
+    vigia = asyncio.create_task(_stop_watch(stop), name="stop")
+    try:
+        feito, _ = await asyncio.wait(
+            [*guardadas.values(), vigia], return_when=asyncio.FIRST_EXCEPTION
+        )
+    finally:
+        for task in [*guardadas.values(), vigia]:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*guardadas.values(), vigia, return_exceptions=True)
+    erros: list[BaseException] = []
+    for task in feito:
+        if task is vigia or task.cancelled():
+            continue
+        exc = task.exception()
+        if isinstance(exc, _Stopped) or exc is None:
+            continue
+        erros.append(exc)
+    return erros
+
+
+def _clear_daemon_pid(state: config.State) -> None:
+    """Remove o PID do state quando o daemon morre por falha (porta ocupada)."""
+    try:
+        config.update_state(
+            expected_session=state.session, daemon_pid=None, daemon_start_ticks=None
+        )
+    except (config.StateFileError, OSError) as exc:
+        log.warning("Could not clear daemon PID from state: %s", exc)
 
 
 async def run() -> int:
@@ -46,41 +125,67 @@ async def run() -> int:
         session=state.session,
         endpoint=state.endpoint,
         cfg=cfg,
+        nonce=state.nonce,
         log_path=_log_path("tunnel"),
     )
-    runtime = Runtime(state=state, cfg=cfg, tunnel=tunnel)
-    app = create_app(runtime)
     watchdog = WatchdogSupervisor(state=state, cfg=cfg)
+    runtime = Runtime(state=state, cfg=cfg, tunnel=tunnel, watchdog=watchdog.status)
+    app = create_app(runtime)
 
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=cfg.proxy_port, log_level="warning")
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=cfg.proxy_port,
+            log_level="warning",
+            # Sem `log_config`: o uvicorn usaria handlers próprios em stderr e
+            # escaparia da rotação do `daemon.log`.
+            log_config=None,
+        )
     )
 
     # The proxy app starts the worker verification loop during startup, so do
     # not create another one here.
-    tasks = [
-        asyncio.create_task(tunnel.run(stop), name="tunnel"),
-        asyncio.create_task(server.serve(), name="proxy"),
-        asyncio.create_task(watchdog.run(stop), name="watchdog"),
-    ]
     log.info("Daemon started: proxy listening on 127.0.0.1:%s", cfg.proxy_port)
-
-    await stop.wait()
+    erros = await _supervise(
+        {
+            "tunnel": tunnel.run(stop),
+            "proxy": server.serve(),
+            "watchdog": watchdog.run(stop),
+        },
+        stop,
+    )
     server.should_exit = True
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+
+    porta_ocupada = any(
+        isinstance(exc, SystemExit) and exc.code == PORT_BUSY_EXIT_CODE for exc in erros
+    )
+    if porta_ocupada:
+        log.error("Proxy port %s is already in use; stopping the daemon", cfg.proxy_port)
+        _clear_daemon_pid(state)
+        return PORT_BUSY_EXIT_CODE
+    if erros:
+        log.error("Daemon stopping after a failed task: %s", erros[0])
+        _clear_daemon_pid(state)
+        return 1
     log.info("Daemon stopped")
     return 0
 
 
 async def _load_registered_state(timeout_s: float = 5.0) -> config.State | None:
-    """Wait for `byom up` to persist this daemon's PID before writing state."""
+    """Wait for state, accepting the PID published by the child before exec."""
+    expected = os.environ.get("BYOM_DAEMON_EXPECTED_PID", "")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        state = config.load_state()
+        try:
+            state = config.load_state()
+        except config.StateFileError as exc:
+            log.error("Cannot read state.json: %s", exc)
+            return None
         if state is None:
             return None
+        if expected.isdigit() and int(expected) == os.getpid():
+            return state
         if state.daemon_pid == os.getpid():
             return state
         await asyncio.sleep(0.05)
@@ -88,12 +193,32 @@ async def _load_registered_state(timeout_s: float = 5.0) -> config.State | None:
     return None
 
 
-def main() -> int:
+def configure_logging() -> logging.handlers.RotatingFileHandler:
+    """Send root logs to a rotating `daemon.log`.
+
+    `cli.main()` already configured the root logger, so without `force=True`
+    the `basicConfig` here was a no-op and lines like "Daemon started" never
+    reached the file.
+    """
+    path = _log_path("daemon")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        path,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        filename=str(_log_path("daemon")),
+        handlers=[handler],
+        force=True,
     )
+    return handler
+
+
+def main() -> int:
+    configure_logging()
     return asyncio.run(run())
 
 

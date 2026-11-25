@@ -46,24 +46,89 @@ fi
 
 # 3. dependencies ---------------------------------------------------------
 VLLM_SPEC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["vllm_spec"])' "$SESSION_FILE")"
-log "Installing $VLLM_SPEC and gateway dependencies"
-uv pip install --python "$VENV/bin/python" "$VLLM_SPEC"
-uv pip install --python "$VENV/bin/python" -r "$BYOM_DIR/requirements.txt"
+RUNTIME="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runtime","vllm"))' "$SESSION_FILE")"
+log "Runtime: $RUNTIME"
+if [ "$RUNTIME" = "vllm" ]; then
+  log "Installing $VLLM_SPEC and gateway dependencies"
+  uv pip install --python "$VENV/bin/python" "$VLLM_SPEC"
+fi
+# `requirements.lock` traz versoes exatas com hashes (fonte: requirements.txt);
+# sem ele o install cairia nas faixas e um release novo poderia quebrar a sessao.
+if [ -f "$BYOM_DIR/requirements.lock" ]; then
+  log "Installing gateway dependencies from requirements.lock (pinned, hashes)"
+  uv pip install --python "$VENV/bin/python" --require-hashes -r "$BYOM_DIR/requirements.lock"
+else
+  log "WARNING: requirements.lock is missing; falling back to requirements.txt ranges"
+  uv pip install --python "$VENV/bin/python" -r "$BYOM_DIR/requirements.txt"
+fi
 
-# 4. vLLM command ---------------------------------------------------------
-python3 "$BYOM_DIR/build_vllm_command.py" "$SESSION_FILE" > "$BYOM_DIR/vllm.cmd"
-log "Wrote vLLM command to $BYOM_DIR/vllm.cmd"
+# 4. runtime-specific binaries and weights --------------------------------
+python3 "$BYOM_DIR/prepare_runtime.py" "$SESSION_FILE"
 
-# 5. tmux processes -------------------------------------------------------
+# 5. server command -------------------------------------------------------
+python3 "$BYOM_DIR/build_vllm_command.py" "$SESSION_FILE" > "$BYOM_DIR/runtime.cmd"
+log "Wrote server command to $BYOM_DIR/runtime.cmd"
+
+# 6. tmux processes -------------------------------------------------------
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   log "Stopping previous tmux session"
   tmux kill-session -t "$TMUX_SESSION"
 fi
 
-tmux new-session -d -s "$TMUX_SESSION" -n vllm \
-  "bash $BYOM_DIR/run_vllm.sh > $LOGS/vllm.log 2>&1"
-tmux new-window -t "$TMUX_SESSION" -n gateway \
-  "bash $BYOM_DIR/run_gateway.sh > $LOGS/gateway.log 2>&1"
+if [ "$RUNTIME" = "vllm" ]; then
+  RUN_SERVER="$BYOM_DIR/run_vllm.sh"
+  LOG_NAME=vllm
+else
+  RUN_SERVER="$BYOM_DIR/run_runtime.sh"
+  LOG_NAME="$RUNTIME"
+fi
 
-log "vLLM and gateway started; logs are in $LOGS"
+SERVER_LOG="$LOGS/$LOG_NAME.log"
+
+# O tmux encerra a sessão quando o único processo dela sai, e o cliente então
+# imprime só "server exited unexpectedly". A causa real (biblioteca ausente,
+# argumento inválido, arquivo de modelo) fica no log do runtime, e é a única
+# informação que resolve a falha: mostre-a antes de sair.
+dump_log() {
+  [ -s "$1" ] || return 0
+  log "--- tail of $1 ---"
+  tail -n 25 "$1" || true
+}
+
+rm -f "$BYOM_DIR/vllm.pid"
+start_failed=""
+if ! tmux new-session -d -s "$TMUX_SESSION" -n "$LOG_NAME" \
+    "bash $RUN_SERVER > $SERVER_LOG 2>&1"; then
+  start_failed=1
+elif ! tmux new-window -t "$TMUX_SESSION" -n gateway \
+    "bash $BYOM_DIR/run_gateway.sh > $LOGS/gateway.log 2>&1"; then
+  start_failed=1
+fi
+if [ -n "$start_failed" ]; then
+  log "error: tmux could not start the $RUNTIME and gateway windows"
+  dump_log "$SERVER_LOG"
+  dump_log "$LOGS/gateway.log"
+  exit 1
+fi
+
+# `run_runtime.sh` publica o PID antes do exec: um processo vivo prova que o
+# runtime passou do carregamento do binário. Esperar o servidor ficar pronto
+# aqui seria errado (minutos); a prontidão é verificada pelo túnel.
+for _ in $(seq 1 20); do
+  if [ -s "$BYOM_DIR/vllm.pid" ] && kill -0 "$(cat "$BYOM_DIR/vllm.pid")" 2>/dev/null; then
+    break
+  fi
+  if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  log "error: runtime $RUNTIME exited during startup"
+  dump_log "$SERVER_LOG"
+  dump_log "$LOGS/gateway.log"
+  exit 1
+fi
+
+log "$RUNTIME and gateway started; logs are in $LOGS"
 log "ready"

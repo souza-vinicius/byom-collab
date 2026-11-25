@@ -169,7 +169,26 @@ def test_long_error_is_truncated_at_the_end():
     assert colab.tail("short", limit=100) == "short"
 
 
+def test_status_line_exige_nome_correspondente(monkeypatch):
+    text = (
+        "[outra-sessao] /tun/m/outra | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+        "[byom-1a2b3c4d] /tun/m/propria | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+    )
+
+    class FakeProc:
+        stdout = text.encode()
+
+    monkeypatch.setattr(colab, "run", lambda args, **kwargs: FakeProc())
+
+    line = colab.status_line("byom-1a2b3c4d")
+    assert line is not None
+    assert line.endpoint == "/tun/m/propria"
+    assert colab.status_line("sessao-ausente") is None
+
+
 def test_exec_popen_isolates_process_and_closes_log_in_parent(monkeypatch, tmp_path):
+    # O `colab` não precisa existir no PATH: a suíte roda com PATH mínimo.
+    monkeypatch.setenv("BYOM_COLAB_BIN", "/usr/local/bin/colab")
     captured = {}
 
     class FakeProc:
@@ -189,3 +208,133 @@ def test_exec_popen_isolates_process_and_closes_log_in_parent(monkeypatch, tmp_p
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["stdout"].closed is True
     assert captured["kwargs"]["stderr"].closed is True
+
+
+def test_unregistered_sessions_inclui_byom_sem_registro(monkeypatch):
+    """Sessão `byom-*` sem state.json é órfã tanto quanto as `[?]`.
+
+    O arquivo de sessões é exclusivo do byom, então um nome `byom-` sempre
+    pertence a esta ferramenta: não há falso positivo de terceiros.
+    """
+    texto = (
+        "[?] m-s-x | Hardware: CPU | Shape: Standard | Variant: DEFAULT\n"
+        "[byom-aaaa1111] m-s-y | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+        "[byom-bbbb2222] m-s-z | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+        "[outra-sessao] m-s-w | Hardware: T4 | Shape: STANDARD | Variant: GPU\n"
+    )
+    monkeypatch.setattr(colab, "sessions", lambda: colab.parse_session_lines(texto))
+
+    achadas = colab.unregistered_sessions({"byom-aaaa1111"})
+
+    assert [line.name for line in achadas] == [None, "byom-bbbb2222"]
+    assert [line.endpoint for line in achadas] == ["m-s-x", "m-s-z"]
+
+
+def test_unregistered_sessions_sem_estado_considera_todos_os_byom(monkeypatch):
+    texto = (
+        "[byom-aaaa1111] m-s-y | Hardware: L4 | Shape: STANDARD | Variant: GPU\n"
+        "[?] m-s-x | Hardware: CPU | Shape: Standard | Variant: DEFAULT\n"
+    )
+    monkeypatch.setattr(colab, "sessions", lambda: colab.parse_session_lines(texto))
+
+    achadas = colab.unregistered_sessions(set())
+
+    assert {line.endpoint for line in achadas} == {"m-s-y", "m-s-x"}
+
+
+# -- 4.4: ANSI, coluna extra e "não entendi" ≠ "não há sessão" ----------------
+ANSI_LINE = (
+    "\x1b[32m[byom-1a2b3c4d]\x1b[0m \x1b[1m/tun/m/abcdef\x1b[0m | "
+    "\x1b[36mHardware:\x1b[0m L4 | Shape: STANDARD | Variant: GPU"
+)
+
+EXTRA_COLUMN_LINE = (
+    "[byom-1a2b3c4d] /tun/m/abcdef | Hardware: L4 | Shape: STANDARD | "
+    "Variant: GPU | Status: IDLE | Region: us-central1 | Kernel: python3"
+)
+
+
+def test_linha_com_ansi_e_parseada(monkeypatch):
+    monkeypatch.setattr(colab, "run", lambda args, **kwargs: _proc(ANSI_LINE + "\n"))
+
+    linhas = colab.sessions()
+
+    assert len(linhas) == 1
+    assert linhas[0].name == "byom-1a2b3c4d"
+    assert linhas[0].endpoint == "/tun/m/abcdef"
+    assert linhas[0].hardware == "L4"
+    assert linhas[0].is_l4 is True
+
+
+def test_linha_com_coluna_extra_e_parseada(monkeypatch):
+    monkeypatch.setattr(colab, "run", lambda args, **kwargs: _proc(EXTRA_COLUMN_LINE + "\n"))
+
+    linhas = colab.sessions()
+
+    assert len(linhas) == 1
+    assert linhas[0].name == "byom-1a2b3c4d"
+    assert linhas[0].endpoint == "/tun/m/abcdef"
+    assert linhas[0].status == "IDLE"
+
+
+def test_saida_com_lixo_levanta_erro_de_formato(monkeypatch):
+    monkeypatch.setattr(
+        colab,
+        "run",
+        lambda args, **kwargs: _proc("something changed entirely\nother: value\n"),
+    )
+
+    with pytest.raises(colab.ColabCliError) as excinfo:
+        colab.sessions()
+
+    mensagem = str(excinfo.value)
+    assert "formato do `colab sessions` não reconhecido" in mensagem
+    assert "something changed entirely" in mensagem
+
+
+def test_lista_realmente_vazia_continua_devolvendo_lista_vazia(monkeypatch):
+    for texto in ("", "\n", "[colab] No active sessions found on server.\n", "Sessions:\n"):
+        monkeypatch.setattr(
+            colab, "run", lambda args, _texto=texto, **kwargs: _proc(_texto)
+        )
+        assert colab.sessions() == []
+
+
+def test_down_nao_limpa_state_quando_o_parse_falha(tmp_path, monkeypatch):
+    """Formato desconhecido não é prova de que a VM morreu."""
+    from typer.testing import CliRunner
+
+    from byom import cli, config
+
+    monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
+    config.save_config(config.Config())
+    config.save_state(
+        config.State(
+            session="byom-viva", endpoint="m-s-viva", nonce="n" * 32, created_at="agora"
+        )
+    )
+    monkeypatch.setattr(colab, "stop", lambda name: None)
+    monkeypatch.setattr(
+        colab,
+        "sessions",
+        lambda: (_ for _ in ()).throw(
+            colab.ColabCliError("formato do `colab sessions` não reconhecido: x")
+        ),
+    )
+
+    resultado = CliRunner().invoke(cli.app, ["down"])
+
+    assert resultado.exit_code == 1
+    assert "could not confirm" in resultado.output
+    estado = config.load_state()
+    assert estado is not None and estado.session == "byom-viva"
+
+
+def _proc(texto: str):
+    class FakeProc:
+        returncode = 0
+        stdout = texto.encode()
+        stderr = b""
+
+    return FakeProc()
+
