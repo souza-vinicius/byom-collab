@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Monte a linha de comando do runtime a partir do payload da sessão.
 
-O gateway continua na frente e escuta em 127.0.0.1; vLLM, llama-server e
-sd-server escutam apenas em loopback na porta `vllm_port`.
+O gateway continua na frente e escuta em 127.0.0.1; vLLM, llama-server,
+sd-server e o control do Strata escutam apenas em loopback na porta
+`vllm_port`.
 """
 
 from __future__ import annotations
@@ -180,6 +181,115 @@ def _unsupported(reason: str) -> RuntimeError:
     return RuntimeError(f"runtime de imagem não suportado nesta versão: {reason}")
 
 
+def _unsupported_strata(reason: str) -> RuntimeError:
+    """Mesma regra do sd-server: sem manifest completo, o argv não é adivinhado."""
+    return RuntimeError(f"runtime strata não pode subir: {reason}")
+
+
+#: Valores de `--kv` do engine `strata-inkling` 0.1.70 que o catálogo modela (1
+#: byte e 2 bytes por elemento). O binário aceita `auto|fp16|fp8|k8v8|k8v4` e
+#: recusa `int8` com "unknown --kv value 'int8'" — por isso o perfil declara
+#: `fp8` e não `int8`.
+STRATA_KV_VALUES = ("fp16", "fp8")
+
+
+def strata_control_root(manifest: dict) -> str:
+    """Diretório do control: o cwd que faz `-m serve.server` achar `serve`."""
+    raiz = manifest.get("control_root")
+    if isinstance(raiz, str) and raiz:
+        return raiz
+    server = manifest.get("server")
+    if isinstance(server, str) and server:
+        # <control>/python/bin/python3 -> <control>
+        return str(Path(server).parent.parent.parent)
+    return ""
+
+
+def build_strata_args(cfg: dict, manifest: dict | None = None) -> list[str]:
+    """Servidor HTTP do control + run config JSON do engine `strata-inkling`.
+
+    O argv do engine não é a linha de comando: o control lê um JSON
+    (`--config`) com `exe`, `args`, `cwd`, `model_name`, `log` e `arch`, e sobe o
+    binário com `--serve`. Escrever esse JSON aqui é o equivalente do
+    `runtime_manifest` do llama.cpp — o pack, o contexto e o KV vêm do perfil,
+    nunca de um palpite.
+    """
+    dados = manifest if manifest is not None else _manifest()
+    server = dados.get("server")
+    engine = dados.get("engine")
+    pack = dados.get("pack")
+    for nome, valor in (("server", server), ("engine", engine), ("pack", pack)):
+        if not isinstance(valor, str) or not valor:
+            raise _unsupported_strata(
+                f"o manifest não registra {nome}; rode prepare_runtime.py no worker"
+            )
+    for nome, valor in (("server", server), ("engine", engine), ("pack", pack)):
+        if not Path(str(valor)).is_file():
+            raise _unsupported_strata(f"{nome} não existe no worker: {valor}")
+
+    kv = str(cfg.get("kv_cache_dtype") or "fp8").strip().lower()
+    if kv not in STRATA_KV_VALUES:
+        raise ValueError(
+            f"kv_cache_dtype {kv!r} não é um valor de --kv do engine do Strata "
+            f"({', '.join(STRATA_KV_VALUES)}); o binário 0.1.70 recusa 'int8'"
+        )
+    worker = cfg.get("worker") or {}
+    extra = worker.get("run_config_extra") or []
+    if not isinstance(extra, list) or not all(isinstance(item, str) for item in extra):
+        raise ValueError("[worker].run_config_extra must be a list of strings")
+
+    args = [
+        "--native",
+        str(pack),
+        "--max-context",
+        str(cfg["max_model_len"]),
+        "--kv",
+        kv,
+        # Um pedido por vez: é o que o gateway já serializa (`DEFAULT_MAX_CONCURRENT_JOBS`)
+        # e o que evita cobrar VRAM de slots que ninguém usa.
+        "--parallel",
+        "1",
+    ]
+    args.extend(str(item) for item in extra)
+
+    base = Path(MANIFEST).parent
+    model_name = str(cfg.get("served_model_name") or cfg.get("model") or "model")
+    slug = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in model_name)[:64]
+    run_config = base / f"strata-{slug}.json"
+    tokenizer = base / "strata-tokenizer"
+    tokenizer.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "exe": str(engine),
+        "args": args,
+        "cwd": str(Path(str(engine)).parent),
+        "model_name": model_name,
+        "log": str(base / "strata-engine.log"),
+        # `arch` é o que faz o serve tratar o engine como Inkling (`serving`,
+        # dialect de esforço, template) — `serve/inkling_kind.py`, ARCH.
+        "arch": "inkling2_loop",
+        # Sem esta chave o control usaria `<control>/pack/full/tokenizer`, que não
+        # existe no tarball; com ela o próprio servidor gera o `vocab.json` do
+        # manifest do `.strata` na primeira subida.
+        "tokenizer": str(tokenizer),
+    }
+    run_config.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    return [
+        str(server),
+        "-m",
+        "serve.server",
+        "--engine",
+        "strata",
+        "--config",
+        str(run_config),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(cfg["vllm_port"]),
+        "--offline",
+    ]
+
+
 def build_image_args(cfg: dict) -> list[str]:
     """Comando sd-server montado a partir do manifest, nunca de um palpite.
 
@@ -219,6 +329,8 @@ def build_command(cfg: dict) -> list[str]:
         return build_llama_args(cfg)
     if runtime == "image":
         return build_image_args(cfg)
+    if runtime == "strata":
+        return build_strata_args(cfg)
     raise ValueError(f"Unsupported runtime: {runtime!r}")
 
 
@@ -230,6 +342,14 @@ def main() -> None:
         # Falha legível: o bootstrap mostra isto em vez de subir sem o arquivo.
         print(f"[byom-runtime] {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
+    if cfg.get("runtime") == "strata":
+        # `python -m serve.server` resolve `serve` e `strata_control` pelo cwd (o
+        # server importa `strata_control.user_args` na primeira linha de código).
+        # O `runtime.cmd` é executado por `bash`, então um `cd` antes do `exec` é
+        # o jeito de fixar o diretório sem depender de onde o tmux abriu a janela.
+        raiz = strata_control_root(_manifest())
+        if raiz:
+            print(f"cd {shlex.quote(raiz)}")
     print("exec " + shlex.join(command))
 
 

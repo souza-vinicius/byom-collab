@@ -245,6 +245,7 @@ FAMILIAS_MODELOS: dict[str, str] = {
     "qwen3.8-27b-awq": "Qwen3.8 27B",
     "qwen3.8-27b-gguf": "Qwen3.8 27B",
     "inkling-2-mini": "Inkling 2 Mini",
+    "inkling-2-mini-strata": "Inkling 2 Mini (Strata)",
     "gemma-4": "Gemma 4",
     "muse-glimmer-30b": "Muse Glimmer 30B",
     "qwen-image-2.1": "Qwen-Image-2.1",
@@ -276,12 +277,19 @@ ROTULOS_VARIANTES: dict[tuple[str, str], str] = {
     ("muse-glimmer-30b", "q6"): "6 bits (GGUF)",
     ("qwen-image-2.1", "q4km"): "4 bits (GGUF)",
     ("qwen-image-2.1", "fp8-int8"): "8 bits (FP8)",
+    # Packs `.strata` do engine Strata: o número do pack diz o tamanho, não o
+    # número de bits; o KV é de 8 bits nos três. O rótulo longo (com o card de
+    # destino) fica no catálogo, onde há espaço.
+    ("inkling-2-mini-strata", "sq10"): "SQ-10 • 8 bits",
+    ("inkling-2-mini-strata", "sq15"): "SQ-15 • 8 bits",
+    ("inkling-2-mini-strata", "sq20"): "SQ-20 v2 • 8 bits",
 }
 
 NOMES_RUNTIMES: dict[str, str] = {
     "vllm": "vLLM",
     "llama-cpp": "llama.cpp",
     "image": "sd-server (geração de imagens)",
+    "strata": "Strata (engine nativo, packs SQ)",
 }
 
 ESFORCO_RACIOCINIO_PT: dict[str, str] = {

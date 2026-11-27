@@ -1,0 +1,41 @@
+name = "Inkling 2 Mini (Strata SQ-20 v2, L4/A100-40)"
+description = "Pack SQ-20 v2 da Strata (Apache-2.0 no modelo, engine MIT), layout .strata v1.1, em L4 ou A100-40; KV de 8 bits; 32K servidos de 1M documentado; sem visão nesta versão. Exige driver NVIDIA 575.51 ou mais novo e Strata 0.2.23+ para o pack v2."
+opencode_output_limit = 8192
+runtime = "strata"
+catalog_model = "inkling-2-mini-strata"
+catalog_variant = "sq20"
+
+[config]
+model = "inkling-2-mini-strata"
+served_model_name = "inkling-2-mini-strata"
+max_model_len = 32768
+gpu = "L4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+# `--kv fp8` do engine `strata-inkling`: 1 byte por elemento (o mesmo 8 bits que
+# o launcher do Strata chama de int8). O binário 0.1.70 recusa `--kv int8`.
+kv_cache_dtype = "fp8"
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+# Mesmos componentes fixados do perfil SQ-10: release v0.2.23 (2026-11-27), com
+# os sha256 conferidos nos dois tarballs e driver mínimo 575.51.
+[worker]
+control_url = "https://github.com/Niko1221/Strata/releases/download/v0.2.23/strata-control-0.1.70-linux-x86_64.tar.gz"
+control_sha256 = "f38d85bd5bd19393808e2bd0c7867e34c4fed968065371d77f37c11c451eeb6a"
+control_dir = "strata-control"
+engine_url = "https://github.com/Niko1221/Strata/releases/download/v0.2.23/strata-inkling-0.1.70-linux-x86_64-cuda-cuda12.tar.gz"
+engine_sha256 = "cc078a9cf15e5e738a0396973748cbab352aed5f9cdf3a892802dfd407c6e526"
+engine_dir = "strata-engine"
+# `Inkling-2-Mini-SQv2-20.strata` = 19.374.768.128 B = 18,04 GiB (tree do HF,
+# revisão 5623ceb): mesmo trunk/experts do SQ-20 byte a byte, drafter DSpark
+# recalibrado. É o ÚNICO pack do repo que o `SHA256SUMS.txt` (377 B) não lista —
+# o `prepare_runtime` então confere contra o `lfs.oid` do tree, que é o sha256 do
+# conteúdo (bate com o sums nos quatro packs que ele cobre).
+model_repo = "strata-engine/Inkling-2-Mini-Strata"
+pack_pattern = "Inkling-2-Mini-SQv2-20.strata"
+sums_pattern = "SHA256SUMS.txt"

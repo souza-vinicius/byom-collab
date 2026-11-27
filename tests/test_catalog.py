@@ -295,8 +295,11 @@ def test_contexto_documentado_servido_e_motivo():
     assert served["inkling-2-mini-ad-q6k-dspark"] == 131_072
     assert served["inkling-2-mini-ad-q4k"] == 32_768
     assert served["inkling-2-mini-ad-iq2xxs"] == 32_768
+    assert served["inkling-2-mini-strata-sq10"] == 32_768
+    assert served["inkling-2-mini-strata-sq15"] == 32_768
+    assert served["inkling-2-mini-strata-sq20"] == 32_768
     assert all(item.reason for item in catalog.PROFILE_CONTEXTS)
-    assert len(served) == 22
+    assert len(served) == 25
 
 
 def test_compatibilidade_continua_usando_contexto_servido():
@@ -744,3 +747,110 @@ main_pattern = "Ternary-Bonsai-2.5-27B-PTQ1_0.gguf"
     (pasta / "teto.toml").write_text(tompl.format(ctx=262_144), encoding="utf-8")
     (perfil,) = config.available_profiles(pasta)
     assert perfil.settings["max_model_len"] == 262_144
+
+
+# ---------------------------------------------------------------------------
+# Packs `.strata`: runtime `strata` (engine nativo do Strata)
+# ---------------------------------------------------------------------------
+
+
+def test_strata_entra_no_catalogo_com_os_bytes_do_tree_do_hf():
+    model = catalog.model_by_id("inkling-2-mini-strata")
+
+    assert model.runtime == "strata"
+    assert model.provider == "Thinking Machines Lab"
+    assert model.source == "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata"
+    # Publicador derivado do repo de onde o byom baixa, não declarado à mão.
+    assert catalog.package_owner("strata-engine/Inkling-2-Mini-Strata") == "strata-engine"
+
+    # Bytes da API do HF (`?blobs=true`, revisão 5623ceb, 2026-11-27).
+    esperado = {
+        "sq10": (10_471_526_400, 9.75, "T4"),
+        "sq15": (14_348_316_672, 13.36, "L4"),
+        "sq20": (19_374_768_128, 18.04, "L4"),
+    }
+    assert {variant.id for variant in model.variants} == set(esperado)
+    for variant in model.variants:
+        bytes_publicados, gib, gpu = esperado[variant.id]
+        assert round(bytes_publicados / catalog.GIB, 2) == variant.memory_gib == gib
+        assert variant.min_gpu == gpu
+        assert variant.context == 32_768 and variant.context_doc == 1_048_576
+        assert variant.context_reason
+        assert f"{bytes_publicados:,}".replace(",", ".") + " B" in " ".join(variant.notes)
+        assert "2026-11-27" in " ".join(variant.notes)
+
+    # Nenhuma variante do pack legado nem do shard de visão, como pede o escopo.
+    arquivos = " ".join(" ".join(variant.notes) for variant in model.variants)
+    assert "Inkling-2-Mini-SQ-20.strata" not in arquivos
+    assert "Inkling-2-Mini-SQv2-20.strata" in arquivos
+
+
+def test_strata_tem_pelo_menos_uma_gpu_aprovada_por_variante():
+    model = catalog.model_by_id("inkling-2-mini-strata")
+
+    for variant in model.variants:
+        aprovadas = [
+            gpu.id
+            for gpu in catalog.GPUS
+            if catalog.check_fit(model.id, variant.id, gpu.id, variant.context).fits
+        ]
+        assert aprovadas, variant.id
+        assert variant.min_gpu in aprovadas, variant.id
+
+    # A T4 é o card de 12 GiB do pack sq10; o sq15 nem os pesos comporta nela.
+    assert catalog.check_fit(model.id, "sq10", "T4", 32_768).fits
+    assert not catalog.check_fit(model.id, "sq15", "T4", 32_768).fits
+    # O sq20 v2 é do card de 24 GiB: cabe na L4 e na A100-40.
+    assert catalog.check_fit(model.id, "sq20", "L4", 32_768).fits
+    assert catalog.check_fit(model.id, "sq20", "A100-40", 32_768).fits
+
+
+def test_strata_conta_o_kv_no_dtype_que_o_engine_recebe():
+    model = catalog.model_by_id("inkling-2-mini-strata")
+
+    fp8 = catalog.kv_cache_gib(32_768, model, kv_cache_dtype="fp8", runtime="strata")
+    int8 = catalog.kv_cache_gib(32_768, model, kv_cache_dtype="int8", runtime="strata")
+    f16 = catalog.kv_cache_gib(32_768, model, kv_cache_dtype="fp16", runtime="strata")
+
+    assert fp8 == int8 == 0.29
+    assert f16 == 0.58
+    # Sem declaração, o default do runtime é o de 8 bits (não o f16 do llama.cpp).
+    assert catalog.effective_kv_dtype("strata", None) == "fp8"
+    assert catalog.effective_kv_dtype("strata", "fp16") == "fp16"
+    # O 1M documentado custa 8,04 GiB só de KV em 8 bits — não cabe no Colab.
+    assert catalog.kv_cache_gib(1_048_576, model, kv_cache_dtype="fp8", runtime="strata") == 8.04
+
+
+def test_required_vram_do_strata_e_pesos_runtime_e_kv_em_8_bits():
+    model = catalog.model_by_id("inkling-2-mini-strata")
+    variant = catalog.variant_by_id(model.id, "sq20")
+
+    oito_bits = catalog.required_vram_gib(
+        variant, 32_768, "strata", kv_cache_dtype="fp8", model=model
+    )
+    dezesseis = catalog.required_vram_gib(
+        variant, 32_768, "strata", kv_cache_dtype="fp16", model=model
+    )
+
+    assert oito_bits == round(18.04 + catalog.RUNTIME_RESERVE_GIB + 0.29, 2)
+    assert dezesseis == round(18.04 + catalog.RUNTIME_RESERVE_GIB + 0.58, 2)
+    # 8 bits é exatamente metade do KV f16 da mesma arquitetura.
+    assert round(dezesseis - oito_bits, 2) == 0.29
+
+
+def test_strata_reprova_quando_falta_so_a_folga():
+    """required < VRAM, mas required + folga >= VRAM: a regra estrita reprova."""
+    required = catalog.required_vram_gib(
+        catalog.variant_by_id("inkling-2-mini-strata", "sq10"),
+        163_840,
+        "strata",
+        kv_cache_dtype="fp16",
+        model=catalog.model_by_id("inkling-2-mini-strata"),
+    )
+    resultado = catalog.check_fit(
+        "inkling-2-mini-strata", "sq10", "T4", 163_840, kv_cache_dtype="fp16"
+    )
+
+    assert 14.0 <= required < 15.0
+    assert not resultado.fits
+    assert resultado.required_gib + resultado.headroom_gib >= resultado.available_gib

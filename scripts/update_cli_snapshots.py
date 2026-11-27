@@ -38,9 +38,16 @@ def _literal(text: str, indent: str = INDENT) -> str:
     pieces: list[str] = []
     for raw in text.splitlines(keepends=True):
         line = raw.replace("\n", "\\n")
-        while line:
-            pieces.append(line[:limit])
-            line = line[limit:]
+        while len(line) > limit:
+            corte = limit
+            # Um pedaço não pode terminar com uma barra invertida: dentro do
+            # literal ela escaparia a aspa de fechamento. Acontece quando o corte
+            # cai entre o `\` e o `n` do `\n` escapado.
+            if line[corte - 1] == "\\":
+                corte -= 1
+            pieces.append(line[:corte])
+            line = line[corte:]
+        pieces.append(line)
     return "\n".join(f"{indent}{_quote(piece, '{cfg_file}')}" for piece in pieces)
 
 
