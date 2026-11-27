@@ -4,7 +4,7 @@ title: Speculative Decoding in the Worker
 description: How [worker.spec] and the legacy dspark shorthand become llama-server flags, which spec types embed the draft head in the main file, and how the VRAM budget charges the drafter file.
 tags: [spec, mtp, dspark, dflash, llama-cpp, drafter, vram]
 status: stable
-generated: { by: hermes/deepseek-v4.1-flash, at: 2026-11-24T21:40:00Z }
+generated: { by: hermes/deepseek-v4.1-flash, at: 2026-11-26T22:30:00Z }
 sources:
   - id: worker-build
     resource: /worker/build_vllm_command.py
@@ -27,6 +27,12 @@ sources:
   - id: fork-help
     resource: https://github.com/PrismML-Eng/llama.cpp/releases/tag/prism-b12128-d7b2896
     title: llama-server --help of the pinned fork build (prism-b12128-d7b2896)
+  - id: b12800
+    resource: https://github.com/ggml-org/llama.cpp/releases/tag/b12800
+    title: Release oficial b12800 (1.1.0-dev) e o --help executado localmente (2026-11-26)
+  - id: pr-32218
+    resource: https://github.com/ggml-org/llama.cpp/pull/32218
+    title: Inkling 2 DSpark support, mergeado em 2026-11-24 e incluído na v1.1.0
 ---
 
 # Speculative Decoding in the Worker
@@ -86,19 +92,37 @@ de `llama-cpp`, e tipo sem cabeça embutida sem `drafter_pattern`.
 
 ## Flag names come from the binary
 
-A fonte de sintaxe é o `--help` do binário fixado, não a memória:
-`-fa, --flash-attn [on|off|auto]`, `--spec-type
-none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,...`,
+A fonte de sintaxe é o `--help` do binário fixado, não a memória. No build
+oficial **b12800** (`llama-server --version` → `1.1.0-dev`, build 12800, commit
+`47d6192fc`, executado em 2026-11-26): `-fa, --flash-attn [on|off|auto]`,
+`--spec-type
+none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,draft-dflash2,draft-lilicorr,ngram-...`,
 `--spec-draft-n-min`, `--spec-draft-n-max`, `--spec-draft-p-min`,
 `-md/--model-draft`, `-ngld/--n-gpu-layers-draft`, além de
 `--presence-penalty`, `--repeat-penalty`, `--repeat-last-n` e
-`--min-p ... (default: 0.05, 0.0 = disabled)`.
+`--min-p ... (default: 0.05, 0.0 = disabled)`. O build do fork PrismML
+(`prism-b12128-d7b2896`) continua sendo a fonte dos presets MTP do Bonsai,
+medidos nele.
 
 ## Where it is used today
+
+`inkling-2-mini-ad-q6k-dspark` é o perfil embarcado com DSpark: `dspark = true`,
+`drafter_pattern = "dspark-Inkling-2-Mini-Q8_0.gguf"` (503.857.696 B, no mesmo
+`model_repo` dos pesos) e binário oficial **b12800** — o primeiro release do
+llama.cpp com `--spec-type draft-dspark`, depois que o PR #32218 entrou na
+**v1.1.0**. O arquivo é um GGUF `general.architecture = dflash` com
+`dflash.has_markov_context = true` e `target_layers = [5, 23, 41, 48]`; é essa
+cabeça de Markov que caracteriza o DSpark em relação ao `dflash` simples. O
+orçamento: 22,15 pesos + 0,65 visão + 2 runtime + 2,08 de KV em 128K + 0,47 do
+drafter = 27,35, mais 2,0 de folga = 29,35 <= 40 GiB da A100-40. Nenhum ganho
+de velocidade foi medido no Colab: o perfil é válido por construção (argv,
+pin e orçamento), e a primeira execução real ainda vai dizer quanto o decode
+acelera na A100-40.
 
 `ternary-bonsai-25-27b-ptq1-mtp` (ternary Bonsai 2.5 27B, 64K na T4) declara
 `type = "draft-mtp"` com `n_min = 0`, `n_max = 3`, `p_min = 0.1`, valores do
 preset `presets/llama.cpp/mtp-cuda.json` do repositório do modelo, medidos no
 build `prism-b12128-d7b2896`. A tabela por device do publicador cobre H200,
 H100, RTX 5090, RTX 4090, M4 Pro e Core Ultra — **não** cobre T4, então o ganho
-no Colab não é conhecido.
+no Colab não é conhecido. Esse perfil não usa `--model-draft`: a cabeça vem no
+próprio arquivo `-mtp.gguf`, carregado como `-m`.

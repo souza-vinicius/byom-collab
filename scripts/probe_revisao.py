@@ -529,7 +529,7 @@ def probe_pid_identity() -> None:
 # (h) tabela final de perfis
 # ---------------------------------------------------------------------------
 def probe_tabela() -> None:
-    print("\n== (h) orçamento de VRAM dos 15 perfis")
+    print("\n== (h) orçamento de VRAM dos perfis embarcados")
     from byom import catalog, config
 
     cabecalho = (

@@ -2,7 +2,8 @@
 """Worker gateway: the authoritative activity point for the session.
 
 Responsibilities:
-* Forward `/v1/chat/completions` and `/v1/models` to vLLM, with streaming.
+* Forward `/v1/chat/completions` and `/v1/models` to the runtime behind the
+  gateway (vLLM, llama-server or the Strata control), with streaming.
 * Inject the model's documented `reasoning_effort` when the client omits it;
   never invent a value for a model whose docs do not define one.
 * Apply the Gemma 4 thinking policy (explicit catalog key): `<|think|>` at the
@@ -57,7 +58,10 @@ MAX_CONCURRENT_JOBS_ENV = "BYOM_MAX_CONCURRENT_JOBS"
 REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
-RUNTIME_IDS = frozenset({"vllm", "llama-cpp", "image"})
+#: `strata` entra porque o control do engine serve a mesma API da OpenAI em
+#: `/v1/chat/completions` e `/v1/models`; a prontidão é a mesma poll de
+#: `/v1/models` que o vLLM e o llama-server usam.
+RUNTIME_IDS = frozenset({"vllm", "llama-cpp", "image", "strata"})
 
 THINKING_POLICY_FIELDS = frozenset(
     {"system_token", "thought_open", "thought_close", "strip_history_thought", "source"}

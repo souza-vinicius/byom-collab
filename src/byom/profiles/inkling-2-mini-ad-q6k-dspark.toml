@@ -1,0 +1,41 @@
+name = "Inkling 2 Mini (AD-Q6_K + DSpark, GGUF)"
+description = "AD-Q6_K da AtomicChat (97,6% de top-1 contra o BF16) com decodificação especulativa DSpark: drafter Q8_0 de 0,47 GiB dentro do mesmo repo; 128K na A100-40 com o build mainline b12800."
+opencode_output_limit = 8192
+runtime = "llama-cpp"
+catalog_model = "inkling-2-mini"
+catalog_variant = "ad-q6k"
+
+[config]
+model = "inkling-2-mini"
+served_model_name = "inkling-2-mini"
+max_model_len = 131072
+gpu = "A100"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+# Build mainline b12800 (v1.1.0-dev, commit 47d6192fc): é o primeiro release
+# oficial com `--spec-type draft-dspark`, vindo do PR #32218 mergeado em
+# 2026-11-24. O fork do PR não é mais necessário. Asset conferido em 2026-11-26:
+# 221.624.554 B, sha256 igual ao digest da API do GitHub.
+[worker]
+binary_url = "https://github.com/ggml-org/llama.cpp/releases/download/b12800/llama-b12800-bin-ubuntu-cuda-12.8-x64.tar.gz"
+binary_sha256 = "088bc70b93c4f973de0b1e6e493603ed71f03b89f08e0c256f8f2290d587892d"
+binary_dir = "llama.cpp"
+model_repo = "AtomicChat/Inkling-2-Mini-GGUF"
+model_patterns = ["Inkling-2-Mini-AD-Q6_K.gguf", "mmproj-Inkling-2-Mini-F16.gguf", "dspark-Inkling-2-Mini-Q8_0.gguf"]
+main_pattern = "Inkling-2-Mini-AD-Q6_K.gguf"
+mmproj_pattern = "mmproj-Inkling-2-Mini-F16.gguf"
+# O drafter mora no MESMO repositório dos pesos: o `prepare_runtime` resolve o
+# padrão dentro de `model_repo`, então um drafter de outra org exigiria campo
+# novo. O arquivo deste repo tem 503.857.696 B (0,47 GiB) e é um GGUF
+# `general.architecture = dflash` com `dflash.has_markov_context = true` e
+# `target_layers = [5, 23, 41, 48]` — a cabeça de Markov que o draft-dspark usa.
+drafter_pattern = "dspark-Inkling-2-Mini-Q8_0.gguf"
+dspark = true
+llama_jinja = true

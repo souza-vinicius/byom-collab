@@ -19,7 +19,7 @@ import contextlib
 import math
 from dataclasses import dataclass, field
 
-RUNTIMES = ("vllm", "llama-cpp", "image")
+RUNTIMES = ("vllm", "llama-cpp", "image", "strata")
 
 GIB = 2**30
 
@@ -79,10 +79,22 @@ MIN_KV_CACHE_GIB = 1.0
 #: `vllm` respeita `--kv-cache-dtype` do perfil; `llama-cpp` usa o default do
 #: llama-server, que é f16 (docs de `--cache-type-k/-v`: default f16, consultadas
 #: em 2026-11-24) — por isso os perfis llama-cpp não declaram `kv_cache_dtype`.
-KV_CACHE_DTYPE_FACTORS = {"fp8": 0.5, "f16": 1.0}
+#: `int8` é o valor de 8 bits do launcher do Strata e o do `--kv int8` que a
+#: tabela de `docs/TERMINAL_LAUNCH.md` do control 0.1.70 publica (1 byte por
+#: elemento, metade do f16); `fp16` é como o engine gráfico escreve o f16.
+KV_CACHE_DTYPE_FACTORS = {"fp8": 0.5, "int8": 0.5, "fp16": 1.0, "f16": 1.0}
 
 #: dtype efetivo por runtime, usado na conta e nas mensagens.
-KV_CACHE_RUNTIME_DEFAULT = {"vllm": "fp8", "llama-cpp": "f16", "image": ""}
+#: `strata`: o engine `strata-inkling` 0.1.70 não aceita `--kv int8` (o `--help`
+#: dele lista `auto|fp16|fp8|k8v8|k8v4` e ele recusa `int8` com "unknown --kv
+#: value"), então o dtype de 8 bits vai no argv como `fp8` — mesmo 1 byte por
+#: elemento do int8 do launcher, logo o mesmo fator 0,5.
+KV_CACHE_RUNTIME_DEFAULT = {
+    "vllm": "fp8",
+    "llama-cpp": "f16",
+    "image": "",
+    "strata": "fp8",
+}
 
 #: Folga obrigatória entre o que o modelo ocupa e a VRAM utilizável da GPU.
 #: HEURÍSTICA, não número de documentação: driver, contexto CUDA, alocadores e
@@ -307,6 +319,14 @@ COLAB_GPU_SOURCE = (
 )
 
 INKLING_SOURCE = "https://unsloth.ai/docs/models/inkling-2-mini.md"
+#: Card dos packs `.strata` do Inkling 2 Mini. O repositório NÃO publica GGUF nem
+#: safetensors: publica packs no container do engine Strata (MIT). Por isso o
+#: modelo entra pelo runtime `strata`, com binário fixado + pesos + argv montado.
+STRATA_INKLING_SOURCE = "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata"
+#: Release do engine cujos componentes o perfil fixa (URL + sha256 de control e
+#: engine). Publicada em 2026-11-27T18:43:32Z; os digests vieram da API do
+#: GitHub e foram conferidos com `sha256sum` nos dois tarballs.
+STRATA_ENGINE_SOURCE = "https://github.com/Niko1221/Strata/releases/tag/v0.2.23"
 QWEN38_SOURCE = "https://unsloth.ai/docs/models/qwen3.8.md"
 GEMMA4_SOURCE = "https://unsloth.ai/docs/models/gemma-4.md"
 MUSE_SOURCE = "https://unsloth.ai/docs/models/muse-glimmer.md"
@@ -370,6 +390,13 @@ PROVIDER_SOURCES: dict[str, str] = {
     "inkling-2-mini": (
         "https://huggingface.co/thinkingmachines/Inkling-2-Mini (2026-11-24): o card "
         "declara 'Model provider: Thinking Machines Lab, Inc.'"
+    ),
+    "inkling-2-mini-strata": (
+        "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata (2026-11-27): o card "
+        "declara `license: apache-2.0` e `base_model: thinkingmachines/Inkling-2-Mini` e "
+        "descreve o repo como 'builds of thinkingmachines/Inkling-2-Mini packed for Strata'; "
+        "os pesos são da Thinking Machines Lab e o publicador do pack é `strata-engine`, "
+        "derivado do repositório de onde o byom baixa"
     ),
     "qwen3.8-27b-awq": (
         "https://huggingface.co/Qwen (2026-11-24): 'the large language model family "
@@ -543,6 +570,85 @@ MODELS: tuple[ModelEntry, ...] = (
             "Requer llama.cpp mainline b12611+ com os arquivos Mainline_Support; "
             "builds anteriores perdem os scales NVFP4 nas passadas 2 e 3 do loop.",
             "Sampling: temperature 1.0, top_p 1.0, top_k 0, min_p 0.",
+        ),
+        sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0},
+        reasoning_effort="high",
+        reasoning_source=REASONING_SOURCE_INKLING,
+        kv_shape=inkling_kv_profile(),
+    ),
+    # --- Packs `.strata`: o mesmo modelo, num container que só o engine Strata
+    # lê. O repo do HF não publica GGUF nem safetensors, então o byom precisa de
+    # um runtime próprio (binário fixado + pesos baixados + argv montado), no
+    # mesmo molde do sd-server. Bytes do tree da API do HF (`?blobs=true`,
+    # revisão 5623ceb, consultado em 2026-11-27), divididos por 2^30.
+    ModelEntry(
+        "inkling-2-mini-strata", "Inkling 2 Mini (Strata, packs SQ)", "strata",
+        (
+            Variant("sq10", "SQ-10 (9,75 GiB, card de 12 GiB)", 9.75, 32_768, "T4",
+                    context_doc=1_048_576,
+                    context_reason="32K é o contexto servido: o KV em 8 bits custa 0,29 GiB "
+                                   "(só as 4 camadas completas crescem, como no GGUF). O 1M "
+                                   "documentado pediria 8,04 GiB só de KV e não caberia em "
+                                   "card de Colab nenhum junto dos 9,75 GiB de pesos.",
+                    notes=("HF `strata-engine/Inkling-2-Mini-Strata` (revisão 5623ceb, "
+                           "consultado em 2026-11-27): `Inkling-2-Mini-SQ-10.strata` tem "
+                           "10.471.526.400 B = 9,75 GiB, é o pack que o card recomenda para "
+                           "card de 12 GiB e acerta o próximo token do modelo original em "
+                           "92,35% dos casos (WikiText-2: 89,79%).",
+                           "Pack fechado: o byom baixa o arquivo inteiro (sem download "
+                           "seletivo de tensores) e o `prepare_runtime` confere o sha256 "
+                           "contra o `SHA256SUMS.txt` do próprio repo.")),
+            Variant("sq15", "SQ-15 (13,36 GiB, card de 16 GiB)", 13.36, 32_768, "L4",
+                    context_doc=1_048_576,
+                    context_reason="13,36 GiB de pesos + 2 de runtime + 0,29 de KV em 32K = "
+                                   "15,65, mais 1,0 de folga = 16,65 > 15 GiB utilizáveis da "
+                                   "T4: a GPU mínima é L4 (24 GiB), com 6,55 GiB de margem.",
+                    notes=("HF `strata-engine/Inkling-2-Mini-Strata` (revisão 5623ceb, "
+                           "consultado em 2026-11-27): `Inkling-2-Mini-SQ-15.strata` tem "
+                           "14.348.316.672 B = 13,36 GiB; card de 16 GiB; 96,68% de acerto "
+                           "de próximo token contra o original (WikiText-2: 95,97%).",)),
+            Variant("sq20", "SQ-20 v2 (18,04 GiB, card de 24 GiB)", 18.04, 32_768, "L4",
+                    context_doc=1_048_576,
+                    context_reason="18,04 GiB de pesos + 2 de runtime + 0,29 de KV em 32K = "
+                                   "20,33, mais 1,2 de folga = 21,53 <= 24 GiB da L4: cabe no "
+                                   "card para o qual o pack foi feito, e com 2,47 GiB de "
+                                   "margem extra na A100-40.",
+                    notes=("HF `strata-engine/Inkling-2-Mini-Strata` (revisão 5623ceb, "
+                           "consultado em 2026-11-27): `Inkling-2-Mini-SQv2-20.strata` tem "
+                           "19.374.768.128 B = 18,04 GiB; layout `.strata` v1.1 "
+                           "(16 KiB-aligned), mesmo trunk/experts do SQ-20 byte a byte e "
+                           "drafter DSpark recalibrado; exige Strata 0.2.23+.",
+                           "O `SHA256SUMS.txt` da mesma revisão (377 B) NÃO lista este "
+                           "arquivo — ele cobre SQ-10, SQ-15, SQ-20 (o legado) e o pack de "
+                           "visão. O sha256 conferido é o `lfs.oid` do tree do HF "
+                           "(`429671f8eb5b50e593856e6eb82ebb7da9d1f07e99b553438b196f72cc86a6d6`), "
+                           "que é o sha256 do conteúdo e bate com o `SHA256SUMS.txt` nos "
+                           "quatro packs que ele lista.",
+                           "O pack de visão (`Inkling-2-Mini-Vision.strata`, 636.526.592 B) "
+                           "fica de fora desta integração: o engine 0.1.70 avisa em "
+                           "`serve/inkling_kind.py` que 'does not read images yet'.")),
+        ),
+        STRATA_INKLING_SOURCE,
+        provider="Thinking Machines Lab",
+        notes=(
+            "Packs `.strata` (container proprietário do engine Strata, "
+            "github.com/Niko1221/Strata, MIT, C++/CUDA) que servem API compatível com "
+            "a da OpenAI. O card declara Apache-2.0 nos pesos e "
+            "`base_model: thinkingmachines/Inkling-2-Mini`; não há GGUF nem "
+            "safetensors neste repositório.",
+            "Engine `strata-inkling` 0.1.70 (release v0.2.23, publicada em "
+            "2026-11-27T18:43:32Z): `engine-component.json` traz "
+            "`min_driver.nvidia = \"575.51\"`, `backend: cuda`, `build_id "
+            "ebda56cbaa19+cuda12.9` e `archs` sm_60..sm_120 (T4 = sm_75, A100 = sm_80/86, "
+            "L4 = sm_89). Driver mais antigo que 575.51 faz o engine se recusar a subir.",
+            "Arquitetura idêntica à do Inkling 2 Mini: looped transformer de 26,4B "
+            "(3,4B ativos por token), 1M de contexto documentado, KV crescendo só nas 4 "
+            "camadas completas — 0,29 GiB em 32K no KV de 8 bits e 0,58 em f16.",
+            "Sem visão nesta versão (o engine só lê imagem com o shard "
+            "`Inkling-2-Mini-Vision.strata` anexado, que este catálogo não baixa).",
+            "Sampling: temperature 1.0, top_p 1.0, top_k 0, min_p 0 — o mesmo do card "
+            "do modelo; o servidor do Strata aplica o template do pack e aceita "
+            "`chat_template_kwargs.reasoning_effort`.",
         ),
         sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0},
         reasoning_effort="high",
@@ -818,6 +924,12 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "A100-40", "22,15 GiB pesos + 0,65 visão + 2 runtime + 2,08 de KV em "
                               "128K = 26,88, mais 2,0 de folga = 28,88 <= 40 GiB da "
                               "A100-40. A L4 não comporta nem em 32K (25,38 + 1,2)."),
+    ProfileContext("inkling-2-mini-ad-q6k-dspark", "inkling-2-mini", "ad-q6k", 1_000_000,
+                   131_072, "A100-40",
+                   "Mesmos 26,88 GiB do AD-Q6_K em 128K mais o drafter DSpark de 0,47 "
+                   "GiB = 27,35, mais 2,0 de folga = 29,35 <= 40 GiB da A100-40. O "
+                   "drafter é um segundo arquivo (`--model-draft`), então entra na "
+                   "conta; a cabeça MTP do Bonsai não entraria."),
     ProfileContext("inkling-2-mini-ad-q4k", "inkling-2-mini", "ad-q4k", 1_000_000, 32_768,
                    "L4", "15,39 GiB pesos + 0,65 visão + 2 runtime + 0,58 de KV em 32K = "
                          "18,62, mais 1,2 de folga = 19,82 <= 24 GiB da L4 (5,38 de sobra). "
@@ -829,6 +941,21 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "mais 1,0 de folga = 13,94 <= 15 GiB da T4. O KV medido pela arquitetura "
                    "(4 camadas completas, 20 com janela de 1024) é o que torna 32K "
                    "possível: pelo heurístico seriam 15,36 e o perfil ficaria em 16K."),
+    ProfileContext("inkling-2-mini-strata-sq10", "inkling-2-mini-strata", "sq10", 1_048_576,
+                   32_768, "T4",
+                   "9,75 GiB de pesos + 2 de runtime + 0,29 de KV em 32K no KV de 8 bits "
+                   "(o engine do Strata só cresce nas 4 camadas completas) = 12,04, mais "
+                   "1,0 de folga = 13,04 <= 15 GiB utilizáveis da T4."),
+    ProfileContext("inkling-2-mini-strata-sq15", "inkling-2-mini-strata", "sq15", 1_048_576,
+                   32_768, "L4",
+                   "13,36 GiB de pesos + 2 de runtime + 0,29 de KV em 32K = 15,65, mais "
+                   "1,2 de folga = 16,85 <= 24 GiB da L4; a T4 (15 GiB utilizáveis) não "
+                   "comporta nem os pesos sozinhos."),
+    ProfileContext("inkling-2-mini-strata-sq20", "inkling-2-mini-strata", "sq20", 1_048_576,
+                   32_768, "L4",
+                   "18,04 GiB de pesos (pack SQ-20 v2, layout v1.1) + 2 de runtime + 0,29 "
+                   "de KV em 32K = 20,33, mais 1,2 de folga = 21,53 <= 24 GiB da L4, o card "
+                   "para o qual o pack foi feito; na A100-40 sobram 18,47 GiB."),
     ProfileContext("qwen3.8-27b-q3-gguf", "qwen3.8-27b-gguf", "q3", 262_144, 32_768,
                    "L4", "12 GiB pesos + 2 runtime + 2 KV = 16 GiB: não cabe nos 15 GiB "
                          "utilizáveis da T4."),
@@ -1040,15 +1167,17 @@ def effective_kv_dtype(runtime: str, declared: str | None) -> str:
 
     `llama-cpp` ignora `kv_cache_dtype` (o llama-server não recebe
     `--cache-type-k/-v`, logo fica no default f16); `vllm` recebe
-    `--kv-cache-dtype` com o valor do perfil.
+    `--kv-cache-dtype` e `strata` recebe `--kv`, ambos com o valor do perfil.
+    Sem valor declarado, cada um cai no próprio default
+    (`KV_CACHE_RUNTIME_DEFAULT`).
     """
-    if runtime != "vllm":
+    if runtime not in ("vllm", "strata"):
         return KV_CACHE_RUNTIME_DEFAULT.get(runtime, "f16")
     candidate = (declared or "").strip().lower()
     if candidate in KV_CACHE_DTYPE_FACTORS:
         return candidate
-    # Sem valor declarado, o argv do worker usa o default de `build_args`.
-    return KV_CACHE_RUNTIME_DEFAULT["vllm"]
+    # Sem valor declarado, o argv do worker usa o default do runtime.
+    return KV_CACHE_RUNTIME_DEFAULT.get(runtime, "f16")
 
 
 def kv_cache_gib(
@@ -1061,8 +1190,8 @@ def kv_cache_gib(
     """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato.
 
     Sem `runtime` explícito a conta assume **f16** (o mais conservador): um
-    chamador que esqueça o argumento não subestima VRAM. Só `vllm` pode descer
-    para fp8, e apenas quando o perfil declara `kv_cache_dtype`.
+    chamador que esqueça o argumento não subestima VRAM. Só `vllm` e `strata`
+    podem descer para 8 bits, e apenas quando o perfil declara `kv_cache_dtype`.
 
     Com `model.kv_shape` a conta segue a arquitetura (`KvProfile.cache_gib`):
     só as camadas de atenção completa crescem com o contexto. Sem `kv_shape`,
