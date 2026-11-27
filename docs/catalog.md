@@ -89,8 +89,14 @@ draft-dspark --spec-draft-n-max 3 --n-gpu-layers-draft 99`.[^worker] O perfil
 que liga o campo entra no orçamento com os 0,47 GiB do drafter em todo lugar
 que chama `check_fit`: `check_compatibility`, `byom models --gpu`, a TUI e
 `scripts/vram_table.py`. `available_profiles` recusa `dspark = true` sem
-`drafter_pattern` antes de qualquer download — e nenhum TOML embarcado liga o
-campo enquanto o binário com suporte (PR #32218) não tiver URL e sha256 pinadas.
+`drafter_pattern` antes de qualquer download.
+
+O perfil embarcado é `inkling-2-mini-ad-q6k-dspark` (AD-Q6_K, 128K, A100-40,
+27,35 GiB + 2,0 de folga). Ele fixa o build oficial **b12800**
+(`v1.1.0-dev`, `--spec-type draft-dspark`), porque o PR #32218 foi mergeado em
+2026-11-24 e entrou na **v1.1.0**: o fork do PR e o workflow de build que o
+byom mantinha deixaram de existir. O drafter vem do mesmo `model_repo` dos
+pesos (a resolução é por padrão dentro de `model_repo`), com 503.857.696 B.
 
 ## Contexto acima do documentado
 
@@ -103,7 +109,7 @@ conta própria.
 ## Onde os números aparecem
 
 A mesma conta alimenta `byom models`, o submenu `Selecionar GPU` da TUI, o
-`check_compatibility` do `config.toml` e o log de atualização. A tabela dos 18
+`check_compatibility` do `config.toml` e o log de atualização. A tabela dos 22
 perfis (GPU, contexto, KV, required, folga, margem, `fits`, origem do KV e
 drafter) é regerada com `scripts/vram_table.py` e registrada em
 [Update Log](/log.md); sondas de comportamento ficam em

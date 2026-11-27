@@ -1,9 +1,12 @@
-"""DSpark de ponta a ponta com um perfil temporário.
+"""DSpark de ponta a ponta, com o perfil embarcado e com um perfil temporário.
 
-O binário com suporte (`--spec-type draft-dspark`, PR #32218) ainda está sendo
-compilado no CI e a URL será pinada depois; nenhum TOML embarcado declara
-`dspark`. O que este arquivo prova é o encanamento:
+O binário com suporte (`--spec-type draft-dspark`) é o upstream: o PR #32218
+entrou no release **v1.1.0** e o build oficial `b12800` é o primeiro que o
+serve, sem fork. O perfil embarcado `inkling-2-mini-ad-q6k-dspark` fixa esse
+build (URL + sha256 do asset conferidos em 2026-11-26). O que este arquivo
+prova é o encanamento e o pin:
 
+    perfil embarcado -> dspark = true, drafter_pattern, b12800 + sha256
     perfil temporário (tmp_path) com dspark = true
       -> config.available_profiles recusa dspark sem drafter_pattern
       -> prepare_runtime.prepare resolve o drafter e grava manifest["drafter"]
@@ -145,7 +148,7 @@ def test_orcamento_soma_o_drafter_quando_dspark_esta_ligado():
     )
 
     custo = catalog.drafter_gib(perfil.worker or {})
-    assert custo == 0.0  # nenhum TOML embarcado liga dspark
+    assert custo == 0.0  # o perfil sem dspark continua custando zero
     perfil_com_drafter = {"dspark": True, "drafter_pattern": DRAFTER}
     assert catalog.drafter_gib(perfil_com_drafter) == pytest.approx(0.47)
     assert com_drafter.required_gib == pytest.approx(sem_drafter.required_gib + 0.47)
@@ -308,3 +311,85 @@ def test_build_llama_args_sem_manifest_do_drafter_falha_explicito(build_module):
     }
     with pytest.raises(ValueError, match="drafter_pattern"):
         build_module.build_llama_args(cfg)
+
+
+def test_padroes_do_perfil_embarcado_dspark_casam_com_os_arquivos_publicados(
+    prepare_module,
+):
+    """O padrão do drafter é nome exato: não pega o `_Old.gguf` do upstream."""
+    arquivos = [
+        "Inkling-2-Mini-AD-Q6_K.gguf",
+        "mmproj-Inkling-2-Mini-F16.gguf",
+        "dspark-Inkling-2-Mini-Q8_0.gguf",
+        "dspark-Inkling-2-Mini-Q8_0_Old.gguf",
+    ]
+    perfil = config.load_profile("inkling-2-mini-ad-q6k-dspark")
+    worker = perfil.worker or {}
+
+    assert (
+        prepare_module.match_file(arquivos, worker["drafter_pattern"])
+        == "dspark-Inkling-2-Mini-Q8_0.gguf"
+    )
+    for padrao in worker["model_patterns"]:
+        assert prepare_module.match_file(arquivos, padrao) in arquivos
+
+
+def test_perfil_embarcado_dspark_pina_o_build_oficial_b12800():
+    """O perfil embarcado usa o upstream, não o fork do PR #32218."""
+    perfil = config.load_profile("inkling-2-mini-ad-q6k-dspark")
+    worker = perfil.worker or {}
+
+    assert perfil.catalog_model == "inkling-2-mini"
+    assert perfil.catalog_variant == "ad-q6k"
+    assert perfil.settings["max_model_len"] == 131_072
+    assert worker["dspark"] is True
+    assert worker["drafter_pattern"] == DRAFTER
+    assert DRAFTER in worker["model_patterns"]
+    assert worker["binary_url"] == (
+        "https://github.com/ggml-org/llama.cpp/releases/download/b12800/"
+        "llama-b12800-bin-ubuntu-cuda-12.8-x64.tar.gz"
+    )
+    # Digest da API do GitHub conferido contra o arquivo baixado em 2026-11-26.
+    assert worker["binary_sha256"] == (
+        "088bc70b93c4f973de0b1e6e493603ed71f03b89f08e0c256f8f2290d587892d"
+    )
+
+    assert catalog.drafter_gib(worker) == pytest.approx(0.47)
+    fit = catalog.check_fit(
+        "inkling-2-mini", "ad-q6k", "A100-40", 131_072, drafter_gib=0.47
+    )
+    assert fit.fits is True
+    assert fit.required_gib == pytest.approx(27.35)
+
+
+def test_argv_do_perfil_embarcado_dspark(build_module, tmp_path: Path, monkeypatch):
+    """O argv do perfil embarcado passa o drafter e as flags do draft-dspark."""
+    perfil = config.load_profile("inkling-2-mini-ad-q6k-dspark")
+    manifest = tmp_path / "runtime_manifest.json"
+    arquivos = {
+        "server": tmp_path / "llama-server",
+        "main": tmp_path / "Inkling-2-Mini-AD-Q6_K.gguf",
+        "mmproj": tmp_path / "mmproj-Inkling-2-Mini-F16.gguf",
+        "drafter": tmp_path / "dspark-Inkling-2-Mini-Q8_0.gguf",
+    }
+    manifest.write_text(
+        json.dumps({chave: str(valor) for chave, valor in arquivos.items()}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(build_module, "MANIFEST", manifest)
+
+    argv = build_module.build_llama_args(
+        {
+            **perfil.settings,
+            "runtime": "llama-cpp",
+            "vllm_port": 8000,
+            "worker": perfil.worker,
+        }
+    )
+
+    assert argv[argv.index("--model") + 1] == str(arquivos["main"])
+    assert argv[argv.index("--model-draft") + 1] == str(arquivos["drafter"])
+    assert argv[argv.index("--spec-type") + 1] == "draft-dspark"
+    assert argv[argv.index("--spec-draft-n-max") + 1] == "3"
+    assert argv[argv.index("--n-gpu-layers-draft") + 1] == "99"
+    assert argv[argv.index("--ctx-size") + 1] == "131072"

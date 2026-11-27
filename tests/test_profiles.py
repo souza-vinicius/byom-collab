@@ -19,6 +19,7 @@ PROFILE_IDS = {
     "inkling-2-mini-q4-gguf",
     "inkling-2-mini-q8-gguf",
     "inkling-2-mini-ad-q6k",
+    "inkling-2-mini-ad-q6k-dspark",
     "inkling-2-mini-ad-q4k",
     "inkling-2-mini-ad-iq2xxs",
     "qwen3.8-27b-q3-gguf",

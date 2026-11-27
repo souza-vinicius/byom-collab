@@ -169,12 +169,16 @@ receita de quantização, não o modelo. `byom profiles` imprime as duas linhas
 duas colunas, e a TUI mostra o fornecedor na própria linha do perfil. Detalhes em
 [Model Provider and Weight Package](docs/provider.md).
 
-Os três perfis AD da AtomicChat usam o **mesmo** binário `b12611` dos perfis
+Os perfis AD da AtomicChat usam o **mesmo** binário `b12611` dos perfis
 Unsloth: esses arquivos já estão no layout merged do PR #32694. Ficaram de fora
 `Inkling-2-Mini-Q4_K_M.gguf` (17,38 GB) e `Q5_K_M` (19,81 GB), que continuam no
-layout antigo do PR #32695 e **não carregam** em b12600+; o drafter DSpark
-(`dspark-Inkling-2-Mini-Q8_0.gguf`) exige um build do PR #32218 e também não tem
-perfil. O `AD-IQ2_XXS` serve **32K** na T4 porque o KV do Inkling é contado pela
+layout antigo do PR #32695 e **não carregam** em b12600+. O drafter DSpark
+(`dspark-Inkling-2-Mini-Q8_0.gguf`, 503.857.696 B no repositório da AtomicChat)
+ganhou perfil em `inkling-2-mini-ad-q6k-dspark`, pinado no build **b12800**
+(`v1.1.0-dev`), o primeiro release oficial com `--spec-type draft-dspark` — o
+PR #32218 foi mergeado em 2026-11-24 e entrou na **v1.1.0**, então o fork do PR
+e o workflow de build do byom não são mais necessários. O `AD-IQ2_XXS` serve
+**32K** na T4 porque o KV do Inkling é contado pela
 arquitetura (0,58 GiB em 32K, e não os 2 GiB do heurístico) — o motivo está em
 `Variant.context_reason`.
 
@@ -232,12 +236,15 @@ o arquivo e geram lixo sem avisar; `PTQ1_0` e o `PTQ1_0-MTP` exigem o binário d
 fork **PrismML**, fixado em `prism-b12128-d7b2896` (asset CUDA 12.8 x64 de
 228.535.760 B, sha256 conferido). O irmão `prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit`
 é **MLX** (Apple Silicon) e ficou fora do catálogo: o byom roda no Colab (CUDA) e
-não tem runtime MLX, então nenhum perfil seria executável. DSpark continua
-desativado nos TOMLs: o suporte mainline é
-um pull request aberto (PR #32218), então o drafter não tem perfil — mas o custo
-dele (0,47 GiB) já entra no orçamento de qualquer perfil que ligue
-`[worker] dspark = true`, e `available_profiles` recusa o campo sem
-`drafter_pattern`. Muse Glimmer usa o
+não tem runtime MLX, então nenhum perfil seria executável. DSpark está ligado em
+**um** perfil, `inkling-2-mini-ad-q6k-dspark`: o suporte entrou no upstream
+(PR #32218, mergeado em 2026-11-24, presente na **v1.1.0**) e o perfil fixa o
+build oficial **b12800** (`llama-b12800-bin-ubuntu-cuda-12.8-x64.tar.gz`,
+221.624.554 B, sha256 `088bc70b…587892d` conferido contra o asset baixado). A
+conta é 22,15 + 0,65 visão + 2 runtime + 2,08 de KV em 128K + 0,47 do drafter =
+27,35, mais 2,0 de folga = 29,35 <= 40 GiB da A100-40; o custo do drafter entra
+no orçamento em qualquer perfil que ligue `[worker] dspark = true`, e
+`available_profiles` recusa o campo sem `drafter_pattern`. Muse Glimmer usa o
 release fixado `b12649` do upstream.
 Qwen3.8 mantém o perfil AWQ existente para vLLM e adiciona opções GGUF. Os
 perfis do Gemma 4 carregam uma chave explícita `thinking_policy` vinda do
@@ -439,7 +446,7 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   registradas no catálogo e nas tabelas acima. Nenhum perfil repete `medium`,
   `25` ou um máximo de contexto documentado.
 * **O contexto não é reduzido silenciosamente.** `PROFILE_CONTEXTS` lista todos
-  os 21 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
+  os 22 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
   imprime ambos; `check_fit` continua usando o valor servido de `config.toml`.
   Elevar um perfil ao máximo documentado sem uma GPU maior está explicitamente
   fora de escopo.

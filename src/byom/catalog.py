@@ -818,6 +818,12 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "A100-40", "22,15 GiB pesos + 0,65 visão + 2 runtime + 2,08 de KV em "
                               "128K = 26,88, mais 2,0 de folga = 28,88 <= 40 GiB da "
                               "A100-40. A L4 não comporta nem em 32K (25,38 + 1,2)."),
+    ProfileContext("inkling-2-mini-ad-q6k-dspark", "inkling-2-mini", "ad-q6k", 1_000_000,
+                   131_072, "A100-40",
+                   "Mesmos 26,88 GiB do AD-Q6_K em 128K mais o drafter DSpark de 0,47 "
+                   "GiB = 27,35, mais 2,0 de folga = 29,35 <= 40 GiB da A100-40. O "
+                   "drafter é um segundo arquivo (`--model-draft`), então entra na "
+                   "conta; a cabeça MTP do Bonsai não entraria."),
     ProfileContext("inkling-2-mini-ad-q4k", "inkling-2-mini", "ad-q4k", 1_000_000, 32_768,
                    "L4", "15,39 GiB pesos + 0,65 visão + 2 runtime + 0,58 de KV em 32K = "
                          "18,62, mais 1,2 de folga = 19,82 <= 24 GiB da L4 (5,38 de sobra). "

@@ -292,10 +292,11 @@ def test_contexto_documentado_servido_e_motivo():
     assert served["qwen3.8-27b-32k"] == 32_768
     assert served["qwen3.8-27b-256k"] == 262_144
     assert served["inkling-2-mini-ad-q6k"] == 131_072
+    assert served["inkling-2-mini-ad-q6k-dspark"] == 131_072
     assert served["inkling-2-mini-ad-q4k"] == 32_768
     assert served["inkling-2-mini-ad-iq2xxs"] == 32_768
     assert all(item.reason for item in catalog.PROFILE_CONTEXTS)
-    assert len(served) == 21
+    assert len(served) == 22
 
 
 def test_compatibilidade_continua_usando_contexto_servido():
@@ -567,6 +568,7 @@ def test_perfis_de_inkling_ficam_na_gpu_mais_barata_que_cabe():
         "inkling-2-mini-q4-gguf",
         "inkling-2-mini-q8-gguf",
         "inkling-2-mini-ad-q6k",
+        "inkling-2-mini-ad-q6k-dspark",
         "inkling-2-mini-ad-q4k",
         "inkling-2-mini-ad-iq2xxs",
     }
