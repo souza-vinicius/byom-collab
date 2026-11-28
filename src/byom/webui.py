@@ -40,6 +40,7 @@ class WebUIPlan:
     proxy_url: str
     data_dir: Path
     port: int
+    overrides: tuple[str, ...] = ()
 
 
 def _validate_port(port: int) -> int:
@@ -67,28 +68,59 @@ def build_command(*, port: int) -> list[str]:
     ]
 
 
-def build_env(*, proxy_port: int, port: int, data_dir: Path, secret_key: str) -> dict[str, str]:
+def _env_defaults(
+    *,
+    proxy_port: int,
+    port: int,
+    data_dir: Path,
+    secret_key: str,
+    served_model_name: str,
+) -> dict[str, str]:
+    """Valores que o byom fornece ao Open WebUI (fonte: docs.openwebui.com, 2026-11-28)."""
     _validate_port(proxy_port)
     _validate_port(port)
     base = f"http://127.0.0.1:{proxy_port}/v1"
+    defaults = {
+        "DATA_DIR": str(data_dir),
+        "WEBUI_SECRET_KEY": secret_key,
+        "WEBUI_AUTH": "false",
+        "WEBUI_URL": f"http://127.0.0.1:{port}",
+        "OPENAI_API_BASE_URL": base,
+        "OPENAI_API_BASE_URLS": base,
+        "OPENAI_API_KEY": "byom",
+        "OPENAI_API_KEYS": "byom",
+        "ENABLE_OPENAI_API": "true",
+        "ENABLE_OLLAMA_API": "false",
+        "ENABLE_VERSION_UPDATE_CHECK": "false",
+    }
+    # `DEFAULT_MODELS` pré-seleciona IDs existentes em /v1/models; o gateway
+    # publica `cfg.served_model_name` (alias do runtime, ou id sintético no TTS).
+    modelo = served_model_name.strip()
+    if modelo:
+        defaults["DEFAULT_MODELS"] = modelo
+    return defaults
+
+
+def build_env(
+    *,
+    proxy_port: int,
+    port: int,
+    data_dir: Path,
+    secret_key: str,
+    served_model_name: str = "",
+) -> dict[str, str]:
+    """Completa o ambiente do frontend sem sobrescrever escolhas do usuário."""
     env = {**os.environ}
     for name in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
         env.pop(name, None)
-    env.update(
-        {
-            "DATA_DIR": str(data_dir),
-            "WEBUI_SECRET_KEY": secret_key,
-            "WEBUI_AUTH": "false",
-            "WEBUI_URL": f"http://127.0.0.1:{port}",
-            "OPENAI_API_BASE_URL": base,
-            "OPENAI_API_BASE_URLS": base,
-            "OPENAI_API_KEY": "byom",
-            "OPENAI_API_KEYS": "byom",
-            "ENABLE_OPENAI_API": "true",
-            "ENABLE_OLLAMA_API": "false",
-            "ENABLE_VERSION_UPDATE_CHECK": "false",
-        }
-    )
+    for name, value in _env_defaults(
+        proxy_port=proxy_port,
+        port=port,
+        data_dir=data_dir,
+        secret_key=secret_key,
+        served_model_name=served_model_name,
+    ).items():
+        env.setdefault(name, value)
     return env
 
 
@@ -110,8 +142,9 @@ def plan(*, port: int = DEFAULT_PORT, proxy_port: int | None = None) -> WebUIPla
     _validate_port(port)
     if shutil.which("uv") is None:
         raise WebUIError("uv não encontrado no PATH; instale o uv para iniciar o frontend")
+    cfg = config.load_config()
     effective_proxy = _validate_port(
-        proxy_port if proxy_port is not None else config.load_config().proxy_port
+        proxy_port if proxy_port is not None else cfg.proxy_port
     )
     home = llm_chat.ensure_managed_home()
     target = home / DATA_DIRNAME
@@ -120,18 +153,29 @@ def plan(*, port: int = DEFAULT_PORT, proxy_port: int | None = None) -> WebUIPla
         with contextlib.suppress(OSError):
             target.chmod(0o700)
     url = f"http://127.0.0.1:{port}"
+    secret_key = _secret(home / SECRET_FILENAME)
+    defaults = _env_defaults(
+        proxy_port=effective_proxy,
+        port=port,
+        data_dir=target,
+        secret_key=secret_key,
+        served_model_name=cfg.served_model_name,
+    )
+    overrides = tuple(name for name in defaults if name in os.environ)
     return WebUIPlan(
         argv=tuple(build_command(port=port)),
         env=build_env(
             proxy_port=effective_proxy,
             port=port,
             data_dir=target,
-            secret_key=_secret(home / SECRET_FILENAME),
+            secret_key=secret_key,
+            served_model_name=cfg.served_model_name,
         ),
         url=url,
         proxy_url=f"http://127.0.0.1:{effective_proxy}/v1",
         data_dir=target,
         port=port,
+        overrides=overrides,
     )
 
 

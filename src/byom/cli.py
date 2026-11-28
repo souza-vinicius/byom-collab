@@ -1392,12 +1392,21 @@ def web(
 
     _say(f"Frontend: {plan.url}")
     _say(f"Modelo:   {plan.proxy_url}")
+    modelo_padrao = plan.env.get("DEFAULT_MODELS")
+    if modelo_padrao:
+        _say(f"Padrão:   {modelo_padrao}")
+    if plan.overrides:
+        _say("Ambiente: " + ", ".join(plan.overrides) + " (valores preservados)")
     _say(f"Dados:    {plan.data_dir}")
     _say(
         f"Open WebUI {webui.OPEN_WEBUI_VERSION} via uv; a primeira execução baixa o pacote "
         "e o Python 3.12."
     )
     _say("Suba a sessão com `byom up` e mantenha este processo aberto. Ctrl+C encerra.")
+    _say(
+        "Para usar outro provedor, defina OPENAI_API_BASE_URLS e OPENAI_API_KEYS "
+        "antes de `byom web`."
+    )
     try:
         code = webui.run(plan, open_browser=not no_browser)
     except webui.WebUIError as exc:

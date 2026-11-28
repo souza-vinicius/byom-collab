@@ -84,3 +84,61 @@ Auditoria concluída em 6 ciclos de execução (limite de segurança 25). Nenhum
 **Fase 6.** Diff revisado por duas frentes independentes e verificado localmente; um achado de EOF em handlers foi corrigido. Estado final: 607 testes, ruff limpo, probe de VRAM exit 0, validador OKF exit 0, árvore limpa com quatro commits locais na `main` (sem push ou PR).
 
 Princípios que mudaram decisões: `sequence-verifiable-units` (lint+testes após cada bloco e commit atômico), `laziness-protocol` (etapas numeradas em vez de novo spinner; nenhuma camada extra), `test-behavior-not-implementation` (testes assertam saída observável e `ChatResult`, não detalhes internos), `prove-it-works` (executei ruff, pytest, probe e OKF, além das duas revisões), `experience-first` (erros acionáveis, Ctrl+C/EOF limpos, `NO_COLOR`) e `never-block-on-the-human` (execução contínua conforme autorização).
+
+---
+
+# Rodada 2 — Open WebUI autoconfigurado (2026-11-28)
+
+Objetivo: garantir que `byom web` já abra conectado à API do Byom, com modelo padrão e variáveis de ambiente corretas, preservando overrides do usuário e todas as funcionalidades existentes. Fases 3–6 reaproveitam a estrutura da rodada 1, com foco no frontend.
+
+Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executivo preenchido. Limite: 25 ciclos.
+
+## Baseline (medido antes de qualquer edição nesta rodada)
+
+- Branch `feat/auditoria-cli-byom` (PR #19), árvore limpa.
+- `env -u BYOM_COLAB_BIN uv run pytest -q`: 631 passed em ~20 s.
+- `uv run ruff check .`: All checks passed.
+- `uv run python scripts/probe_revisao.py`: exit 0.
+- `validate.sh docs/`: exit 0.
+- Fonte oficial consultada em 2026-11-28: `https://docs.openwebui.com/reference/env-configuration/` (`DEFAULT_MODELS` = IDs separados por vírgula pré-selecionados em novo chat; `OPENAI_API_BASE_URL(S)`, `OPENAI_API_KEY(S)`, `OPENAI_API_CONFIGS`).
+
+## Fase 1 — Diagnóstico e Baseline
+
+- [x] R1.1 Mapear `byom web`: `webui.py` já injeta URL/chave, `WEBUI_AUTH=false`, `ENABLE_OLLAMA_API=false`, `DATA_DIR` isolado e segredo estável; `cli.py:1376` imprime endpoints.
+- [x] R1.2 Medir baseline e confirmar fonte oficial das variáveis (acima).
+- [x] R1.3 Identificar lacunas: `DEFAULT_MODELS` ausente; `build_env` sobrescreve variáveis que o usuário já definiu; CLI não mostra o modelo padrão nem avisa quais variáveis ficaram sob controle do usuário.
+
+## Fase 2 — Fluxos, UX e Autoconfiguração do Open WebUI
+
+- [x] R2.1 Injetar `DEFAULT_MODELS` a partir de `config.served_model_name`, que é o id publicado por `/v1/models` (gateway: id sintético no runtime `tts`, alias nos demais).
+- [x] R2.2 Preservar overrides do usuário: variáveis presentes no ambiente não devem ser sobrescritas; byom preenche só o que falta. `DATA_DIR`, segredo e variáveis de isolamento seguem gerenciadas pelo byom quando ausentes.
+- [x] R2.3 Tornar a autoconfiguração observável: CLI informa o modelo padrão e lista variáveis preservadas do ambiente, sem alterar a saída existente.
+- [x] R2.4 Testes unitários mockados para R2.1–R2.3; Zero regressões nos testes atuais.
+
+## Fase 3 — Clareza de informações no terminal
+
+- [x] R3.1 Textos do `byom web` descrevem o que foi autoconfigurado e como fazer override, sem novo comando ou flag.
+- [x] R3.2 Ajuda e mensagens de erro existentes permanecem intactas (snapshots da CLI continuam verdes).
+
+## Fase 4 — Testes unitários
+
+- [x] R4.1 Casos novos em `tests/test_webui.py`: override preservado, `DEFAULT_MODELS`, saída da CLI, consistência com `/v1/models`.
+- [x] R4.2 Suíte completa verde com `BYOM_COLAB_BIN` removido; nenhum teste fala com Colab/Open WebUI reais.
+
+## Fase 5 — Documentação e backlog
+
+- [ ] R5.1 `docs/webui.md` com as variáveis injetadas, `DEFAULT_MODELS`, override e fonte oficial datada; `docs/index.md` e `docs/log.md` sincronizados.
+- [ ] R5.2 README atualizado onde descreve o frontend; ideias não implementadas registradas em `BACKLOG.md`.
+
+## Fase 6 — Revisão final
+
+- [ ] R6.1 Revisão independente (código/testes/docs) com verificação própria de cada achado.
+- [ ] R6.2 Quatro gates reexecutados no estado final + `git diff --check`.
+- [ ] R6.3 Resumo Executivo da rodada 2 preenchido.
+
+## Registro de ciclos (rodada 2)
+
+| Ciclo | Item | Resultado | Verificação |
+| --- | --- | --- | --- |
+| 0 | R1.1–R1.3 | Baseline e plano | 631 testes, ruff/probe/OKF verdes |
+| 1 | R2.1–R2.4, R3.1–R3.2, R4.1–R4.2 | autoconfig com `DEFAULT_MODELS`, overrides preservados, CLI observável e 3 testes novos | 634 testes, ruff/probe/OKF verdes |

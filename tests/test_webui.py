@@ -8,7 +8,7 @@ import stat
 import pytest
 from typer.testing import CliRunner
 
-from byom import cli, llm_chat, webui
+from byom import cli, config, llm_chat, webui
 
 runner = CliRunner()
 
@@ -106,6 +106,54 @@ def test_plan_remove_variaveis_do_venv_do_byom(byom_home, monkeypatch):
     assert "VIRTUAL_ENV" not in plan.env
     assert "PYTHONHOME" not in plan.env
     assert "PYTHONPATH" not in plan.env
+
+
+def test_plan_injeta_modelo_padrao_do_perfil_ativo(byom_home, monkeypatch):
+    monkeypatch.delenv("DEFAULT_MODELS", raising=False)
+    cfg = config.load_config()
+
+    plan = webui.plan(port=8099, proxy_port=4000)
+
+    assert plan.env["DEFAULT_MODELS"] == cfg.served_model_name
+
+
+def test_plan_preserva_overrides_do_usuario(byom_home, monkeypatch):
+    valores = {
+        "OPENAI_API_BASE_URLS": "http://outro-provedor:8000/v1",
+        "OPENAI_API_KEYS": "chave-do-usuario",
+        "WEBUI_AUTH": "true",
+        "DEFAULT_MODELS": "outro-modelo",
+    }
+    for nome, valor in valores.items():
+        monkeypatch.setenv(nome, valor)
+
+    plan = webui.plan(port=8099, proxy_port=4000)
+
+    for nome, valor in valores.items():
+        assert plan.env[nome] == valor
+    assert set(valores) <= set(plan.overrides)
+    assert "DATA_DIR" not in plan.overrides
+    # O que é do byom continua presente quando o usuário não escolheu outro valor.
+    assert plan.env["DATA_DIR"] == str(byom_home / webui.DATA_DIRNAME)
+    assert plan.env["OPENAI_API_BASE_URL"] == "http://127.0.0.1:4000/v1"
+
+
+def test_cli_web_mostra_modelo_padrao_e_overrides(byom_home, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEYS", "chave-do-usuario")
+    planos: list[webui.WebUIPlan] = []
+
+    def falso_run(plan, *, open_browser=True):
+        planos.append(plan)
+        return 0
+
+    monkeypatch.setattr(webui, "run", falso_run)
+    res = runner.invoke(cli.app, ["web", "--port", "8099", "--no-browser"])
+
+    assert res.exit_code == 0
+    assert "Padrão:   " in res.output
+    assert "Ambiente: OPENAI_API_KEYS (valores preservados)" in res.output
+    assert "OPENAI_API_BASE_URLS" in res.output
+    assert planos[0].env["OPENAI_API_KEYS"] == "chave-do-usuario"
 
 
 def test_run_recusa_porta_ocupada(byom_home):
