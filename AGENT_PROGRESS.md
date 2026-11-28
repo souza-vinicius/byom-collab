@@ -127,8 +127,8 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 
 ## Fase 5 — Documentação e backlog
 
-- [ ] R5.1 `docs/webui.md` com as variáveis injetadas, `DEFAULT_MODELS`, override e fonte oficial datada; `docs/index.md` e `docs/log.md` sincronizados.
-- [ ] R5.2 README atualizado onde descreve o frontend; ideias não implementadas registradas em `BACKLOG.md`.
+- [x] R5.1 `docs/webui.md` com as variáveis injetadas, `DEFAULT_MODELS`, override e fonte oficial datada; `docs/index.md` e `docs/log.md` sincronizados.
+- [x] R5.2 README atualizado onde descreve o frontend; ideias não implementadas registradas em `BACKLOG.md`.
 
 ## Fase 6 — Revisão final
 
@@ -142,3 +142,4 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 | --- | --- | --- | --- |
 | 0 | R1.1–R1.3 | Baseline e plano | 631 testes, ruff/probe/OKF verdes |
 | 1 | R2.1–R2.4, R3.1–R3.2, R4.1–R4.2 | autoconfig com `DEFAULT_MODELS`, overrides preservados, CLI observável e 3 testes novos | 634 testes, ruff/probe/OKF verdes |
+| 2 | R5.1–R5.2 | README, docs/webui.md, index, log e BACKLOG #13 | OKF válido; 634 testes |

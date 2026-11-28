@@ -4,7 +4,7 @@ title: Open WebUI Frontend
 description: How `byom web` runs an isolated Open WebUI instance on 127.0.0.1:8080 against the local OpenAI-compatible proxy, where chats and uploads live, and why image generation still needs two runtimes.
 tags: [frontend, open-webui, webui, chat, ui, uploads]
 status: draft
-generated: { by: opencode/deepseek-v4.1-flash, at: 2026-11-27T21:00:00Z }
+generated: { by: hermes/hy4-flash-free, at: 2026-11-28T12:30:00Z }
 sources:
   - id: webui-module
     resource: /src/byom/webui.py
@@ -24,6 +24,9 @@ sources:
   - id: openwebui-images
     resource: https://docs.openwebui.com/features/chat-conversations/image-generation-and-editing/usage
     title: Image generation requires a chat model selected plus an image connection
+  - id: openwebui-env
+    resource: https://docs.openwebui.com/reference/env-configuration/
+    title: OpenAI connection variables and DEFAULT_MODELS semantics (consulted 2026-11-28)
 ---
 
 # Open WebUI Frontend
@@ -77,7 +80,23 @@ multi-user setup needs a fresh `byom_home()`/`webui` directory.
   (default 4000).
 * `OPENAI_API_KEY` and `OPENAI_API_KEYS` as `byom`. The proxy strips the
   `Authorization` header and does not authenticate local clients.
+* `DEFAULT_MODELS` as `config.served_model_name` — the same id the gateway
+  publishes in `GET /v1/models` (the runtime alias, or the synthetic id on the
+  `tts` runtime). Open WebUI pre-selects it on a new chat.[^env]
 * `ENABLE_OLLAMA_API=false` and `ENABLE_VERSION_UPDATE_CHECK=false`.
+
+`build_env` **fills only what is missing**: any variable already exported by
+the user wins. `WebUIPlan.overrides` records which of the byom defaults were
+supplied by the environment, and `byom web` prints them as `Ambiente: ...`.
+That makes the documented override path real — export `OPENAI_API_BASE_URLS`
+and `OPENAI_API_KEYS` before `byom web` to point the frontend at another
+provider, without editing any file. Variables owned by the isolation
+(`DATA_DIR`, `WEBUI_SECRET_KEY`, `WEBUI_URL`) are also preserved if exported;
+the default secret remains generated once with mode `0600`.
+
+[^env]: `DEFAULT_MODELS` accepts comma-separated model ids that are
+pre-selected in a new chat; if a stored model no longer exists it is replaced
+by these defaults — Open WebUI environment reference, 2026-11-28.
 
 Open WebUI makes these calls from its backend, not from the browser. That
 matters because the proxy only accepts `Host` equal to `127.0.0.1` or
@@ -133,7 +152,8 @@ the frontend data. To update Open WebUI, bump `OPEN_WEBUI_VERSION` in
 
 ## Verification
 
-The command, environment, port validation, occupied-port refusal, browser open,
-`Ctrl+C` handling and CLI output are covered by `tests/test_webui.py`. The first
-real run still needs a machine with `uv` and network access to download the
-pinned package.
+The command, environment, `DEFAULT_MODELS`, preserved user overrides, port
+validation, occupied-port refusal, browser open, `Ctrl+C` handling and CLI
+output are covered by 13 mock-based cases in `tests/test_webui.py`. None of them
+starts Colab, a worker or an Open WebUI instance. The first real run still
+needs a machine with `uv` and network access to download the pinned package.

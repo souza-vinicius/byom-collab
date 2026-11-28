@@ -75,3 +75,9 @@ Formato: `Impacto` é Alto/Médio/Baixo para quem usa a CLI; `Esforço` é P (ho
 - **Problema:** `byom_home()` cobre `win32`, mas a TUI usa questionary/prompt_toolkit cujo suporte a terminal não foi validado no Windows.
 - **Impacto:** Baixo. **Esforço:** M.
 - **Critérios de aceite:** execução em PowerShell/Windows Terminal com e sem `NO_COLOR`; quedas de Ctrl+C/EOF tratadas; documentação de requisitos ajustada.
+
+## 13. Per-connection OpenAI via `OPENAI_API_CONFIGS`
+
+- **Problema:** `byom web` expõe uma única conexão OpenAI ao proxy; filtrar `model_ids`, definir `prefix_id` ou marcar a conexão como `local` exige abrir o painel admin do Open WebUI, mesmo com variáveis de ambiente.
+- **Impacto:** Médio. **Esforço:** P.
+- **Critérios de aceite:** opção de configurar `OPENAI_API_CONFIGS` como JSON por índice de conexão, preservando overrides do usuário e sem novo comando/flag na CLI; teste com JSON inválido recusado antes do spawn; documentar que `model_ids` explícitos param de autodetectar modelos de `/v1/models`.
