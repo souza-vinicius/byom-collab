@@ -109,7 +109,10 @@ def _new_session_name() -> str:
 
 def _hardware_matches(requested: str, hardware: str) -> bool:
     aliases = {"G4": ("G4", "RTX PRO 6000")}
-    expected = aliases.get(requested.strip().upper(), (requested.strip(),))
+    normalized = requested.strip().upper()
+    if not normalized:
+        return False
+    expected = aliases.get(normalized, (normalized,))
     actual = hardware.upper()
     return any(name in actual for name in expected)
 
@@ -149,9 +152,21 @@ def init() -> None:
 
     proc = colab.run(["sessions"], check=False)
     if proc.returncode != 0:
+        saida = proc.stderr or proc.stdout or b""
+        if isinstance(saida, bytes):
+            saida = saida.decode(errors="replace")
+        detalhe = colab.tail(str(saida).strip())
+        if "auth" in detalhe.lower() or "login" in detalhe.lower():
+            acao = "Run `colab sessions` and complete the login flow before using byom."
+        else:
+            acao = (
+                "Run `colab sessions` in a terminal to read the CLI error, fix it, "
+                "then run `byom init` again."
+            )
         _die(
-            "Colab CLI is not authenticated. Run `colab sessions` and complete "
-            "the login flow before using byom."
+            "Colab CLI could not list sessions.\n"
+            f"  Last CLI output: {detalhe or 'none'}\n"
+            f"  What to do: {acao}"
         )
 
     cfg = _load_config_or_die()
@@ -492,7 +507,10 @@ def _wait_ready(
                 _say("  Waiting for the local daemon to respond")
                 last = "daemon"
         time.sleep(READY_POLL_S)
-    raise TimeoutError(f"Worker did not become ready within {int(timeout_s)}s")
+    raise TimeoutError(
+        f"Worker did not become ready within {int(timeout_s)}s "
+        f"(last state: {last or 'no status from the daemon'})"
+    )
 
 
 
@@ -542,12 +560,16 @@ def _check_proxy_port(cfg: config.Config) -> None:
     Sem esta checagem o daemon morria no `uvicorn` (porta em uso) e o `up`
     esperava o modelo por até `bootstrap_timeout_min` com o daemon morto.
     """
-    if _port_free(cfg.proxy_port):
-        return
-    _die(
-        f"a porta {cfg.proxy_port} do proxy já está em uso por outro processo. "
-        "Encerre o processo que a ocupa (ou rode `byom down`) antes de alocar a GPU."
-    )
+    if not _port_free(cfg.proxy_port):
+        _die(
+            f"a porta {cfg.proxy_port} do proxy já está em uso por outro processo. "
+            "Encerre o processo que a ocupa (ou rode `byom down`) antes de alocar a GPU."
+        )
+    if not _port_free(cfg.tunnel_port):
+        _die(
+            f"a porta {cfg.tunnel_port} do túnel já está em uso por outro processo. "
+            "Encerre o processo que a ocupa (ou rode `byom down`) antes de alocar a GPU."
+        )
 
 
 def _prepare_session(
@@ -769,6 +791,8 @@ def _run_up_transaction(
     opencode_config: Path | None,
     dsh_config: Path | None,
 ) -> None:
+    synced = False
+    _say("[1/5] Checking local configuration and GPU/model compatibility")
     try:
         existing = config.load_state()
     except config.StateFileError as exc:
@@ -793,9 +817,12 @@ def _run_up_transaction(
             "Move or delete it and run `byom init` to create a new one."
         )
 
+    _say("[2/5] Preparing the session and harness configuration")
     _prepare_session(cfg, existing, force)
+    synced = True
     _sync_external_configs(cfg, opencode_config, dsh_config)
 
+    _say("[3/5] Allocating a Colab runtime")
     name = _new_session_name()
     # The master connection is stopped at the end; the daemon keeps its own
     # connection alive to avoid competing for Colab's single `colab ssh` slot.
@@ -807,13 +834,14 @@ def _run_up_transaction(
         allocated = True
         state = _record_allocation(name)
 
+        _say("[4/5] Uploading the worker and starting the model")
         client.start()
         _bootstrap_worker(cfg, state, client)
 
         client.stop()
         _register_daemon(cfg, state)
 
-        _say("Waiting for the model to become ready")
+        _say("[5/5] Waiting for the model to become ready")
         _wait_ready(
             cfg,
             cfg.bootstrap_timeout_min * 60,
@@ -824,24 +852,30 @@ def _run_up_transaction(
         # Ctrl+C (or a nested command aborting) after the VM exists still has
         # to release it; the interruption is propagated after the cleanup.
         if allocated:
-            _stop_allocation(name)
+            stopped = _stop_allocation(name)
             # O daemon local pode ter subido antes da falha: sem isto ele fica
             # segurando a porta do proxy e o próximo `up` espera em vão.
             if state is not None:
                 _terminate_local(state)
         else:
             config.clear_state()
+            stopped = False
+        if synced and not stopped:
+            _restore_harness(_say)
         raise
     except UP_FAILURE_TYPES as exc:
         _say(f"Failed: {exc}")
         if allocated:
             # The session name is the only reliable handle here: `state.json`
             # may be unreadable by the time the failure unwinds.
-            _stop_allocation(name)
+            stopped = _stop_allocation(name)
             if state is not None:
                 _terminate_local(state)
         else:
             config.clear_state()
+            stopped = False
+        if synced and not stopped:
+            _restore_harness(_say)
         raise typer.Exit(1) from exc
     finally:
         client.stop()
@@ -1207,6 +1241,9 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
         _restore_harness(say)
         say("Stopped (confirmed by Colab)")
     else:
+        # A VM pode ter sumido sem confirmação: devolver o harness evita deixar
+        # OpenCode/dsh apontando para um endpoint que não responde mais.
+        _restore_harness(say)
         say("Unknown: could not confirm deallocation")
         say("  The VM may still be consuming compute units; check Colab and stop it manually")
         say("  Local state was retained so you can check again")
