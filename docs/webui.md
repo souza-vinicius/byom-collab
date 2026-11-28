@@ -26,7 +26,7 @@ sources:
     title: Image generation requires a chat model selected plus an image connection
   - id: openwebui-env
     resource: https://docs.openwebui.com/reference/env-configuration/
-    title: OpenAI connection variables and DEFAULT_MODELS semantics (consulted 2026-11-28)
+    title: OpenAI connection variables, DEFAULT_MODELS and ENABLE_PERSISTENT_CONFIG (consulted 2026-11-28)
 ---
 
 # Open WebUI Frontend
@@ -84,6 +84,11 @@ multi-user setup needs a fresh `byom_home()`/`webui` directory.
   publishes in `GET /v1/models` (the runtime alias, or the synthetic id on the
   `tts` runtime). Open WebUI pre-selects it on a new chat.[^env]
 * `ENABLE_OLLAMA_API=false` and `ENABLE_VERSION_UPDATE_CHECK=false`.
+* `ENABLE_PERSISTENT_CONFIG=false`, so a URL previously saved in `webui.db`
+  through the Admin UI cannot override the environment on the next start. The
+  trade-off is documented by Open WebUI: admin-panel changes still apply to the
+  running session but are lost on restart; byom's environment becomes the
+  source of truth.[^persist]
 
 `build_env` **fills only what is missing**: any variable already exported by
 the user wins. `WebUIPlan.overrides` records which of the byom defaults were
@@ -97,6 +102,11 @@ the default secret remains generated once with mode `0600`.
 [^env]: `DEFAULT_MODELS` accepts comma-separated model ids that are
 pre-selected in a new chat; if a stored model no longer exists it is replaced
 by these defaults — Open WebUI environment reference, 2026-11-28.
+
+[^persist]: `ENABLE_PERSISTENT_CONFIG` defaults to `true`, which makes values
+stored in `webui.db` take precedence over environment variables. With `false`,
+environment variables always win and UI changes are not kept across restarts —
+Open WebUI environment reference and connection troubleshooting, 2026-11-28.
 
 Open WebUI makes these calls from its backend, not from the browser. That
 matters because the proxy only accepts `Host` equal to `127.0.0.1` or

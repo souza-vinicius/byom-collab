@@ -91,6 +91,9 @@ def _env_defaults(
         "OPENAI_API_KEYS": "byom",
         "ENABLE_OPENAI_API": "true",
         "ENABLE_OLLAMA_API": "false",
+        # Sem isto, um URL salvo no webui.db pelo painel admin vence as variáveis
+        # de ambiente nas próximas execuções (persistência ligada por default).
+        "ENABLE_PERSISTENT_CONFIG": "false",
         "ENABLE_VERSION_UPDATE_CHECK": "false",
     }
     # `DEFAULT_MODELS` pré-seleciona IDs existentes em /v1/models; o gateway

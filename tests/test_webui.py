@@ -68,6 +68,7 @@ def test_plan_monta_comando_env_e_dados(byom_home):
     assert env["OPENAI_API_KEYS"] == "byom"
     assert env["WEBUI_AUTH"] == "false"
     assert env["ENABLE_OLLAMA_API"] == "false"
+    assert env["ENABLE_PERSISTENT_CONFIG"] == "false"
     assert env["WEBUI_URL"] == "http://127.0.0.1:8099"
     assert env["WEBUI_SECRET_KEY"]
 
@@ -123,6 +124,7 @@ def test_plan_preserva_overrides_do_usuario(byom_home, monkeypatch):
         "OPENAI_API_KEYS": "chave-do-usuario",
         "WEBUI_AUTH": "true",
         "DEFAULT_MODELS": "outro-modelo",
+        "ENABLE_PERSISTENT_CONFIG": "true",
     }
     for nome, valor in valores.items():
         monkeypatch.setenv(nome, valor)
