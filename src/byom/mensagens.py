@@ -62,12 +62,12 @@ ACOES: dict[str, tuple[str, str]] = {
         "Verifica ssh e Colab CLI, cria a chave SSH e salva config.toml.",
     ),
     "configure": (
-        "Selecionar perfil de modelo",
-        "Grava em config.toml o modelo e a GPU para a próxima sessão.",
+        "Aplicar modelo e GPU",
+        "Grava o modelo, a GPU e a janela de contexto em config.toml.",
     ),
     "selecionar_gpu": (
         "Selecionar GPU",
-        "Escolhe um perfil pronto ou um par GPU + modelo para a próxima sessão.",
+        "Escolhe a GPU e o modelo; a janela de contexto é a maior que cabe nela.",
     ),
     "harness": (
         "Configurar harness (OpenCode / dsh)",
@@ -99,12 +99,13 @@ O_QUE_VAI_ACONTECER: dict[str, tuple[str, ...]] = {
         "Grava as configurações padrão locais em config.toml.",
     ),
     "configure": (
-        "Atualiza o perfil, o modelo e a GPU padrão em config.toml.",
+        "Atualiza o modelo, a GPU padrão e a janela de contexto em config.toml.",
         "Não aloca GPU nem inicia sessão no Colab.",
     ),
     "selecionar_gpu": (
-        "Mostra os perfis prontos e as GPUs com os modelos compatíveis.",
-        "Nada é gravado em config.toml até você confirmar um perfil ou um par GPU + modelo.",
+        "Mostra as GPUs e os modelos que cabem em cada uma.",
+        "A janela exibida é a maior que a VRAM da GPU permite, até o máximo do modelo.",
+        "Nada é gravado em config.toml até você confirmar GPU + modelo.",
     ),
     "harness": (
         "Exibe as instruções para configurar manualmente o harness escolhido.",
@@ -127,7 +128,7 @@ O_QUE_VAI_ACONTECER: dict[str, tuple[str, ...]] = {
 
 CONFIRMACOES = {
     "init": "Deseja preparar o ambiente local agora?",
-    "configure": "Deseja aplicar este perfil em config.toml?",
+    "configure": "Deseja aplicar este modelo e esta GPU em config.toml?",
     "harness": "Deseja gravar automaticamente a conexão no arquivo do harness?",
     "up": "Deseja alocar a GPU e iniciar a sessão no Colab agora?",
     "up_force": ("Já existe uma sessão registrada. Deseja encerrá-la antes e criar uma nova?"),
@@ -135,15 +136,11 @@ CONFIRMACOES = {
 }
 
 SELECAO_GPU = "Escolha a GPU que será usada na próxima sessão:"
-SELECAO_PERFIL = "Escolha um perfil para abrir os detalhes ou aplicar:"
 SELECAO_HARNESS = "Qual harness de codificação você deseja configurar?"
 SELECAO_PROXIMO = "O que fazer agora?"
 
-SELECAO_SUBMENU_GPU = "O que você quer selecionar?"
 SELECAO_MODELO_GPU = "Escolha o modelo desta GPU para gravar em config.toml:"
-SUBMENU_PERFIL = "Selecionar perfil de modelo"
-SUBMENU_GPU_MODELOS = "Selecionar uma GPU para ver os modelos compatíveis"
-USAR_PAR_GPU_MODELO = "Usar este perfil (GPU escolhida + modelo escolhido)"
+USAR_PAR_GPU_MODELO = "Usar este modelo nesta GPU"
 
 HARNESS_OPCOES: tuple[tuple[str, str, str, bool], ...] = (
     (
@@ -176,7 +173,7 @@ COMANDO_BASE = "byom"
 EQUIVALENTE_CLI = "Equivalente na CLI: {comando}"
 
 PROXIMO_ACAO: dict[str, tuple[str, str]] = {
-    "init": ("configure", "Selecionar perfil de modelo"),
+    "init": ("selecionar_gpu", "Selecionar GPU"),
     "selecionar_gpu": ("up", "Iniciar sessão no Colab"),
     "configure": ("up", "Iniciar sessão no Colab"),
     "harness": ("up", "Iniciar sessão no Colab"),
@@ -290,6 +287,7 @@ NOMES_RUNTIMES: dict[str, str] = {
     "llama-cpp": "llama.cpp",
     "image": "sd-server (geração de imagens)",
     "strata": "Strata (engine nativo, packs SQ)",
+    "tts": "vLLM-Omni (texto para fala)",
 }
 
 ESFORCO_RACIOCINIO_PT: dict[str, str] = {
@@ -493,7 +491,9 @@ def formatar_gib(valor: float, *, aproximado: bool = False) -> str:
 
 
 def formatar_contexto(tokens: int, runtime: str = "") -> str:
-    """Converte contagem de tokens em K/M legível ou 'não se aplica' para imagem."""
+    """Converte contagem de tokens em K/M legível ou 'não se aplica' para imagem/TTS."""
+    if runtime == "tts":
+        return "fala"
     if runtime == "image" or tokens <= 1:
         return "não se aplica"
     if tokens >= 1_000_000:
@@ -512,6 +512,8 @@ def formatar_contexto(tokens: int, runtime: str = "") -> str:
 
 def formatar_contexto_detalhe(tokens: int, runtime: str = "") -> str:
     """Formato detalhado do contexto: '32K (32.768 tokens)' ou 'não se aplica'."""
+    if runtime == "tts":
+        return "não se aplica (modelo de fala)"
     if runtime == "image" or tokens <= 1:
         return "não se aplica (modelo de geração de imagens)"
     return f"{formatar_contexto(tokens, runtime)} ({formatar_numero(tokens)} tokens)"

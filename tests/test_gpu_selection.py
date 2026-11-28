@@ -52,14 +52,15 @@ def test_t4_filtra_modelos_grandes():
     selection = catalog.compatible_variants("T4")
     ids = {(row.model_id, row.variant_id) for row in selection.rows}
     assert ("gemma-4", "e4b-q4") in ids
+    # Sem receita de execução, mas cabe na T4 no maior contexto que o orçamento
+    # permite (o perfil antigo de 128K estourava a folga por 0,06 GiB).
+    assert ("gemma-4", "e2b-q4") in ids
     for excluded in (
-        # 4 + 2 + 8 = 14,0; + 1,0 de folga = 15,0 == limite da T4: reprovado.
-        ("gemma-4", "e2b-q4"),
         ("qwen3.8-27b-awq", "q4-awq"),
         ("gemma-4", "31b-q4"),
         ("muse-glimmer-30b", "q6"),
         ("qwen-image-2.1", "fp8-int8"),
-        # 18 GiB + 1,11 de visão + 2 de runtime + 2 de KV passa dos 15 GiB.
+        # 18 GiB + 1,11 de visão + 2 de runtime já passa dos 15 GiB.
         ("gemma-4", "26b-a4b-q4"),
     ):
         assert excluded not in ids
@@ -104,25 +105,28 @@ def test_a100_80_libera_variantes_que_nao_cabem_em_l4():
         assert pair in a100
 
 
-def test_contexto_servido_e_perfil_da_gpu_na_filtragem():
-    rows_40 = [
+def test_contexto_otimizado_cresce_com_a_vram():
+    l4 = next(
+        row
+        for row in catalog.compatible_variants("L4").rows
+        if (row.model_id, row.variant_id) == ("qwen3.8-27b-gguf", "q4")
+    )
+    a100 = next(
         row
         for row in catalog.compatible_variants("A100-40").rows
-        if row.model_id == "qwen3.8-27b-awq"
-    ]
-    rows_80 = [
+        if (row.model_id, row.variant_id) == ("qwen3.8-27b-gguf", "q4")
+    )
+    assert l4.context_served == 61440
+    assert a100.context_served == 262144
+    assert l4.context_served < a100.context_served
+
+    awq_40 = next(
         row
-        for row in catalog.compatible_variants("A100-80").rows
-        if row.model_id == "qwen3.8-27b-awq"
-    ]
-    assert {row.profile_id for row in rows_40} == {"qwen3.8-27b-32k"}
-    assert {row.profile_id for row in rows_80} == {"qwen3.8-27b-256k"}
-    assert rows_40[0].context_served in catalog.served_contexts_for(
-        "qwen3.8-27b-awq", "q4-awq"
+        for row in catalog.compatible_variants("A100-40").rows
+        if (row.model_id, row.variant_id) == ("qwen3.8-27b-awq", "q4-awq")
     )
-    assert rows_80[0].context_served in catalog.served_contexts_for(
-        "qwen3.8-27b-awq", "q4-awq"
-    )
+    assert awq_40.context_served == 262144
+    assert awq_40.profile_id == "qwen3.8-27b-256k"
 
 
 def test_modelo_de_imagem_sem_kv_cache():

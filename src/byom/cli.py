@@ -34,6 +34,7 @@ from . import (
     mensagens,
     opencode,
     remote,
+    webui,
 )
 
 app = typer.Typer(
@@ -275,7 +276,10 @@ def models(
         _die(str(exc))
     _say(
         catalog.format_compatible_models(
-            selected.id, _package_owners(), config.drafter_gib_by_profile()
+            selected.id,
+            _package_owners(),
+            config.drafter_gib_by_profile(),
+            config.kv_cache_dtype_by_profile(),
         )
     )
 
@@ -299,16 +303,23 @@ def configure(
     path = config.save_config(cfg)
     _say(f"Applied profile: {profile.id} — {profile.name} (runtime {profile.runtime})")
     memory = "high memory" if cfg.gpu_high_mem else "standard memory"
-    _say(f"Contexto servido: {cfg.max_model_len:,} tokens; GPU: {cfg.gpu} ({memory})")
+    if cfg.runtime in catalog.NON_CHAT_RUNTIMES:
+        contexto = mensagens.formatar_contexto_detalhe(cfg.max_model_len, cfg.runtime)
+        _say(f"Contexto: {contexto}; GPU: {cfg.gpu} ({memory})")
+    else:
+        _say(f"Contexto servido: {cfg.max_model_len:,} tokens; GPU: {cfg.gpu} ({memory})")
     if profile.catalog_model:
         ref = catalog.profile_context(profile.id)
-        _say(
-            f"Contexto documentado: {ref.context_doc:,} tokens "
-            f"(modelo {profile.catalog_model}:{profile.catalog_variant}); {ref.reason}"
-        )
+        if cfg.runtime in catalog.NON_CHAT_RUNTIMES:
+            _say(f"Contexto documentado: n/a (runtime {cfg.runtime}); {ref.reason}")
+        else:
+            _say(
+                f"Contexto documentado: {ref.context_doc:,} tokens "
+                f"(modelo {profile.catalog_model}:{profile.catalog_variant}); {ref.reason}"
+            )
     _say(f"Reasoning padrão do modelo: {cfg.reasoning_effort or 'not documented'}")
     _say(f"Configuration saved to {path}")
-    if profile.opencode_model:
+    if profile.opencode_model and profile.runtime not in catalog.NON_CHAT_RUNTIMES:
         _say(f"In OpenCode, select `{profile.opencode_model}` to use the matching context limit")
 
 
@@ -835,6 +846,8 @@ def _run_up_transaction(
     _say(f"  Runtime:  {cfg.runtime}")
     if cfg.runtime == "image":
         _say(f"  Image API: http://127.0.0.1:{cfg.proxy_port}/v1/images/generations")
+    elif cfg.runtime == "tts":
+        _say(f"  Speech API: http://127.0.0.1:{cfg.proxy_port}/v1/audio/speech")
     _say(f"  Session:  {name}")
 
 
@@ -1310,6 +1323,40 @@ def chat(
         if result.stderr:
             typer.echo(result.stderr, err=True)
         raise typer.Exit(result.returncode)
+
+
+@app.command()
+def web(
+    port: Annotated[
+        int,
+        typer.Option("--port", "-p", help="Porta local do frontend Open WebUI."),
+    ] = webui.DEFAULT_PORT,
+    no_browser: Annotated[
+        bool,
+        typer.Option("--no-browser", help="Não abre o navegador automaticamente."),
+    ] = False,
+) -> None:
+    """Start the local Open WebUI frontend connected to the byom proxy."""
+    cfg = _load_config_or_die()
+    try:
+        plan = webui.plan(port=port, proxy_port=cfg.proxy_port)
+    except (webui.WebUIError, config.ConfigError) as exc:
+        _die(str(exc))
+
+    _say(f"Frontend: {plan.url}")
+    _say(f"Modelo:   {plan.proxy_url}")
+    _say(f"Dados:    {plan.data_dir}")
+    _say(
+        f"Open WebUI {webui.OPEN_WEBUI_VERSION} via uv; a primeira execução baixa o pacote "
+        "e o Python 3.12."
+    )
+    _say("Suba a sessão com `byom up` e mantenha este processo aberto. Ctrl+C encerra.")
+    try:
+        code = webui.run(plan, open_browser=not no_browser)
+    except webui.WebUIError as exc:
+        _die(str(exc))
+    if code != 0:
+        raise typer.Exit(code)
 
 
 @app.command()

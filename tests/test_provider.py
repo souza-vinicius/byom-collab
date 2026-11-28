@@ -31,6 +31,7 @@ PROVIDER_ESPERADO = {
     "glm-5.3-flash": "Z.ai",
     "deepseek-v4.1-flash": "DeepSeek",
     "ternary-bonsai-2.5-27b": "Prism ML",
+    "qwen3-tts": "Qwen (Alibaba Cloud)",
 }
 
 

@@ -38,6 +38,16 @@ PROFILE_IDS = {
     "inkling-2-mini-strata-sq10",
     "inkling-2-mini-strata-sq15",
     "inkling-2-mini-strata-sq20",
+    "qwen3-tts-0.6b-customvoice",
+    "qwen3-tts-1.7b-customvoice",
+}
+
+#: Perfis que não entram nos aliases do OpenCode: imagem e TTS não conversam.
+NON_CHAT_PROFILE_IDS = {
+    "qwen-image-2.1-q4km",
+    "qwen-image-2.1-fp8",
+    "qwen3-tts-0.6b-customvoice",
+    "qwen3-tts-1.7b-customvoice",
 }
 
 
@@ -53,7 +63,7 @@ def test_templates_definem_os_dois_contextos_e_aliases_opencode():
     assert profiles["qwen3.8-27b-256k"].settings["gpu_high_mem"] is True
 
     aliases = opencode.profile_aliases_from_config()
-    assert set(aliases) == PROFILE_IDS
+    assert set(aliases) == PROFILE_IDS - NON_CHAT_PROFILE_IDS
     assert aliases["qwen3.8-27b-32k"]["id"] == "qwen3.8-27b"
     assert aliases["qwen3.8-27b-32k"]["limit"]["context"] == 32768
     assert aliases["qwen3.8-27b-256k"]["limit"]["context"] == 262144

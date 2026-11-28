@@ -60,8 +60,10 @@ REASONING_EFFORTS = frozenset(
 )
 #: `strata` entra porque o control do engine serve a mesma API da OpenAI em
 #: `/v1/chat/completions` e `/v1/models`; a prontidão é a mesma poll de
-#: `/v1/models` que o vLLM e o llama-server usam.
-RUNTIME_IDS = frozenset({"vllm", "llama-cpp", "image", "strata"})
+#: `/v1/models` que o vLLM e o llama-server usam. `tts` é o vLLM-Omni: a
+#: prontidão usa `GET /v1/audio/voices` e o trabalho vai para
+#: `POST /v1/audio/speech`.
+RUNTIME_IDS = frozenset({"vllm", "llama-cpp", "image", "strata", "tts"})
 
 THINKING_POLICY_FIELDS = frozenset(
     {"system_token", "thought_open", "thought_close", "strip_history_thought", "source"}
@@ -319,8 +321,9 @@ class Gateway:
 
     # -- readiness and supervision ----------------------------------------
     async def poll_readiness(self) -> bool:
+        path = "/v1/audio/voices" if self.cfg.runtime == "tts" else "/v1/models"
         try:
-            response = await self.client().get("/v1/models")
+            response = await self.client().get(path)
             ready = response.status_code == 200
         except Exception as exc:
             # Diagnostics only: never log a prompt or a response body here.
@@ -723,16 +726,34 @@ def create_app(
         reason = gateway.refuse_reason()
         if reason is not None:
             return JSONResponse(status_code=503, content={"error": {"message": reason}})
+        if cfg.runtime == "tts":
+            # O vLLM-Omni não publica /v1/models; o gateway anuncia o único
+            # checkpoint carregado para o frontend e para o /v1/models do proxy.
+            return {
+                "object": "list",
+                "data": [
+                    {
+                        "id": cfg.served_model_name,
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "byom",
+                    }
+                ],
+            }
         return await _forward_simple(gateway, request, "/v1/models")
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
-        if cfg.runtime == "image":
+        if cfg.runtime in ("image", "tts"):
+            endpoint = (
+                "/v1/images/generations" if cfg.runtime == "image" else "/v1/audio/speech"
+            )
+            kind = "Image" if cfg.runtime == "image" else "TTS"
             return JSONResponse(
                 status_code=501,
                 content={
                     "error": {
-                        "message": "Image model. Use POST /v1/images/generations; "
+                        "message": f"{kind} model. Use POST {endpoint}; "
                         "there is no /v1/chat/completions for this runtime."
                     }
                 },
@@ -788,6 +809,38 @@ def create_app(
                 },
             )
         return await _forward_image(gateway, request, "/v1/images/edits")
+
+    @app.post("/v1/audio/speech")
+    async def audio_speech(request: Request) -> Any:
+        """Qwen3-TTS via vLLM-Omni: fala, não conclusão de chat."""
+        if cfg.runtime != "tts":
+            return JSONResponse(
+                status_code=501,
+                content={"error": {"message": "Speech generation is unavailable in this runtime."}},
+            )
+        reason = gateway.refuse_reason()
+        if reason is not None:
+            return JSONResponse(status_code=503, content={"error": {"message": reason}})
+        body = await request.body()
+        job = await gateway.begin_job()
+        if job is None:
+            return JSONResponse(
+                status_code=503,
+                content={"error": {"message": gateway.refuse_reason() or "Request rejected"}},
+            )
+        task = asyncio.current_task()
+        if task is not None:
+            await gateway.attach_task(job, task)
+        return await _forward_stream(gateway, "/v1/audio/speech", body, job)
+
+    @app.get("/v1/audio/voices")
+    async def audio_voices(request: Request) -> Any:
+        if cfg.runtime != "tts":
+            return JSONResponse(
+                status_code=501,
+                content={"error": {"message": "Voice listing is unavailable in this runtime."}},
+            )
+        return await _forward_simple(gateway, request, "/v1/audio/voices")
 
     return app
 

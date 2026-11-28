@@ -1,7 +1,7 @@
-"""Fluxo de navegação GPU + modelo da TUI, com `questionary.select` roteirizado.
+"""Fluxo de navegação GPU → modelo da TUI, com `questionary.select` roteirizado.
 
-Cobre o caminho da tela única (menu → Selecionar GPU → GPU → modelo → usar),
-cada ramo do submenu e o retorno "Voltar para a lista" do detalhe do perfil.
+Cobre o caminho único (menu → Selecionar GPU → GPU → modelo → usar) e a janela
+de contexto otimizada para a VRAM da GPU escolhida.
 """
 
 from __future__ import annotations
@@ -62,7 +62,6 @@ def test_mostrar_menu_grava_o_par_gpu_e_modelo(monkeypatch, isolated_home):
     escolhido: dict[str, Any] = {}
     respostas = [
         "selecionar_gpu",  # menu
-        "gpu",  # submenu Selecionar GPU
         "L4",  # lista de GPUs
         _primeiro_perfil(escolhido),  # modelos compatíveis com L4
         "usar",  # confirmação do par
@@ -79,14 +78,15 @@ def test_mostrar_menu_grava_o_par_gpu_e_modelo(monkeypatch, isolated_home):
     cfg = config.load_config()
     assert cfg.profile == item.profile.id
     assert (cfg.gpu, cfg.gpu_high_mem) == ("L4", False)
-    assert cfg.max_model_len == item.profile.settings["max_model_len"]
+    assert cfg.max_model_len == item.contexto_servido
+    assert cfg.max_model_len >= item.profile.settings["max_model_len"]
     assert config.check_compatibility(cfg).fits
 
     texto = config.config_path().read_text(encoding="utf-8")
     assert 'gpu = "L4"' in texto
     assert "gpu_high_mem = false" in texto
     assert f'profile = "{item.profile.id}"' in texto
-    assert f"max_model_len = {item.profile.settings['max_model_len']}" in texto
+    assert f"max_model_len = {item.contexto_servido}" in texto
 
 
 def test_par_gpu_e_modelo_nao_grava_nada_antes_da_confirmacao(monkeypatch, isolated_home):
@@ -94,7 +94,6 @@ def test_par_gpu_e_modelo_nao_grava_nada_antes_da_confirmacao(monkeypatch, isola
     monkeypatch.setattr(tui, "_perguntar_proximo_passo", lambda *a, **k: "menu")
     respostas = [
         "selecionar_gpu",
-        "gpu",
         "L4",
         _primeiro_perfil({}),
         "menu",  # desiste na confirmação do par
@@ -107,37 +106,6 @@ def test_par_gpu_e_modelo_nao_grava_nada_antes_da_confirmacao(monkeypatch, isola
     tui.mostrar_menu(tui)
 
     assert not config.config_path().exists()
-
-
-# ---------------------------------------------------------------------------
-# Ramos do submenu "Selecionar GPU"
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("escolha", "atributo"), [("perfil", "_executar_configure"), ("gpu", "_executar_gpu_modelo")]
-)
-def test_submenu_selecionar_gpu_despacha_cada_caminho(monkeypatch, escolha, atributo):
-    chamadas: list[str] = []
-
-    def fake(*args, **kwargs):
-        chamadas.append(atributo)
-        return "menu"
-
-    monkeypatch.setattr(tui, atributo, fake)
-    _roteirizar(monkeypatch, [escolha])
-    rec = tui.criar_console(width=100, height=30, record=True)
-
-    assert tui._executar_selecionar_gpu(rec, tui.ler_estado_local()) == "menu"
-    assert chamadas == [atributo]
-
-
-@pytest.mark.parametrize("escolha", ["menu", None])
-def test_submenu_selecionar_gpu_volta_ao_menu(monkeypatch, escolha):
-    _roteirizar(monkeypatch, [escolha])
-    rec = tui.criar_console(width=100, height=30, record=True)
-
-    assert tui._executar_selecionar_gpu(rec, tui.ler_estado_local()) == "menu"
 
 
 def test_lista_de_modelos_vazia_volta_para_outra_gpu(monkeypatch):
@@ -183,29 +151,6 @@ def test_caminho_gpu_modelo_repete_a_lista_de_gpus_quando_pedem_outra(monkeypatc
 
     assert tui._executar_gpu_modelo(rec, tui.ler_estado_local()) == "menu"
     assert chamadas == ["L4", "L4"]
-
-
-# ---------------------------------------------------------------------------
-# "Voltar para a lista" volta para a lista, não para o menu principal
-# ---------------------------------------------------------------------------
-
-
-def test_voltar_para_a_lista_reabre_a_lista_de_perfis(monkeypatch, isolated_home):
-    escolhidos: list[Any] = []
-
-    def escolher_perfil(escolhas: list[Any]) -> Any:
-        alvo = next(_perfil_view(choice) for choice in escolhas if _perfil_view(choice))
-        escolhidos.append(alvo)
-        return alvo
-
-    respostas = [escolher_perfil, "lista", escolher_perfil, "menu"]
-    _roteirizar(monkeypatch, respostas)
-    rec = tui.criar_console(width=100, height=30, record=True)
-
-    assert tui._executar_configure(rec, tui.ler_estado_local()) == "menu"
-    # Duas passagens pela lista: a primeira caiu no detalhe e voltou para a lista.
-    assert len(escolhidos) == 2
-    assert not config.config_path().exists()
 
 
 def test_caminho_gpu_modelo_consome_lista_reabrindo_a_lista_de_gpus(monkeypatch):

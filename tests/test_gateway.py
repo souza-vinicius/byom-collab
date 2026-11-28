@@ -40,6 +40,15 @@ class FakeVLLM:
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": "qwen3.8-27b"}]})
+        if request.url.path == "/v1/audio/voices":
+            return httpx.Response(200, json={"data": [{"name": "vivian"}]})
+        if request.url.path == "/v1/audio/speech":
+            async def audio():
+                yield b"RIFFwav"
+
+            return httpx.Response(
+                200, content=audio(), headers={"content-type": "audio/wav"}
+            )
 
         payload = json.loads(request.content or b"{}")
         self.requests.append(payload)
@@ -730,3 +739,41 @@ def test_nonce_nao_aparece_em_nenhum_payload_de_status(gateway_module, shutdowns
             body = client.get(path, headers=NONCE_HEADERS).text
             assert "nonce" not in body
             assert "test-nonce" not in body
+
+
+def test_tts_models_sintetico_e_chat_recusado(gateway_module, shutdowns):
+    fake = FakeVLLM()
+    app, _ = build_app(gateway_module, fake, shutdowns, runtime="tts", served_model_name="tts-x")
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        for _ in range(100):
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
+                break
+        models = client.get("/v1/models")
+        chat = client.post(
+            "/v1/chat/completions",
+            json={"model": "tts-x", "messages": [{"role": "user", "content": "oi"}]},
+        )
+
+    assert models.status_code == 200
+    assert models.json()["data"][0]["id"] == "tts-x"
+    assert chat.status_code == 501
+    assert "/v1/audio/speech" in chat.json()["error"]["message"]
+
+
+def test_tts_audio_speech_passa_bytes_e_voices(gateway_module, shutdowns):
+    fake = FakeVLLM()
+    app, _ = build_app(gateway_module, fake, shutdowns, runtime="tts")
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        for _ in range(100):
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
+                break
+        voices = client.get("/v1/audio/voices")
+        speech = client.post("/v1/audio/speech", json={"input": "oi", "voice": "vivian"})
+
+    assert voices.status_code == 200
+    assert voices.json()["data"][0]["name"] == "vivian"
+    assert speech.status_code == 200
+    assert speech.headers["content-type"] == "audio/wav"
+    assert speech.content == b"RIFFwav"

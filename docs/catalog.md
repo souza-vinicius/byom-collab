@@ -194,22 +194,35 @@ Duas divergências de fonte, resolvidas com o binário na mão (2026-11-27):
    o digest (`pack_sha256_source`), e divergência em qualquer das duas fontes é
    falha dura.
 
-## Contexto acima do documentado
+## Contexto otimizado por GPU
 
 `max_model_len` não pode passar do `context_doc` da variante: um perfil que pede
-400.000 num modelo de 262.144 é recusado na carga com `ConfigError`. Quando o
-contexto servido fica abaixo do documentado, a variante declara o motivo em
-`context_reason` e a TUI mostra esse texto em vez de recalcular a GPU mínima por
-conta própria.
+400.000 num modelo de 262.144 é recusado na carga com `ConfigError`. Abaixo
+disso, a janela não é mais fixa por perfil: `catalog.max_fitting_context()` faz
+busca binária no maior múltiplo de 1024 tokens que cabe na GPU, usando a mesma
+conta de `required_vram_gib` (pesos + visão + runtime + KV + drafter + folga).
+O KV cresce com o contexto, então `_fits` é monotônico e a busca converge em
+poucas iterações. O teto é `context_doc`, e o piso é 1024 tokens.
+
+`catalog.compatible_variants()` calcula esse máximo para cada perfil de uma
+variante e mantém o maior resultado. Empate prefere o perfil que já serve aquele
+contexto e, depois, o registrado para a própria GPU. Variantes sem perfil
+aparecem na tabela com a janela otimizada pelo runtime do catálogo, mas sem
+receita de execução; a TUI não as oferece para seleção. A TUI copia o
+`PerfilView` com a janela otimizada (`_visao_otimizada`) e grava esse valor em
+`config.toml`; o CLI `byom models --gpu` usa a mesma função. O
+`context_reason` do perfil continua sendo o motivo da receita fixa, não o da
+janela calculada.
 
 ## Onde os números aparecem
 
-A mesma conta alimenta `byom models`, o submenu `Selecionar GPU` da TUI, o
-`check_compatibility` do `config.toml` e o log de atualização. A tabela dos 25
-perfis (GPU, contexto, KV, required, folga, margem, `fits`, origem do KV e
-drafter) é regerada com `scripts/vram_table.py` e registrada em
+A mesma conta alimenta `byom models`, a tela `Selecionar GPU` da TUI, o
+`check_compatibility` do `config.toml` e o log de atualização. A tabela dos 27
+perfis (GPU, contexto, KV, required, folga, margem, `fits`, origem do KV,
+pipeline e drafter) é regerada com `scripts/vram_table.py` e registrada em
 [Update Log](/log.md); sondas de comportamento ficam em
-`scripts/probe_revisao.py`.
+`scripts/probe_revisao.py`. O TTS entra sem KV e com `Variant.overhead_gib`
+para o pipeline talker + code2wav; ver [Qwen3-TTS Runtime](/qwen3-tts.md).
 
 [^catalog-module]: `/src/byom/catalog.py`
 [^worker]: `/worker/build_vllm_command.py` (`build_llama_args`, `build_strata_args`)

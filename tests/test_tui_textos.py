@@ -182,7 +182,9 @@ def test_tela_de_gpu_e_modelo_nao_diz_somente_leitura():
     fonte = (Path(__file__).resolve().parent.parent / "src" / "byom" / "tui.py").read_text(
         encoding="utf-8"
     )
-    trecho = fonte.split("def _executar_gpu_modelo")[1].split("def _executar_selecionar_gpu")[0]
+    trecho = fonte.split("def _executar_gpu_modelo")[1].split(
+        "def renderizar_instrucoes_harness"
+    )[0]
     assert "M.NADA_GRAVADO_ATE_CONFIRMAR" in trecho
     assert "M.SOMENTE_LEITURA" not in trecho
 
