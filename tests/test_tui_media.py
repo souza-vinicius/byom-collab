@@ -67,6 +67,36 @@ def test_tui_imagem_pede_prompt_e_salva_png(monkeypatch):
     assert "Imagem gerada" in rec.export_text(clear=False)
 
 
+def test_tui_imagem_exibe_os_padroes_do_modelo_turbo(monkeypatch):
+    _config_com("qwen-image-2.1-turbo-uncensored-q4k")
+    respostas = iter(["uma casa na neve", "8", "1.0"])
+    capturados: list[dict] = []
+
+    def fake_text(mensagem, **kwargs):
+        capturados.append(kwargs)
+        return Pergunta(next(respostas))
+
+    monkeypatch.setattr(questionary, "text", fake_text)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: Pergunta("1024x1024"))
+    monkeypatch.setattr(tui, "_perguntar_proximo_passo", lambda *a, **k: "menu")
+
+    class Resposta:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = ""
+
+        def json(self):
+            return {"data": [{"b64_json": base64.b64encode(b"PNG").decode()}]}
+
+    monkeypatch.setattr(tui.httpx, "post", lambda *a, **k: Resposta())
+
+    rec = tui.criar_console(width=100, height=40, record=True)
+    assert tui._executar_imagem(rec, None, _estado("image")) == "menu"
+
+    assert capturados[1]["default"] == "8"
+    assert capturados[2]["default"] == "1.0"
+
+
 def test_tui_audio_pede_texto_voz_e_salva_wav(monkeypatch):
     _config_com("qwen3-tts-0.6b-customvoice")
     vozes = iter(["vivian", "Portuguese"])
