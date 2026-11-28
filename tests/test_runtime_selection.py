@@ -84,7 +84,12 @@ def test_perfis_de_imagem_pinam_o_build_unsloth_cuda13():
     )
     sha = "5129f05af93cac94f6e6182007ff9b18284fbea71f930f4b93360bc5a35d50a1"
 
-    for profile_id in ("qwen-image-2.1-q4km", "qwen-image-2.1-fp8"):
+    for profile_id in (
+        "qwen-image-2.1-q4km",
+        "qwen-image-2.1-fp8",
+        "qwen-image-2.1-turbo-uncensored-q4k",
+        "qwen-image-2.1-turbo-uncensored-q8",
+    ):
         profile = config.load_profile(profile_id)
         assert profile.worker["binary_url"] == url
         assert profile.worker["binary_sha256"] == sha
@@ -461,11 +466,27 @@ def test_prepare_imagem_grava_os_tres_papeis_no_manifest(
 
 
 def test_perfis_de_imagem_declaram_os_tres_papeis():
-    for profile_id in ("qwen-image-2.1-q4km", "qwen-image-2.1-fp8"):
+    for profile_id in (
+        "qwen-image-2.1-q4km",
+        "qwen-image-2.1-fp8",
+        "qwen-image-2.1-turbo-uncensored-q4k",
+        "qwen-image-2.1-turbo-uncensored-q8",
+    ):
         profile = config.load_profile(profile_id)
         roles = (profile.worker or {}).get("image_roles") or {}
         assert set(roles) >= {"diffusion", "vae", "text_encoder"}, profile_id
         assert all("::" in spec for spec in roles.values())
+
+
+def test_perfis_turbo_resolvem_os_papeis_na_fixture_offline(prepare_module):
+    for profile_id in (
+        "qwen-image-2.1-turbo-uncensored-q4k",
+        "qwen-image-2.1-turbo-uncensored-q8",
+    ):
+        profile = config.load_profile(profile_id)
+        for role, spec in profile.worker["image_roles"].items():
+            repo, pattern = spec.split("::", 1)
+            assert prepare_module.match_file(HF_FILES[repo], pattern), (profile_id, role)
 
 
 # -- 4.1: o quant publicado é Q4_K, não Q4_K_M --------------------------------
@@ -510,6 +531,39 @@ def test_orcamento_de_imagem_usa_os_bytes_publicados():
     )
     assert q4km.memory_gib == pytest.approx(round(q4km_bytes / 2**30, 2))
     assert fp8.memory_gib == pytest.approx(round((q4km_bytes + 3_058_988_248) / 2**30, 2))
+
+
+def test_orcamento_do_turbo_uncensored_usa_os_bytes_publicados():
+    repos = json.loads(FIXTURE.read_text(encoding="utf-8"))["repos"]
+    denoiser = {
+        item["path"]: item["size"] for item in repos["AtomicChat/Qwen-Image-2.1-Turbo-GGUF"]
+    }
+    encoder = {
+        item["path"]: item["size"]
+        for item in repos["AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF"]
+    }
+    vae = next(
+        item["size"]
+        for item in repos["Comfy-Org/Qwen-Image-2.1"]
+        if item["path"] == "vae/qwen_image_2.1_vae_bf16.safetensors"
+    )
+    q4k_bytes = (
+        denoiser["Qwen-Image-2.1-Turbo-AD-Q4_K.gguf"]
+        + encoder["Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf"]
+        + vae
+    )
+    q8_bytes = (
+        denoiser["Qwen-Image-2.1-Turbo-Q8_0.gguf"]
+        + encoder["Qwen-Image-2.1-Turbo-Uncensored-Q8_0.gguf"]
+        + vae
+    )
+
+    assert catalog.variant_by_id("qwen-image-2.1-turbo-uncensored", "q4k").memory_gib == (
+        pytest.approx(round(q4k_bytes / 2**30, 2))
+    )
+    assert catalog.variant_by_id("qwen-image-2.1-turbo-uncensored", "q8").memory_gib == (
+        pytest.approx(round(q8_bytes / 2**30, 2))
+    )
 
 
 def test_t4_volta_a_comportar_o_q4km_e_o_fp8_continua_em_l4():
@@ -577,6 +631,17 @@ def test_perfis_de_imagem_declaram_o_papel_vision():
             "Qwen/Qwen3-VL-8B-Instruct-GGUF::mmproj-Qwen3VL-8B-Instruct-F16.gguf"
             in (profile.worker or {}).get("model_patterns", [])
         ), profile_id
+    for profile_id in (
+        "qwen-image-2.1-turbo-uncensored-q4k",
+        "qwen-image-2.1-turbo-uncensored-q8",
+    ):
+        profile = config.load_profile(profile_id)
+        roles = (profile.worker or {}).get("image_roles") or {}
+        assert "vision" in roles, profile_id
+        assert roles["vision"].endswith(
+            "mmproj-Qwen-Image-2.1-Turbo-Uncensored-F16.gguf"
+        )
+        assert roles["vision"] in (profile.worker or {}).get("model_patterns", []), profile_id
 
 
 def test_gateway_recusa_edits_sem_o_papel_vision(gateway_module):
@@ -637,6 +702,14 @@ def test_vision_gib_por_variante_usa_o_projetor_publicado(prepare_module):
     assert catalog.variant_by_id("gemma-4", "31b-q4").vision_gib == 1.12
     assert catalog.variant_by_id("muse-glimmer-30b", "q2").vision_gib == 3.58
     assert catalog.variant_by_id("muse-glimmer-30b", "q4").vision_gib == 3.58
+    assert (
+        catalog.variant_by_id("qwen-image-2.1-turbo-uncensored", "q4k").vision_gib
+        == catalog.IMAGE_VISION_GIB
+    )
+    assert (
+        catalog.variant_by_id("qwen-image-2.1-turbo-uncensored", "q8").vision_gib
+        == catalog.IMAGE_VISION_GIB
+    )
 
     # O padrão `*mmproj*` do Muse resolve para o BF16 (3,85 GB), não para o kquant.
     assert prepare_module.match_file(
@@ -649,6 +722,13 @@ def test_vision_gib_por_variante_usa_o_projetor_publicado(prepare_module):
     assert _size_gib("unsloth/gemma-4-26B-A4B-it-GGUF", "mmproj-BF16.gguf") == 1.11
     assert _size_gib("unsloth/gemma-4-31B-it-GGUF", "mmproj-BF16.gguf") == 1.12
     assert _size_gib("unsloth/Inkling-2-Mini-GGUF", "mmproj-F16.gguf") == 0.6
+    assert (
+        _size_gib(
+            "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF",
+            "mmproj-Qwen-Image-2.1-Turbo-Uncensored-F16.gguf",
+        )
+        == catalog.IMAGE_VISION_GIB
+    )
 
 
 

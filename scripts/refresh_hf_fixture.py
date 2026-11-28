@@ -20,6 +20,8 @@ DEST = ROOT / "tests" / "fixtures" / "hf_files.json"
 REPOS = (
     "leejet/Qwen-Image-2.1-GGUF",
     "Comfy-Org/Qwen-Image-2.1",
+    "AtomicChat/Qwen-Image-2.1-Turbo-GGUF",
+    "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF",
     "Qwen/Qwen3-VL-8B-Instruct-GGUF",
     "unsloth/Inkling-2-Mini-GGUF",
     "unsloth/Muse-Glimmer-30B-GGUF",

@@ -27,6 +27,7 @@ PROVIDER_ESPERADO = {
     "gemma-4": "Google DeepMind",
     "muse-glimmer-30b": "Meta Superintelligence Lab",
     "qwen-image-2.1": "Qwen (Alibaba Cloud)",
+    "qwen-image-2.1-turbo-uncensored": "Qwen (Alibaba Cloud)",
     "minimax-m3.1-flash": "MiniMax",
     "glm-5.3-flash": "Z.ai",
     "deepseek-v4.1-flash": "DeepSeek",

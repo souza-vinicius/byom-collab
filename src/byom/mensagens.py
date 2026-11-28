@@ -164,8 +164,8 @@ USAR_PAR_GPU_MODELO = "Usar este modelo nesta GPU"
 
 PROMPT_IMAGEM = "Descreva a imagem que você quer gerar:"
 SELECAO_TAMANHO_IMAGEM = "Escolha o tamanho da imagem:"
-PASSOS_IMAGEM = "Passos (padrão 25):"
-GUIDANCE_IMAGEM = "Guidance (padrão 1.0):"
+PASSOS_IMAGEM = "Passos:"
+GUIDANCE_IMAGEM = "Guidance:"
 PROMPT_AUDIO = "Digite o texto que será falado:"
 SELECAO_VOZ_AUDIO = "Escolha a voz:"
 SELECAO_IDIOMA_AUDIO = "Escolha o idioma:"
@@ -335,6 +335,7 @@ FAMILIAS_MODELOS: dict[str, str] = {
     "gemma-4": "Gemma 4",
     "muse-glimmer-30b": "Muse Glimmer 30B",
     "qwen-image-2.1": "Qwen-Image-2.1",
+    "qwen-image-2.1-turbo-uncensored": "Qwen-Image-2.1 Turbo Uncensored",
 }
 
 MODELOS_COM_VISAO: frozenset[str] = frozenset(
@@ -363,6 +364,8 @@ ROTULOS_VARIANTES: dict[tuple[str, str], str] = {
     ("muse-glimmer-30b", "q6"): "6 bits (GGUF)",
     ("qwen-image-2.1", "q4km"): "4 bits (GGUF)",
     ("qwen-image-2.1", "fp8-int8"): "8 bits (FP8)",
+    ("qwen-image-2.1-turbo-uncensored", "q4k"): "4 bits (AD-Q4_K)",
+    ("qwen-image-2.1-turbo-uncensored", "q8"): "8 bits (Q8_0)",
     # Packs `.strata` do engine Strata: o número do pack diz o tamanho, não o
     # número de bits; o KV é de 8 bits nos três. O rótulo longo (com o card de
     # destino) fica no catálogo, onde há espaço.
@@ -417,6 +420,12 @@ DESCRICOES_PERFIS: dict[str, str] = {
     ),
     "qwen-image-2.1-fp8": ("Geração de imagens em 8 bits (FP8/INT8) para GPUs com 24 GiB ou mais."),
     "qwen-image-2.1-q4km": ("Geração de imagens compacta (4 bits) compatível com T4 ou L4."),
+    "qwen-image-2.1-turbo-uncensored-q4k": (
+        "Pipeline Turbo completo (encoder + denoiser) em 4 bits; cabe na T4."
+    ),
+    "qwen-image-2.1-turbo-uncensored-q8": (
+        "Pipeline Turbo completo em 8 bits; requer L4 (24 GiB)."
+    ),
     "qwen3.8-27b-256k": ("Contexto completo de 256K para GPU A100 de 80 GiB (memória estendida)."),
     "qwen3.8-27b-32k": ("Perfil com contexto de 32K para GPU A100 padrão (40 GiB) ou L4."),
     "qwen3.8-27b-q3-gguf": ("Variante GGUF de 3 bits para L4; alternativa leve ao perfil AWQ."),
@@ -483,6 +492,16 @@ MOTIVOS_CONTEXTO_PERFIS: dict[str, str] = {
     "qwen-image-2.1-fp8": (
         "Modelo de difusão para geração de imagens; não utiliza janela de contexto de texto."
     ),
+    "qwen-image-2.1-turbo-uncensored-q4k": (
+        "9,47 GiB de pesos (AD-Q4_K do encoder 4,92 + AD-Q4_K do denoiser 3,91 + "
+        "VAE 0,63) + 1,08 de visão + 2 de runtime = 12,55, mais 1,0 de folga = 13,55 "
+        "<= 15 GiB utilizáveis da T4."
+    ),
+    "qwen-image-2.1-turbo-uncensored-q8": (
+        "15,81 GiB de pesos (Q8_0 do encoder 8,11 + Q8_0 do denoiser 7,07 + VAE 0,63) "
+        "+ 1,08 de visão + 2 de runtime = 18,89, mais 1,2 de folga = 20,09 <= 24 GiB da "
+        "L4; a T4 (15 GiB utilizáveis) não comporta."
+    ),
 }
 
 NOTAS_MODELOS: dict[str, tuple[str, ...]] = {
@@ -500,6 +519,13 @@ NOTAS_MODELOS: dict[str, tuple[str, ...]] = {
     "qwen-image-2.1": (
         "Modelo de difusão atendido em POST /v1/images/generations (não usa /v1/chat/completions).",
         "Padrão da API: 25 passos de geração e guidance 1,0.",
+    ),
+    "qwen-image-2.1-turbo-uncensored": (
+        "Encoder abliterado (direção de recusa projetada fora, Apache-2.0) com o "
+        "denoiser Turbo inalterado.",
+        "Schedule fixo: 8 passos, CFG 1,0, euler e 9 sigmas injetadas como "
+        "sample_params.custom_sigmas.",
+        "Encoder Qwen3-VL GGUF comum; o mmproj F16 é o projetor de visão usado só na edição.",
     ),
 }
 
