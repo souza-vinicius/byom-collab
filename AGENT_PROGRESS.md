@@ -41,7 +41,7 @@ Regras de ouro: zero regressões; escopo controlado (ideias novas só no BACKLOG
 - [x] F4.1 Testes de flags e comandos. Novos casos para `setup --model-id`, `chat -m`, `up --force/--opencode-config/--dsh-config` e comparação de hardware.
 - [x] F4.2 Estados Colab com mocks. `_wait_ready` coberto nos estados ready, daemon morto, silêncio do daemon, desconexão e erro de cota; nenhum teste usa sessão real.
 - [x] F4.3 Formatação e encerramento. Cobertos Ctrl+C no chat, EOF no prompt, mensagem de cancelamento, `NO_COLOR`, `_orphan_line` e restauração de harness.
-- [x] F4.4 Suíte verde e determinística: 606 testes em ~19 s com `BYOM_COLAB_BIN` removido; ruff limpo.
+- [x] F4.4 Suíte verde e determinística: 607 testes em ~19 s com `BYOM_COLAB_BIN` removido; ruff limpo.
 
 ## Fase 5 — Documentação e Backlog Estratégico
 
@@ -51,9 +51,9 @@ Regras de ouro: zero regressões; escopo controlado (ideias novas só no BACKLOG
 
 ## Fase 6 — Revisão Final (QA) e Entrega
 
-- [ ] F6.1 Diff review: código morto, imports não usados, logs de debug, vazamento de credenciais/tokens.
-- [ ] F6.2 Linter, suíte completa, probe de VRAM e validação OKF reexecutados no estado final.
-- [ ] F6.3 Resumo Executivo preenchido abaixo.
+- [x] F6.1 Diff review. `git diff --check` limpo; dois revisores independentes (código e docs) não encontraram regressões, código morto, imports não usados, debug ou vazamento de token/nonce. Única observação acionável (EOF dentro dos handlers de erro da TUI) corrigida e testada.
+- [x] F6.2 Validação final no estado final: ruff limpo, 607 testes passam sem `BYOM_COLAB_BIN`, `scripts/probe_revisao.py` exit 0, validador OKF exit 0, `git diff --check` limpo.
+- [x] F6.3 Resumo Executivo preenchido abaixo.
 
 ## Registro de ciclos
 
@@ -65,7 +65,22 @@ Regras de ouro: zero regressões; escopo controlado (ideias novas só no BACKLOG
 | 3 | F2.3, F3.1–F3.4 | `llm_chat.py`, `tui.py`, `mensagens.py`, `cli.py`, 6 testes novos | ruff limpo; 599 testes passam |
 | 4 | F4.1–F4.4 | 7 testes novos de flags/estados/formatação | ruff limpo; 606 testes passam |
 | 5 | F5.1–F5.3 | README, 6 docs OKF, BACKLOG, log | OKF/Ruff/Pytest verdes; 606 testes passam |
+| 6 | F6.1–F6.3 | Revisão independente + fix de EOF em handlers | ruff limpo; 607 testes passam; probe e OKF verdes |
 
 ## Resumo Executivo
 
-A preencher na Fase 6.
+Auditoria concluída em 6 ciclos de execução (limite de segurança 25). Nenhum comando, flag, argumento, fluxo do Colab ou interação de chat existente foi removido: `init`, `profiles`, `gpus`, `models`, `configure`, `up` (`--force`, `--opencode-config`, `--dsh-config`), `status`, `down`, `setup` (`--url`, `--model`, `--model-id`, `--api-key`), `chat` (`--system/-s`, `--no-history/--no-log/-n`, `--continue/-c`, `--model/-m`), `uninstall` (`--yes/-y`), `--tui`/`--no-tui` e o daemon oculto seguem disponíveis. Snapshots da CLI continuam verdes.
+
+**Fase 1.** Baseline medido (583 testes, ruff/probe/OKF limpos) e mapa completo dos fluxos; três auditorias read-only consolidaram os gargalos em `AGENT_PROGRESS.md`.
+
+**Fase 2.** `up` passou a anunciar cinco etapas; `init` explica a falha real da CLI do Colab; timeout do worker traz o último estado; `up` verifica as portas 4000 e 4001 antes de alocar e devolve o harness se falhar após sincronizá-lo; `down` devolve o harness mesmo sem confirmação; GPU passa a ser comparada sem diferenciar maiúsculas e rejeita valor vazio. Ctrl+C no chat virou cancelamento limpo; EOF no menu e dentro de painéis de erro encerra sem traceback.
+
+**Fase 3.** Mensagens de ajuda, banner e erros mais diretos, com orientação de correção; questionary respeita `NO_COLOR` e o console é recriado se a variável mudar após a importação; layout responsivo existente preservado. Nenhum renderizador novo foi criado: streaming e spinner já pertencem ao `llm`/TUI e mudá-los seria nova funcionalidade.
+
+**Fase 4.** 24 testes unitários novos, todos com mocks, cobrindo flags, estados do Colab (ready, daemon morto, silêncio, desconexão, cota), cancelamento do chat, EOF, `NO_COLOR`, portas e formatação de órfãs. Nenhum teste depende de sessão real do Colab.
+
+**Fase 5.** README revisado (pré-requisitos, exemplos, referência de flags, erros com ação, 25 perfis e runtime `strata`); seis documentos OKF sincronizados e validados; `BACKLOG.md` com 12 ideias estruturadas, nenhuma implementada.
+
+**Fase 6.** Diff revisado por duas frentes independentes e verificado localmente; um achado de EOF em handlers foi corrigido. Estado final: 607 testes, ruff limpo, probe de VRAM exit 0, validador OKF exit 0, árvore limpa com quatro commits locais na `main` (sem push ou PR).
+
+Princípios que mudaram decisões: `sequence-verifiable-units` (lint+testes após cada bloco e commit atômico), `laziness-protocol` (etapas numeradas em vez de novo spinner; nenhuma camada extra), `test-behavior-not-implementation` (testes assertam saída observável e `ChatResult`, não detalhes internos), `prove-it-works` (executei ruff, pytest, probe e OKF, além das duas revisões), `experience-first` (erros acionáveis, Ctrl+C/EOF limpos, `NO_COLOR`) e `never-block-on-the-human` (execução contínua conforme autorização).

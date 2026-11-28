@@ -3243,7 +3243,11 @@ def mostrar_menu(cli: Any) -> None:
                 exc.acao,
                 detalhes_tecnicos=exc.detalhes_tecnicos,
             )
-            _aguardar_enter(console)
+            try:
+                _aguardar_enter(console)
+            except KeyboardInterrupt:
+                console.print(_erro("cancelado"), style="yellow")
+                break
             proxima_acao = None
         except Exception as exc:  # noqa: BLE001 - nunca falhar em silêncio
             erros_consecutivos += 1
@@ -3263,6 +3267,10 @@ def mostrar_menu(cli: Any) -> None:
                     style="red",
                 )
                 break
-            _aguardar_enter(console)
+            try:
+                _aguardar_enter(console)
+            except KeyboardInterrupt:
+                console.print(_erro("cancelado"), style="yellow")
+                break
         finally:
             console.show_cursor()

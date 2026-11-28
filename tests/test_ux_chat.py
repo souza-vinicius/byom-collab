@@ -73,3 +73,32 @@ def test_menu_recria_console_quando_no_color_muda_apos_import(monkeypatch):
     tui.mostrar_menu(cli)
 
     assert tui.console.no_color is True
+
+
+def test_eof_dentro_do_painel_de_erro_encerra_o_menu(monkeypatch):
+    import questionary
+
+    rec = tui.criar_console(width=100, record=True)
+    monkeypatch.setattr(tui, "console", rec)
+
+    class Pergunta:
+        def ask(self):
+            return "init"
+
+    monkeypatch.setattr(questionary, "select", lambda *args, **kwargs: Pergunta())
+
+    def falhar(*args, **kwargs):
+        raise tui._ErroEtapa("falha de teste", "causa de teste", "ação de teste")
+
+    monkeypatch.setattr(tui, "_despachar_acao", falhar)
+    monkeypatch.setattr(
+        tui,
+        "_aguardar_enter",
+        lambda con: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+
+    tui.mostrar_menu(cli)
+
+    saida = rec.export_text()
+    assert "falha de teste" in saida
+    assert "Operação cancelada pelo usuário" in saida
