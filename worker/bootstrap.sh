@@ -134,6 +134,12 @@ if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   dump_log "$LOGS/gateway.log"
   exit 1
 fi
+if [ ! -s "$BYOM_DIR/vllm.pid" ] || ! kill -0 "$(cat "$BYOM_DIR/vllm.pid")" 2>/dev/null; then
+  log "error: runtime $RUNTIME exited during startup"
+  dump_log "$SERVER_LOG"
+  dump_log "$LOGS/gateway.log"
+  exit 1
+fi
 
 log "$RUNTIME and gateway started; logs are in $LOGS"
 log "ready"
