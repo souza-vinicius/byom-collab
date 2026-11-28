@@ -122,7 +122,7 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 - [x] R3.2 Ajuda e mensagens de erro existentes permanecem intactas (snapshots da CLI continuam verdes).
 - [x] R3.3 `rich_markup_mode="rich"` e exemplos em 9 textos de `help=`; tags não vazam na saída.
 - [x] R3.4 `byom status` mostra Colab → GPU → Byom → Chat/WebUI → encerramento, modelo, URL do Byom e URL padrão do WebUI, sem cor e legível em pipe.
-- [ ] R3.5 Markdown formatado nas respostas do LLM: não implementado — `llm chat` transmite direto ao TTY; capturar quebraria interatividade. Registrado no BACKLOG #14.
+- [x] R3.5 Markdown formatado nas respostas do LLM: **não implementado** — `llm chat` transmite direto ao TTY; capturar o stream quebraria interatividade, histórico e Ctrl+C. Decisão registrada no BACKLOG #14; o restante da padronização Rich (help, cores e painéis existentes da TUI) foi preservado.
 
 ## Fase 4 — Testes unitários
 
@@ -137,9 +137,9 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 
 ## Fase 6 — Revisão final
 
-- [ ] R6.1 Revisão independente (código/testes/docs) com verificação própria de cada achado.
-- [ ] R6.2 Quatro gates reexecutados no estado final + `git diff --check`.
-- [ ] R6.3 Resumo Executivo da rodada 2 preenchido.
+- [x] R6.1 Dois revisores independentes read-only analisaram os dois primeiros commits; verifiquei cada achado com sonda: (1) `DATA_DIR`/`WEBUI_SECRET_KEY`/`WEBUI_URL` aceitavam override e quebravam o isolamento — corrigido com `ISOLATION_KEYS` e teste; (2) `DEFAULT_MODELS` é `ConfigVar` e o valor do banco vencia o ambiente — corrigido com `ENABLE_PERSISTENT_CONFIG=false` e documentado, incluindo o limite de escolha manual no chat.
+- [x] R6.2 Quatro gates no estado final: 634 testes (sem `BYOM_COLAB_BIN`), ruff limpo, probe de VRAM exit 0 (27 perfis, 0 não cabem), OKF exit 0; `git diff --check` limpo; nenhum `TODO`/`breakpoint`/debug no diff de `src/`.
+- [x] R6.3 Resumo Executivo preenchido abaixo.
 
 ## Registro de ciclos (rodada 2)
 
@@ -150,3 +150,19 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 | 2 | R5.1–R5.2 | README, docs/webui.md, index, log e BACKLOG #13 | OKF válido; 634 testes |
 | 3 | R2.5 | `ENABLE_PERSISTENT_CONFIG=false` + teste/docs | 634 testes, ruff/OKF verdes |
 | 4 | R3.3–R3.4, R4.3 | help rico com exemplos e `status` com mapa de estágios | 634 testes; tags Rich não vazam |
+| 5 | R6.1 | revisores independentes + 2 correções verificadas | isolamento forçado; persistência de config desligada |
+| 6 | R6.2–R6.3 | gates finais e resumo | 634 testes, ruff/probe/OKF verdes, diff limpo |
+
+## Resumo Executivo (missão de evolução contínua — Open WebUI)
+
+**Fase 1.** Baseline medido na branch `feat/auditoria-cli-byom` (634 testes, ruff/probe/OKF verdes) e fluxo mapeado: `byom web` já conectava o frontend ao proxy, mas sem modelo padrão e sobrescrevendo variáveis do usuário. Checklist das 6 fases criado neste arquivo.
+
+**Fase 2.** `DEFAULT_MODELS` passou a vir de `config.served_model_name` (o id publicado por `/v1/models`, inclusive no runtime `tts`). `build_env` preenche só o que falta; `ISOLATION_KEYS` (`DATA_DIR`, `WEBUI_SECRET_KEY`, `WEBUI_URL`) continua obrigatoriamente sob controle do byom. `ENABLE_PERSISTENT_CONFIG=false` impede que um valor salvo antes no `webui.db` vença o ambiente na próxima inicialização. A CLI mostra o modelo padrão e as variáveis preservadas.
+
+**Fase 3.** `rich_markup_mode="rich"` e exemplos em 9 textos de `help=`; `byom status` mostra o mapa Colab → GPU → Byom → Chat/WebUI → encerramento, modelo, URL do Byom e URL padrão do WebUI, tudo em texto simples legível com `NO_COLOR`. Markdown nas respostas do LLM ficou de fora de propósito (BACKLOG #14): o `llm chat` transmite ao TTY e capturar o stream quebraria interatividade.
+
+**Fase 4.** 6 casos novos/motificados em `tests/test_webui.py` e asserções no snapshot de `status`: modelo padrão, override preservado (inclusive a recusa de override nas variáveis de isolamento), persistência desligada e saída da CLI. Todos mockados; nenhum teste inicia Colab ou Open WebUI.
+
+**Fase 5.** README, `docs/webui.md` (com fontes oficiais datadas de 2026-11-28), `docs/index.md`, `docs/log.md` e `BACKLOG.md` (#13 `OPENAI_API_CONFIGS`, #14 Markdown no chat) atualizados; OKF válido.
+
+**Fase 6.** Dois revisores independentes; dois achados verificados por sonda e corrigidos (isolamento e persistência de `DEFAULT_MODELS`). Estado final: 634 testes, ruff limpo, 27 perfis com `fits`, probe e OKF exit 0, `git diff --check` limpo. Commits locais na branch do PR #19; push/merge dependem de pedido explícito.
