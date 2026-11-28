@@ -51,6 +51,9 @@ and check `gateway.log` in the same directory.
 
 ## Symptom map
 
+In the CLI, `byom up` classifies allocation, timeout, and SSH errors and prints
+`What to do:` directly below `Failed:`.
+
 | Symptom | Cause | Action |
 | :--- | :--- | :--- |
 | `server exited unexpectedly`, no cause | The tmux session died with its only process and the bootstrap did not surface the log | On current code the bootstrap prints `--- tail of ...` first; read that block. If it is absent, the bundle predates the fix; rerun `byom up` with the current code. |
@@ -61,6 +64,8 @@ and check `gateway.log` in the same directory.
 | `Worker unavailable` and `Gateway is inaccessible through the tunnel` during `up` | Normal transient while the daemon opens the tunnel | Wait; `up` keeps polling. If it lasts, check the tunnel state in `byom status`. |
 | `Colab CLI could not list sessions` with `Last CLI output` | Authentication failure, network error, or a CLI error unrelated to login | For login text, run `colab sessions`; otherwise fix the reported CLI error and run `byom init` again |
 | `colab new` fails with `Service Unavailable` at `/tun/m/assign` | Temporary Colab allocation service unavailability or GPU capacity shortage. The CLI already retries 502/503/504 for about three minutes before giving up | This is not a compute-unit balance problem. Wait a few minutes and retry, or select another GPU. `byom status` confirms the account balance with `colab usage` |
+| `Allocation refused (precondition failed)` | Active Colab session limit or temporary capacity/usage limit (HTTP 412) | Stop other Colab sessions or wait a few minutes before retrying `byom up` |
+| `Backend rejected accelerator` | Account lacks quota or entitlement for the requested GPU (HTTP 400) | Choose another GPU in `config.toml` or via `Selecionar GPU` in the TUI |
 | `a porta 4000 do proxy já está em uso` or `a porta 4001 do túnel já está em uso` | A local process holds a port needed by the daemon | Stop that process or run `byom down` before allocating a GPU; `up` now checks both ports before allocation |
 | `Worker did not become ready within ... (last state: ...)` | Model load failed, tunnel dropped, or the GPU quota ran out | Use the reported last state as the lead, run `byom status`, then read the VM logs with the command above |
 

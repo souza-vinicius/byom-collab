@@ -87,3 +87,9 @@ Formato: `Impacto` é Alto/Médio/Baixo para quem usa a CLI; `Esforço` é P (ho
 - **Problema:** `byom chat` delega ao `llm chat`, que transmite a resposta direto para o TTY. A CLI não controla o stream, então não aplica Markdown (tabelas, blocos de código) nem estilos semânticos consistentes.
 - **Impacto:** Médio. **Esforço:** G.
 - **Critérios de aceite:** capturar o stream sem perder interatividade (stdin/TTY, Ctrl+C, histórico), aplicar `rich.markdown.Markdown` respeitando `NO_COLOR` e largura, preservar saída em pipe byte a byte, e cobrir com testes de snapshot sem sessão real.
+
+## 15. Verificação ativa de prontidão da API Byom antes de abrir o Open WebUI
+
+- **Problema:** `byom web` exibe as URLs e inicia o Open WebUI mesmo quando o proxy local (`127.0.0.1:4000/v1`) ainda não está respondendo, fazendo o usuário abrir o frontend com a lista de modelos vazia.
+- **Impacto:** Médio. **Esforço:** P.
+- **Critérios de aceite:** sondar `GET /__byom/status` ou `GET /v1/models` com timeout curto antes do spawn do Open WebUI; se offline, exibir aviso claro sugerindo `byom up` sem impedir o uso com provedor externo quando variáveis `OPENAI_API_BASE_URLS` estiverem sobrescritas; cobrir com testes unitários mockados em `tests/test_webui.py`.

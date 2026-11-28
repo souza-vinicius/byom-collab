@@ -153,15 +153,19 @@ nenhuma configuração global do Open WebUI.
   ambiente (variáveis já exportadas vencem), e `DEFAULT_MODELS` pré-seleciona o
   modelo ativo (`config.served_model_name`, o mesmo id de `/v1/models`).
   Variáveis já definidas no ambiente são **preservadas** — por exemplo,
-  `OPENAI_API_BASE_URLS` e `OPENAI_API_KEYS` apontam para outro provedor se você
-  as exportar antes de `byom web`. O comando mostra o modelo padrão e a lista de
-  variáveis preservadas. Com `ENABLE_PERSISTENT_CONFIG=false`, um URL salvo antes
-  no `webui.db` não volta a valer na reinicialização — mudanças feitas no painel
-  admin duram apenas até o próximo `byom web`.
+  `OPENAI_API_BASE_URLS` e `OPENAI_API_KEYS` (ou as versões singulares
+  `OPENAI_API_BASE_URL` e `OPENAI_API_KEY`, propagadas automaticamente quando
+  as plurais não estão exportadas) apontam para outro provedor se você as
+  exportar antes de `byom web`. O comando confirma o vínculo automático
+  (`Vínculo:`), mostra o modelo padrão e a lista de variáveis preservadas. Com
+  `ENABLE_PERSISTENT_CONFIG=false`, um URL salvo antes no `webui.db` não volta
+  a valer na reinicialização — mudanças feitas no painel admin duram apenas até
+  o próximo `byom web`.
 * **Primeira execução**: baixa o Open WebUI 0.13.5 e o Python 3.12 pelo `uv`
   (o pacote exige `<3.13`). As execuções seguintes reutilizam o cache.
 * **Opções**: `--port` / `-p` muda a porta (padrão 8080); `--no-browser` não abre
-  o navegador. `Ctrl+C` encerra o frontend.
+  o navegador. `Ctrl+C` encerra o frontend de forma limpa (código 130) e falhas
+  exibem código de saída e ação corretiva.
 * **Limite de runtime**: o byom serve um perfil por sessão. A lista de modelos
   do Open WebUI reflete o runtime ativo. Modelos de imagem recusam chat; a
   geração de imagem do Open WebUI exige um modelo de chat e uma conexão de
@@ -498,13 +502,16 @@ Qwen-Image), ambos validados pelo gateway na inicialização.
 
 ### Erros comuns e o que fazer
 
-`byom up` anuncia cinco etapas (`[1/5]` a `[5/5]`) e, se o worker não ficar
-pronto, a mensagem de timeout inclui o último estado observado.
+`byom up` anuncia cinco etapas (`[1/5]` a `[5/5]`), exibe `What to do:` com a
+ação recomendada em falhas de alocação, túnel, SSH ou timeout e, em `Ctrl+C`,
+informa o encerramento da sessão alocada.
 
 | Mensagem | Causa provável | Ação |
 | :--- | :--- | :--- |
 | `Colab CLI could not list sessions` | CLI do Colab não autenticada, rede indisponível ou erro próprio da CLI | Leia `Last CLI output`; para login, rode `colab sessions`; para outros erros, corrija a CLI e rode `byom init` |
 | `colab new` falha com `Service Unavailable` em `/tun/m/assign` | Indisponibilidade temporária do serviço de alocação do Colab ou falta de capacidade da GPU; a CLI já repete 502/503/504 por cerca de três minutos | Não é falta de unidades de computação. Tente novamente em alguns minutos ou escolha outra GPU |
+| `Allocation refused (precondition failed)` | Limite de sessões ativas ou limite temporário de uso no Colab (HTTP 412) | Encerre outras sessões no Colab ou aguarde alguns minutos antes de rodar `byom up` |
+| `Backend rejected accelerator` | Conta sem cota ou elegibilidade para a GPU solicitada (HTTP 400) | Escolha outra GPU em `config.toml` ou pela TUI (`Selecionar GPU`) e tente novamente |
 | `a porta 4000 do proxy já está em uso` / `a porta 4001 do túnel já está em uso` | Outro processo ocupa uma porta local necessária | Encerre esse processo ou rode `byom down` antes de alocar a GPU |
 | `Worker did not become ready within ... (last state: ...)` | Modelo não carregou, túnel caiu ou cota acabou | Use o último estado como pista, rode `byom status` e leia os logs da VM (ver `docs/troubleshooting.md`) |
 | `Harness config restored` | Uma falha de `up`/`down` devolveu o modelo padrão ao OpenCode/dsh | Nenhuma ação: o cliente volta a apontar para o modelo anterior |
