@@ -50,6 +50,8 @@ uv run byom uninstall                              # remove apenas o diretório 
   opcionalmente, aplicar a conexão automaticamente (sem alterar arquivos de
   harness durante o `Iniciar sessão no Colab`). A opção **Conversar com o
   modelo (llm chat)** (atalho `c`) abre o chat no terminal com a sessão ativa.
+  **Gerar imagem** (atalho `i`) e **Gerar áudio** (atalho `a`) abrem as telas de
+  mídia descritas abaixo.
 * Na TUI, a opção **Selecionar GPU** (atalho `2`) tem um caminho único:
   **GPU -> modelo**. A tela mostra a GPU, a VRAM e quantos modelos têm receita
   de execução nela; ao escolher a GPU, a tabela lista os modelos que cabem com a
@@ -60,7 +62,17 @@ uv run byom uninstall                              # remove apenas o diretório 
   confirmação**: voltar, trocar de GPU ou sair pelo menu não deixa resíduo, e um
   par GPU + modelo que não cabe é recusado sem escrever nada. Os perfis TOML
   continuam existindo como receitas internas de runtime, mas não são escolhidos
-  na TUI.
+  na TUI. Depois de gravar o par, o menu seguinte oferece apenas **Iniciar
+  sessão no Colab** ou **Voltar ao menu principal**; o harness saiu desse fluxo.
+* **Gerar imagem** (atalho `i`) pede prompt, tamanho, passos e guidance, chama
+  `POST /v1/images/generations` pelo proxy e salva o PNG em
+  `byom_home()/images`. Exige uma sessão com runtime `image`.
+* **Gerar áudio** (atalho `a`) pede texto, voz e idioma, chama
+  `POST /v1/audio/speech` e salva o áudio em `byom_home()/audio`. Exige uma
+  sessão com runtime `tts`.
+* Depois de um `up` bem-sucedido, o menu de próximo passo inclui **Gerar
+  imagem** no runtime de imagem e **Gerar áudio** no runtime TTS. Runtimes de
+  chat continuam oferecendo o **Conversar com o modelo**.
 * `byom profiles` lista as receitas internas de runtime; `byom gpus` exibe o
   catálogo estático de GPUs. Encerre a sessão antes de trocar de modelo.
 * `byom models --gpu L4` lista as variantes que cabem nessa GPU com o contexto

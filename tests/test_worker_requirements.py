@@ -75,6 +75,13 @@ def test_bootstrap_instala_o_lock_com_require_hashes():
     assert "WARNING" in texto and "requirements.txt" in texto
 
 
+def test_bootstrap_monta_o_argv_com_o_python_do_venv():
+    """O TTS procura vllm_omni no sys.path; o python3 do sistema não o tem."""
+    texto = (WORKER / "bootstrap.sh").read_text(encoding="utf-8")
+
+    assert '"$VENV/bin/python" "$BYOM_DIR/build_vllm_command.py"' in texto
+
+
 def test_bootstrap_falha_quando_o_runtime_morre_no_startup():
     """O gateway mantém a sessão tmux viva; o PID do runtime também precisa ser checado."""
     texto = (WORKER / "bootstrap.sh").read_text(encoding="utf-8")

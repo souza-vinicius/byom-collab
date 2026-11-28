@@ -71,7 +71,7 @@ fi
 python3 "$BYOM_DIR/prepare_runtime.py" "$SESSION_FILE"
 
 # 5. server command -------------------------------------------------------
-python3 "$BYOM_DIR/build_vllm_command.py" "$SESSION_FILE" > "$BYOM_DIR/runtime.cmd"
+"$VENV/bin/python" "$BYOM_DIR/build_vllm_command.py" "$SESSION_FILE" > "$BYOM_DIR/runtime.cmd"
 log "Wrote server command to $BYOM_DIR/runtime.cmd"
 
 # 6. tmux processes -------------------------------------------------------
