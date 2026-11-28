@@ -6,6 +6,7 @@ sem reescrever a CLI tradicional nem alterar o catálogo.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
 import os
@@ -15,9 +16,11 @@ import time
 import traceback
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import typer
 from rich import box
 from rich.console import Console
@@ -173,6 +176,7 @@ class EstadoLocal:
     sessao_criada_em: str
     erro_estado: str = ""
     erro_config: str = ""
+    runtime: str = ""
 
 
 def ler_estado_local() -> EstadoLocal:
@@ -242,6 +246,7 @@ def ler_estado_local() -> EstadoLocal:
         sessao_criada_em=sessao_criada_em,
         erro_estado=erro_estado,
         erro_config=erro_config,
+        runtime=cfg.runtime,
     )
 
 
@@ -557,7 +562,18 @@ def _perguntar_proximo_passo(
 
     escolhas: list[Any] = []
     if acao_id == "up":
-        escolhas.append(questionary.Choice(title=M.ACOES["chat"][0], value="acao:chat"))
+        if estado.runtime == "image":
+            escolhas.append(
+                questionary.Choice(title=M.ACOES["imagem"][0], value="acao:imagem")
+            )
+        elif estado.runtime == "tts":
+            escolhas.append(
+                questionary.Choice(title=M.ACOES["audio"][0], value="acao:audio")
+            )
+        else:
+            escolhas.append(
+                questionary.Choice(title=M.ACOES["chat"][0], value="acao:chat")
+            )
     for valor, rotulo in extras:
         escolhas.append(questionary.Choice(title=rotulo, value=valor))
 
@@ -1921,11 +1937,7 @@ def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) ->
         if not ok:
             _aguardar_enter(con)
             continue
-        return _perguntar_proximo_passo(
-            "configure",
-            ler_estado_local(),
-            extras=[("acao:harness", M.ACOES["harness"][0])],
-        )
+        return _perguntar_proximo_passo("configure", ler_estado_local())
 
 
 def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
@@ -2589,11 +2601,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
         kwargs_cli={"force": force} if force else {},
         detalhes_tecnicos=buf.getvalue(),
     )
-    return _perguntar_proximo_passo(
-        "up",
-        ler_estado_local(),
-        extras=[("acao:harness", M.ACOES["harness"][0])],
-    )
+    return _perguntar_proximo_passo("up", ler_estado_local())
 
 
 def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
@@ -2680,6 +2688,290 @@ def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
             detalhes_tecnicos=resultado_chat.stderr,
         )
     return _perguntar_proximo_passo("chat", ler_estado_local())
+
+
+def _media_output_dir(name: str) -> Path:
+    target = config.byom_home() / name
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _media_filename(prefix: str, suffix: str) -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+    return f"{prefix}-{stamp}{suffix}"
+
+
+def _erro_da_resposta(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text[:500]
+    if isinstance(payload, dict):
+        erro = payload.get("error")
+        if isinstance(erro, dict) and erro.get("message"):
+            return str(erro["message"])
+    return str(payload)[:500]
+
+
+def _executar_imagem(con: Console, cli: Any, estado: EstadoLocal) -> str:
+    import questionary
+
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["imagem"][0])
+    if not estado.sessao_ativa:
+        _painel(
+            con,
+            "Nenhuma sessão ativa",
+            "A geração de imagem usa a API do modelo no Colab, que só existe "
+            "com a sessão iniciada.",
+            estilo="yellow",
+        )
+        if _confirmar(
+            "up", pergunta="Deseja ir para 'Iniciar sessão no Colab' agora?", default=False
+        ):
+            return "acao:up"
+        return "menu"
+
+    try:
+        cfg = _carregar_config(con)
+    except _ErroEtapa as exc:
+        _renderizar_erro(
+            con, exc.falha, exc.causa, exc.acao, detalhes_tecnicos=exc.detalhes_tecnicos
+        )
+        return "menu"
+    if cfg.runtime != "image":
+        _renderizar_erro(
+            con,
+            "O runtime atual não é de imagem.",
+            f"Runtime atual: {cfg.runtime}. A tela de imagem exige um perfil Qwen-Image.",
+            "Use 'Selecionar GPU' e escolha um modelo Qwen-Image.",
+        )
+        if _confirmar(
+            "configure", pergunta="Ir para 'Selecionar GPU' agora?", default=True
+        ):
+            return "acao:selecionar_gpu"
+        return "menu"
+
+    prompt = questionary.text(M.PROMPT_IMAGEM).ask()
+    if prompt is None or not prompt.strip():
+        return "menu"
+    tamanho = questionary.select(
+        M.SELECAO_TAMANHO_IMAGEM,
+        choices=[
+            questionary.Choice(title=rotulo, value=valor)
+            for valor, rotulo in M.TAMANHOS_IMAGEM
+        ],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_DETALHE,
+    ).ask()
+    if tamanho is None:
+        return "menu"
+    passos_raw = questionary.text(M.PASSOS_IMAGEM, default="25").ask()
+    guidance_raw = questionary.text(M.GUIDANCE_IMAGEM, default="1.0").ask()
+    try:
+        passos = max(1, int(passos_raw or "25"))
+    except ValueError:
+        passos = 25
+    try:
+        guidance = float(guidance_raw or "1.0")
+    except ValueError:
+        guidance = 1.0
+
+    url = f"http://127.0.0.1:{cfg.proxy_port}/v1/images/generations"
+    body = {
+        "prompt": prompt.strip(),
+        "size": tamanho,
+        "steps": passos,
+        "guidance": guidance,
+        "response_format": "b64_json",
+    }
+    try:
+        with con.status(M.GERANDO_IMAGEM, spinner="dots"):
+            resposta = httpx.post(
+                url,
+                json=body,
+                timeout=httpx.Timeout(connect=5.0, read=600.0, write=30.0, pool=5.0),
+            )
+    except httpx.HTTPError as exc:
+        _renderizar_erro(
+            con,
+            "Não foi possível falar com o proxy local.",
+            str(exc),
+            "Confira `byom status` e se a sessão continua ativa.",
+            detalhes_tecnicos=str(exc),
+        )
+        return "menu"
+    if resposta.status_code != 200:
+        _renderizar_erro(
+            con,
+            f"A geração falhou (HTTP {resposta.status_code}).",
+            _erro_da_resposta(resposta),
+            "Confira o log do runtime e tente novamente.",
+        )
+        return "menu"
+    try:
+        payload = resposta.json()
+        raw = base64.b64decode(payload["data"][0]["b64_json"])
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        _renderizar_erro(
+            con,
+            "A resposta não trouxe uma imagem em b64_json.",
+            str(exc),
+            "Verifique o endpoint /v1/images/generations no worker.",
+        )
+        return "menu"
+    try:
+        destino = _media_output_dir("images") / _media_filename("imagem", ".png")
+        destino.write_bytes(raw)
+    except (OSError, config.ConfigError) as exc:
+        _renderizar_erro(
+            con,
+            "Não foi possível salvar a imagem.",
+            str(exc),
+            "Confira as permissões do diretório do byom.",
+        )
+        return "menu"
+
+    sim = obter_simbolos(con)
+    _painel(
+        con,
+        "Imagem gerada",
+        f"{sim.ok} Arquivo: {M.encurtar_caminho(destino)}\n"
+        f"Prompt: {prompt.strip()}\n"
+        f"Tamanho: {tamanho}  |  passos: {passos}  |  guidance: {guidance:g}\n"
+        f"Bytes: {len(raw)}",
+        estilo="green",
+    )
+    return _perguntar_proximo_passo("imagem", ler_estado_local())
+
+
+def _executar_audio(con: Console, cli: Any, estado: EstadoLocal) -> str:
+    import questionary
+
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["audio"][0])
+    if not estado.sessao_ativa:
+        _painel(
+            con,
+            "Nenhuma sessão ativa",
+            "A geração de áudio usa a API do modelo no Colab, que só existe "
+            "com a sessão iniciada.",
+            estilo="yellow",
+        )
+        if _confirmar(
+            "up", pergunta="Deseja ir para 'Iniciar sessão no Colab' agora?", default=False
+        ):
+            return "acao:up"
+        return "menu"
+
+    try:
+        cfg = _carregar_config(con)
+    except _ErroEtapa as exc:
+        _renderizar_erro(
+            con, exc.falha, exc.causa, exc.acao, detalhes_tecnicos=exc.detalhes_tecnicos
+        )
+        return "menu"
+    if cfg.runtime != "tts":
+        _renderizar_erro(
+            con,
+            "O runtime atual não é de áudio.",
+            f"Runtime atual: {cfg.runtime}. A tela de áudio exige um perfil Qwen3-TTS.",
+            "Use 'Selecionar GPU' e escolha um modelo Qwen3-TTS.",
+        )
+        if _confirmar(
+            "configure", pergunta="Ir para 'Selecionar GPU' agora?", default=True
+        ):
+            return "acao:selecionar_gpu"
+        return "menu"
+
+    texto = questionary.text(M.PROMPT_AUDIO).ask()
+    if texto is None or not texto.strip():
+        return "menu"
+    voz = questionary.select(
+        M.SELECAO_VOZ_AUDIO,
+        choices=[questionary.Choice(title=voz, value=voz) for voz in M.VOZES_AUDIO],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_DETALHE,
+    ).ask()
+    if voz is None:
+        return "menu"
+    idioma = questionary.select(
+        M.SELECAO_IDIOMA_AUDIO,
+        choices=[
+            questionary.Choice(title=idioma, value=idioma) for idioma in M.IDIOMAS_AUDIO
+        ],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_DETALHE,
+    ).ask()
+    if idioma is None:
+        return "menu"
+
+    url = f"http://127.0.0.1:{cfg.proxy_port}/v1/audio/speech"
+    body = {"input": texto.strip(), "voice": voz, "language": idioma}
+    try:
+        with con.status(M.GERANDO_AUDIO, spinner="dots"):
+            resposta = httpx.post(
+                url,
+                json=body,
+                timeout=httpx.Timeout(connect=5.0, read=600.0, write=30.0, pool=5.0),
+            )
+    except httpx.HTTPError as exc:
+        _renderizar_erro(
+            con,
+            "Não foi possível falar com o proxy local.",
+            str(exc),
+            "Confira `byom status` e se a sessão continua ativa.",
+            detalhes_tecnicos=str(exc),
+        )
+        return "menu"
+    content_type = resposta.headers.get("content-type", "")
+    if resposta.status_code != 200 or "application/json" in content_type:
+        _renderizar_erro(
+            con,
+            f"A geração falhou (HTTP {resposta.status_code}).",
+            _erro_da_resposta(resposta),
+            "Confira o log do runtime e tente novamente.",
+        )
+        return "menu"
+    if not resposta.content:
+        _renderizar_erro(
+            con,
+            "A resposta veio vazia.",
+            "O endpoint não devolveu áudio.",
+            "Confira o endpoint /v1/audio/speech no worker.",
+        )
+        return "menu"
+    suffix = (
+        ".wav"
+        if "wav" in content_type
+        else ".mp3"
+        if "mpeg" in content_type or "mp3" in content_type
+        else ".bin"
+    )
+    try:
+        destino = _media_output_dir("audio") / _media_filename("audio", suffix)
+        destino.write_bytes(resposta.content)
+    except (OSError, config.ConfigError) as exc:
+        _renderizar_erro(
+            con,
+            "Não foi possível salvar o áudio.",
+            str(exc),
+            "Confira as permissões do diretório do byom.",
+        )
+        return "menu"
+
+    sim = obter_simbolos(con)
+    _painel(
+        con,
+        "Áudio gerado",
+        f"{sim.ok} Arquivo: {M.encurtar_caminho(destino)}\n"
+        f"Texto: {texto.strip()}\n"
+        f"Voz: {voz}  |  idioma: {idioma}\n"
+        f"Bytes: {len(resposta.content)}",
+        estilo="green",
+    )
+    return _perguntar_proximo_passo("audio", ler_estado_local())
 
 
 def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
@@ -2820,8 +3112,12 @@ def _rotulo_item_menu(
         aviso = " [requer encerrar sessão]"
     elif acao_id == "up" and not estado.ambiente_configurado:
         aviso = " [requer preparar ambiente]"
-    elif acao_id in ("down", "chat") and not estado.sessao_ativa:
+    elif acao_id in ("down", "chat", "imagem", "audio") and not estado.sessao_ativa:
         aviso = " [sem sessão ativa]"
+    elif acao_id == "imagem" and estado.runtime != "image":
+        aviso = " [requer runtime de imagem]"
+    elif acao_id == "audio" and estado.runtime != "tts":
+        aviso = " [requer runtime TTS]"
 
     return f"{prefixo}{aviso}"
 
@@ -2870,6 +3166,10 @@ def _despachar_acao(con: Console, cli: Any, acao_id: str) -> str:
         return _executar_gpu_modelo(con, estado)
     if acao_id == "configure":
         return _executar_gpu_modelo(con, estado)
+    if acao_id == "imagem":
+        return _executar_imagem(con, cli, estado)
+    if acao_id == "audio":
+        return _executar_audio(con, cli, estado)
     if acao_id == "harness":
         return _executar_harness(con, cli, estado)
     if acao_id == "up":

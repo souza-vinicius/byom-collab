@@ -27,7 +27,7 @@ DICA_PAGINACAO = (
     "role com ↑↓/PageUp/PageDown ou use os números para abrir um item."
 )
 
-TECLAS_MENU = "↑↓ navegar • atalhos 1–5 / c / h / q • Enter selecionar • Ctrl+C sair"
+TECLAS_MENU = "↑↓ navegar • atalhos 1–5 / c / i / a / h / q • Enter selecionar • Ctrl+C sair"
 TECLAS_SELECAO = "↑↓ navegar • digite para filtrar • Enter selecionar • Ctrl+C voltar"
 TECLAS_LISTA = "↑↓ navegar • Enter abrir • Ctrl+C voltar"
 TECLAS_CONFIRMACAO = "↑↓ ou s/n escolher • Enter confirmar • Ctrl+C cancelar"
@@ -43,6 +43,8 @@ MENU_INICIAL: tuple[str, ...] = (
     "status",
     "down",
     "chat",
+    "imagem",
+    "audio",
     "harness",
 )
 
@@ -53,6 +55,8 @@ ATALHOS_MENU: dict[str, str] = {
     "status": "4",
     "down": "5",
     "chat": "c",
+    "imagem": "i",
+    "audio": "a",
     "harness": "h",
 }
 
@@ -89,6 +93,14 @@ ACOES: dict[str, tuple[str, str]] = {
         "Conversar com o modelo (llm chat)",
         "Abre um chat no terminal com o modelo servido no Colab; histórico fica só no byom.",
     ),
+    "imagem": (
+        "Gerar imagem",
+        "Envia um prompt para o runtime de imagem e salva o PNG no diretório do byom.",
+    ),
+    "audio": (
+        "Gerar áudio",
+        "Envia um texto para o runtime TTS e salva o WAV no diretório do byom.",
+    ),
 }
 
 #: Listas objetivas do que cada ação com efeito colateral/custo executa (D4).
@@ -124,6 +136,14 @@ O_QUE_VAI_ACONTECER: dict[str, tuple[str, ...]] = {
         "Ajusta o chat para a API local atual (grava só dentro da pasta do byom).",
         "Abre a conversa no terminal; digite `exit` ou `quit` para voltar ao menu.",
     ),
+    "imagem": (
+        "Envia o prompt para POST /v1/images/generations no proxy local.",
+        "Salva o PNG em byom_home()/images; requer uma sessão com runtime de imagem.",
+    ),
+    "audio": (
+        "Envia o texto para POST /v1/audio/speech no proxy local.",
+        "Salva o WAV em byom_home()/audio; requer uma sessão com runtime TTS.",
+    ),
 }
 
 CONFIRMACOES = {
@@ -141,6 +161,48 @@ SELECAO_PROXIMO = "O que fazer agora?"
 
 SELECAO_MODELO_GPU = "Escolha o modelo desta GPU para gravar em config.toml:"
 USAR_PAR_GPU_MODELO = "Usar este modelo nesta GPU"
+
+PROMPT_IMAGEM = "Descreva a imagem que você quer gerar:"
+SELECAO_TAMANHO_IMAGEM = "Escolha o tamanho da imagem:"
+PASSOS_IMAGEM = "Passos (padrão 25):"
+GUIDANCE_IMAGEM = "Guidance (padrão 1.0):"
+PROMPT_AUDIO = "Digite o texto que será falado:"
+SELECAO_VOZ_AUDIO = "Escolha a voz:"
+SELECAO_IDIOMA_AUDIO = "Escolha o idioma:"
+GERANDO_IMAGEM = "Gerando imagem..."
+GERANDO_AUDIO = "Gerando áudio..."
+
+TAMANHOS_IMAGEM: tuple[tuple[str, str], ...] = (
+    ("1024x1024", "1024x1024 (quadrada)"),
+    ("1152x864", "1152x864 (4:3)"),
+    ("864x1152", "864x1152 (3:4)"),
+    ("512x512", "512x512 (teste rápido)"),
+)
+
+VOZES_AUDIO: tuple[str, ...] = (
+    "vivian",
+    "serena",
+    "uncle_fu",
+    "dylan",
+    "eric",
+    "ryan",
+    "aiden",
+    "ono_anna",
+    "sohee",
+)
+
+IDIOMAS_AUDIO: tuple[str, ...] = (
+    "Portuguese",
+    "English",
+    "Chinese",
+    "Japanese",
+    "Korean",
+    "German",
+    "French",
+    "Russian",
+    "Spanish",
+    "Italian",
+)
 
 HARNESS_OPCOES: tuple[tuple[str, str, str, bool], ...] = (
     (
@@ -181,6 +243,8 @@ PROXIMO_ACAO: dict[str, tuple[str, str]] = {
     "status": ("down", "Encerrar sessão no Colab"),
     "down": ("selecionar_gpu", "Selecionar GPU"),
     "chat": ("down", "Encerrar sessão no Colab"),
+    "imagem": ("imagem", "Gerar outra imagem"),
+    "audio": ("audio", "Gerar outro áudio"),
 }
 
 #: Mantido para compatibilidade e cobertura textual.

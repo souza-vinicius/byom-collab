@@ -79,7 +79,10 @@ deliberadamente conservador; o `gpu_memory_utilization` padrão da deploy config
 1. `bootstrap.sh` instala, para `runtime = "tts"`, o `vllm_spec` (`vllm==0.34.0`)
    **e** o `[worker].vllm_omni_spec` (`vllm-omni==0.34.0`); o wheel do
    vllm-omni não declara o vLLM como dependência, então os dois pins são
-   explícitos. O launcher é o `run_vllm.sh`, o mesmo do vLLM.
+   explícitos. O launcher é o `run_vllm.sh`, o mesmo do vLLM. O
+   `build_vllm_command.py` roda com `"$VENV/bin/python"`, e não com o `python3`
+   do sistema, porque `_tts_deploy_config` procura `vllm_omni` no `sys.path` do
+   venv onde ele foi instalado.
 2. `prepare_runtime.py` não baixa pesos: como no vLLM, o `vllm serve` puxa o
    checkpoint do HF na primeira subida.
 3. `build_tts_args()` monta:

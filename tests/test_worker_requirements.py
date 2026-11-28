@@ -75,6 +75,13 @@ def test_bootstrap_instala_o_lock_com_require_hashes():
     assert "WARNING" in texto and "requirements.txt" in texto
 
 
+def test_bootstrap_monta_o_argv_com_o_python_do_venv():
+    """O TTS procura vllm_omni no sys.path; o python3 do sistema não o tem."""
+    texto = (WORKER / "bootstrap.sh").read_text(encoding="utf-8")
+
+    assert '"$VENV/bin/python" "$BYOM_DIR/build_vllm_command.py"' in texto
+
+
 def test_lock_vai_no_bundle_do_worker():
     assert "requirements.lock" in cli.WORKER_FILES
     assert "requirements.txt" in cli.WORKER_FILES

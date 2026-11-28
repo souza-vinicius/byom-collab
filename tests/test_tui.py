@@ -601,7 +601,7 @@ def test_proximo_passo_apos_up_oferece_chat_primeiro(monkeypatch):
     assert primeira.value == "acao:chat"
 
 
-def test_renderizar_menu_estatico_tem_oito_itens_sem_ajuda():
+def test_renderizar_menu_estatico_tem_nove_itens_sem_ajuda():
     estado = tui.EstadoLocal(
         config_existe=True,
         chave_ssh_existe=True,
@@ -618,16 +618,31 @@ def test_renderizar_menu_estatico_tem_oito_itens_sem_ajuda():
     tui.renderizar_menu_estatico(rec, estado)
     texto = rec.export_text(clear=False)
     itens = [
-        linha.strip() for linha in texto.splitlines() if re.match(r"^[1-5chq]\.\s", linha.strip())
+        linha.strip()
+        for linha in texto.splitlines()
+        if re.match(r"^[1-5ciahq]\.\s", linha.strip())
     ]
 
-    assert [item.split()[0] for item in itens] == ["1.", "2.", "3.", "4.", "5.", "c.", "h.", "q."]
+    assert [item.split()[0] for item in itens] == [
+        "1.",
+        "2.",
+        "3.",
+        "4.",
+        "5.",
+        "c.",
+        "i.",
+        "a.",
+        "h.",
+        "q.",
+    ]
     assert itens[0].startswith("1. Preparar ambiente local")
     assert "★ recomendado" in itens[0]
     assert itens[1] == "2. Selecionar GPU"
     assert "[requer preparar ambiente]" in itens[2]
-    assert itens[6] == "h. Configurar harness (OpenCode / dsh)"
-    assert itens[7] == "q. Sair"
+    assert itens[6].startswith("i. Gerar imagem")
+    assert itens[7].startswith("a. Gerar áudio")
+    assert itens[8] == "h. Configurar harness (OpenCode / dsh)"
+    assert itens[9] == "q. Sair"
     assert "Ajuda" not in texto
 
 
@@ -664,12 +679,14 @@ def test_aplicar_par_gpu_modelo_recusa_par_que_nao_cabe_e_nao_grava(isolated_hom
     assert "não cabe em T4" in rec.export_text(clear=False)
 
 
-def test_menu_fecha_com_chat_e_harness_antes_de_sair():
-    assert M.MENU_INICIAL[-2:] == ("chat", "harness")
-    assert len(M.MENU_INICIAL) == 7
+def test_menu_fecha_com_audio_e_harness_antes_de_sair():
+    assert M.MENU_INICIAL[-2:] == ("audio", "harness")
+    assert len(M.MENU_INICIAL) == 9
     assert set(M.ATALHOS_MENU) == set(M.MENU_INICIAL)
     assert len(set(M.ATALHOS_MENU.values())) == len(M.ATALHOS_MENU)
     assert "chat" in M.ACOES and "chat" in M.PROXIMO_ACAO
+    assert "imagem" in M.ACOES and "imagem" in M.PROXIMO_ACAO
+    assert "audio" in M.ACOES and "audio" in M.PROXIMO_ACAO
 
 
 def test_chat_tui_sem_sessao_oferece_iniciar_sessao(monkeypatch, isolated_home):
