@@ -17,7 +17,13 @@ fork PrismML `prism-b12128-d7b2896` (build 12128, commit `d7b289683`) lista
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
+import os
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -512,3 +518,330 @@ def test_sonda_de_argv_imprime_o_argv_dos_tres_perfis_do_bonsai():
     assert "--min-p 0.0" in resultado.stdout
     assert "--spec-type draft-mtp" in resultado.stdout
     assert "--model-draft" not in resultado.stdout
+
+
+# ---------------------------------------------------------------------------
+# Runtime `strata`: run config JSON + argv do control
+# ---------------------------------------------------------------------------
+#
+# O engine `strata-inkling` não recebe a linha de comando: o control lê um JSON
+# (`--config`) com `exe`, `args`, `cwd`, `model_name`, `log` e `arch`, e sobe o
+# binário com `--serve`. Os valores de `--kv` foram conferidos no `--help` do
+# binário 0.1.70 (`auto|fp16|fp8|k8v8|k8v4`, e `int8` é recusado com
+# "unknown --kv value 'int8'").
+
+
+def _strata_files(tmp_path: Path) -> dict[str, Path]:
+    control = tmp_path / "strata-control"
+    (control / "python" / "bin").mkdir(parents=True)
+    server = control / "python" / "bin" / "python3"
+    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    engine_dir = tmp_path / "strata-engine"
+    engine_dir.mkdir()
+    engine = engine_dir / "strata-inkling"
+    engine.write_text("#!/bin/sh\n", encoding="utf-8")
+    pack = (
+        tmp_path
+        / "models"
+        / "strata-engine"
+        / "Inkling-2-Mini-Strata"
+        / "Inkling-2-Mini-SQ-10.strata"
+    )
+    pack.parent.mkdir(parents=True)
+    pack.write_bytes(b"pack")
+    manifest = tmp_path / "runtime_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "runtime": "strata",
+                "server": str(server),
+                "control_root": str(control),
+                "engine": str(engine),
+                "pack": str(pack),
+                "sums_verified": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "control": control,
+        "server": server,
+        "engine": engine,
+        "pack": pack,
+        "manifest": manifest,
+    }
+
+
+def _strata_cfg(**worker: object) -> dict:
+    return {
+        "runtime": "strata",
+        "model": "inkling-2-mini-strata",
+        "served_model_name": "inkling-2-mini-strata",
+        "max_model_len": 32768,
+        "vllm_port": 8000,
+        "kv_cache_dtype": "fp8",
+        "worker": dict(worker),
+    }
+
+
+def test_strata_argv_e_run_config_com_pack_contexto_e_kv(build_module, tmp_path):
+    arquivos = _strata_files(tmp_path)
+    build_module.MANIFEST = str(arquivos["manifest"])
+
+    argv = build_module.build_strata_args(_strata_cfg())
+
+    assert argv == [
+        str(arquivos["server"]),
+        "-m",
+        "serve.server",
+        "--engine",
+        "strata",
+        "--config",
+        str(tmp_path / "strata-inkling-2-mini-strata.json"),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--offline",
+    ]
+
+    config_json = json.loads((tmp_path / "strata-inkling-2-mini-strata.json").read_text())
+    assert config_json["exe"] == str(arquivos["engine"])
+    assert config_json["cwd"] == str(arquivos["engine"].parent)
+    assert config_json["arch"] == "inkling2_loop"
+    assert config_json["model_name"] == "inkling-2-mini-strata"
+    assert config_json["log"].endswith("strata-engine.log")
+    # O tokenizer é gerado pelo próprio servidor a partir do manifest do pack;
+    # o diretório é explícito porque o default do control não existe no tarball.
+    assert config_json["tokenizer"].endswith("strata-tokenizer")
+    assert config_json["args"] == [
+        "--native",
+        str(arquivos["pack"]),
+        "--max-context",
+        "32768",
+        "--kv",
+        "fp8",
+        "--parallel",
+        "1",
+    ]
+
+
+def test_strata_respeita_kv_fp16_do_perfil_e_run_config_extra(build_module, tmp_path):
+    arquivos = _strata_files(tmp_path)
+    build_module.MANIFEST = str(arquivos["manifest"])
+    cfg = _strata_cfg(run_config_extra=["--vram-reserve-mib", "512"])
+    cfg["kv_cache_dtype"] = "fp16"
+
+    build_module.build_strata_args(cfg)
+
+    escrito = json.loads((tmp_path / "strata-inkling-2-mini-strata.json").read_text())
+    assert _valor(escrito["args"], "--kv") == "fp16"
+    assert escrito["args"][-2:] == ["--vram-reserve-mib", "512"]
+
+
+def test_strata_recusa_kv_que_o_engine_nao_aceita(build_module, tmp_path):
+    """`--kv int8` é do launcher, não do engine: o binário 0.1.70 o recusa."""
+    arquivos = _strata_files(tmp_path)
+    build_module.MANIFEST = str(arquivos["manifest"])
+    cfg = _strata_cfg()
+    cfg["kv_cache_dtype"] = "int8"
+
+    with pytest.raises(ValueError) as excinfo:
+        build_module.build_strata_args(cfg)
+
+    assert "int8" in str(excinfo.value)
+    assert "--kv" in str(excinfo.value)
+
+
+def test_strata_sem_manifest_completo_recusa_sem_adivinhar(build_module, tmp_path):
+    arquivos = _strata_files(tmp_path)
+    build_module.MANIFEST = str(arquivos["manifest"])
+    arquivos["pack"].unlink()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        build_module.build_strata_args(_strata_cfg())
+
+    assert "pack não existe" in str(excinfo.value)
+
+
+def test_comando_strata_comeca_com_cd_no_control(tmp_path):
+    """`-m serve.server` acha `serve`/`strata_control` pelo cwd: o cd vem antes."""
+    arquivos = _strata_files(tmp_path)
+    session = tmp_path / "session.json"
+    session.write_text(json.dumps(_strata_cfg()), encoding="utf-8")
+
+    resultado = subprocess.run(
+        [sys.executable, str(WORKER_DIR / "build_vllm_command.py"), str(session)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "BYOM_RUNTIME_MANIFEST": str(arquivos["manifest"])},
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    linhas = resultado.stdout.splitlines()
+    assert linhas[0] == f"cd {arquivos['control']}"
+    assert linhas[1].startswith("exec ")
+    argv = shlex.split(linhas[1].removeprefix("exec "))
+    assert argv[0] == str(arquivos["server"])
+    assert argv[argv.index("--config") + 1].endswith(".json")
+
+
+# ---------------------------------------------------------------------------
+# `prepare_runtime`: sha256 do pack contra o SHA256SUMS.txt do repo
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def strata_prepare(prepare_module, monkeypatch, tmp_path):
+    """`prepare_runtime` sem rede: download, tree do HF e driver falsos."""
+    import hashlib
+
+    byom = tmp_path / "byom"
+    monkeypatch.setattr(prepare_module, "BYOM_DIR", byom)
+    monkeypatch.setattr(prepare_module, "MODEL_DIR", byom / "models")
+    monkeypatch.setattr(prepare_module, "MANIFEST", byom / "runtime_manifest.json")
+    monkeypatch.setattr(prepare_module, "check_nvidia_driver", lambda minimum="": "575.51")
+
+    pack_nome = "Inkling-2-Mini-SQ-10.strata"
+    conteudos = {
+        "https://example.invalid/control.tar.gz": b"controle",
+        "https://example.invalid/engine.tar.gz": b"engine",
+        "https://example.invalid/SHA256SUMS.txt": b"",
+    }
+    estado = {"sums": "", "tree_oid": "", "sha_a_baixar": ""}
+
+    def _download(url: str, destino: Path, sha: str | None = None) -> Path:
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        if url.endswith("SHA256SUMS.txt"):
+            corpo = estado["sums"].encode()
+        elif url.endswith(pack_nome):
+            corpo = b"pack real"
+        elif url.endswith("tokenizer.json"):
+            corpo = b'{"model": {"type": "BPE"}}'
+        elif url.endswith("chat_template.jinja"):
+            corpo = b"{{ messages }}"
+        else:
+            corpo = conteudos[url]
+        if sha is not None and hashlib.sha256(corpo).hexdigest() != sha:
+            raise ValueError(f"sha256 mismatch for {url}")
+        destino.write_bytes(corpo)
+        return destino
+
+    def _extract(archive: Path, dest: Path) -> None:
+        dest.mkdir(parents=True, exist_ok=True)
+        if archive.name == "strata-control.tar.gz":
+            (dest / "python" / "bin").mkdir(parents=True)
+            (dest / "python" / "bin" / "python3").write_text("#!/bin/sh\n")
+        else:
+            (dest / "strata-inkling").write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(prepare_module, "download", _download)
+    monkeypatch.setattr(prepare_module, "extract", _extract)
+    monkeypatch.setattr(
+        prepare_module,
+        "hf_entries",
+        lambda repo: [
+            {
+                "path": pack_nome,
+                "size": 10_471_526_400,
+                "sha256": estado["tree_oid"],
+            },
+            {"path": "tokenizer.json", "size": 26_178_678, "sha256": ""},
+            {"path": "chat_template.jinja", "size": 6868, "sha256": ""},
+        ],
+    )
+    estado["pack"] = pack_nome
+    return prepare_module, estado
+
+
+def _strata_session(tmp_path: Path, **worker: object) -> Path:
+    dados = {
+        "runtime": "strata",
+        "worker": {
+            "control_url": "https://example.invalid/control.tar.gz",
+            "control_sha256": hashlib.sha256(b"controle").hexdigest(),
+            "engine_url": "https://example.invalid/engine.tar.gz",
+            "engine_sha256": hashlib.sha256(b"engine").hexdigest(),
+            "model_repo": "strata-engine/Inkling-2-Mini-Strata",
+            "pack_pattern": "Inkling-2-Mini-SQ-10.strata",
+            **worker,
+        },
+    }
+    caminho = tmp_path / "session.json"
+    caminho.write_text(json.dumps(dados), encoding="utf-8")
+    return caminho
+
+
+def test_prepare_strata_confere_o_pack_contra_o_sums_do_repo(strata_prepare, tmp_path):
+    prepare, estado = strata_prepare
+    digest = hashlib.sha256(b"pack real").hexdigest()
+    estado["sums"] = f"{digest}  {estado['pack']}\n"
+
+    manifest = prepare.prepare(_strata_session(tmp_path))
+
+    assert manifest["runtime"] == "strata"
+    assert manifest["sums_verified"] is True
+    assert manifest["pack_sha256"] == digest
+    assert manifest["pack_sha256_source"] == "SHA256SUMS.txt"
+    assert manifest["engine"].endswith("strata-inkling")
+    assert manifest["server"].endswith("python/bin/python3")
+    assert Path(manifest["pack"]).read_bytes() == b"pack real"
+    # O tokenizer é gerado pelo servidor a partir destes dois arquivos, que
+    # precisam estar AO LADO do pack: sem eles o `vocab.json` nunca nasce (o
+    # CPython embarcado do control não lê zstd e o pack não traz a seção).
+    assert manifest["tokenizer_files"] == ["tokenizer.json", "chat_template.jinja"]
+    ao_lado = Path(manifest["pack"]).parent
+    assert (ao_lado / "tokenizer.json").is_file()
+    assert (ao_lado / "chat_template.jinja").is_file()
+
+
+def test_prepare_strata_usa_o_lfs_oid_quando_o_sums_nao_lista_o_pack(strata_prepare, tmp_path):
+    """O SQv2-20 da revisão atual não está no sums; o `lfs.oid` é o sha256."""
+    prepare, estado = strata_prepare
+    estado["sums"] = "0" * 64 + "  Inkling-2-Mini-SQ-15.strata\n"
+    estado["tree_oid"] = hashlib.sha256(b"pack real").hexdigest()
+
+    manifest = prepare.prepare(_strata_session(tmp_path))
+
+    assert manifest["pack_sha256_source"] == "hf-tree-lfs"
+    assert manifest["pack_sha256"] == estado["tree_oid"]
+
+
+def test_prepare_strata_recusa_pack_com_digest_divergente(strata_prepare, tmp_path):
+    prepare, estado = strata_prepare
+    estado["sums"] = "1" * 64 + "  " + estado["pack"] + "\n"
+
+    with pytest.raises(ValueError) as excinfo:
+        prepare.prepare(_strata_session(tmp_path))
+
+    assert "sha256 mismatch" in str(excinfo.value)
+
+
+def test_prepare_strata_exige_os_dois_componentes_fixados(strata_prepare, tmp_path):
+    prepare, estado = strata_prepare
+    estado["sums"] = hashlib.sha256(b"pack real").hexdigest() + "  " + estado["pack"] + "\n"
+    session = _strata_session(tmp_path)
+    dados = json.loads(session.read_text(encoding="utf-8"))
+    del dados["worker"]["engine_sha256"]
+    session.write_text(json.dumps(dados), encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        prepare.prepare(session)
+
+    assert "engine_sha256" in str(excinfo.value)
+
+
+def test_driver_mais_antigo_que_o_minimo_falha_antes_do_download(prepare_module, monkeypatch):
+    monkeypatch.setattr(prepare_module, "nvidia_driver_version", lambda: "550.54.14")
+
+    with pytest.raises(ValueError) as excinfo:
+        prepare_module.check_nvidia_driver()
+
+    assert "575.51" in str(excinfo.value)
+
+
+def test_driver_igual_ou_mais_novo_passa(prepare_module, monkeypatch):
+    for versao in ("575.51", "575.51.03", "580.65.06"):
+        monkeypatch.setattr(prepare_module, "nvidia_driver_version", lambda v=versao: v)
+        assert prepare_module.check_nvidia_driver() == versao

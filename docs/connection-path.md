@@ -4,7 +4,7 @@ title: Connection Path: Local Proxy, SSH Tunnel and Control Sockets
 description: How a request reaches the Colab gateway through the local proxy and a single OpenSSH ControlMaster, why the command master and the tunnel use separate control sockets, and how the watchdog fits in.
 tags: [ssh, tunnel, proxy, controlmaster, colab-ssh, watchdog, nonce]
 status: stable
-generated: { by: hermes/deepseek-v4.1-flash, at: 2026-11-24T23:32:00Z }
+generated: { by: hermes/hy4-flash-free, at: 2026-11-28T03:50:00Z }
 sources:
   - id: tunnel
     resource: /src/byom/tunnel.py
@@ -94,7 +94,7 @@ Each session pins its host key in `known_hosts_<session>` on the first
 connection (`accept-new`) and requires the same key afterwards (`yes`). A
 changed key aborts with an explicit message instead of falling back to `no`,
 because the fallback would let a man-in-the-middle read prompts and the nonce.
-`byom down` removes the file with the rest of the session state.
+`byom down` removes the file when deallocation is confirmed; an unconfirmed shutdown keeps the state for a retry.
 
 ## The watchdog
 

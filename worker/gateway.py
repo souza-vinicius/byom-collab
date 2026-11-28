@@ -2,7 +2,8 @@
 """Worker gateway: the authoritative activity point for the session.
 
 Responsibilities:
-* Forward `/v1/chat/completions` and `/v1/models` to vLLM, with streaming.
+* Forward `/v1/chat/completions` and `/v1/models` to the runtime behind the
+  gateway (vLLM, llama-server or the Strata control), with streaming.
 * Inject the model's documented `reasoning_effort` when the client omits it;
   never invent a value for a model whose docs do not define one.
 * Apply the Gemma 4 thinking policy (explicit catalog key): `<|think|>` at the
@@ -25,6 +26,7 @@ import contextlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -57,12 +59,18 @@ MAX_CONCURRENT_JOBS_ENV = "BYOM_MAX_CONCURRENT_JOBS"
 REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
-RUNTIME_IDS = frozenset({"vllm", "llama-cpp", "image"})
+#: `strata` entra porque o control do engine serve a mesma API da OpenAI em
+#: `/v1/chat/completions` e `/v1/models`; a prontidão é a mesma poll de
+#: `/v1/models` que o vLLM e o llama-server usam. `tts` é o vLLM-Omni: a
+#: prontidão usa `GET /v1/audio/voices` e o trabalho vai para
+#: `POST /v1/audio/speech`.
+RUNTIME_IDS = frozenset({"vllm", "llama-cpp", "image", "strata", "tts"})
 
 THINKING_POLICY_FIELDS = frozenset(
     {"system_token", "thought_open", "thought_close", "strip_history_thought", "source"}
 )
-GENERATION_DEFAULT_FIELDS = frozenset({"steps", "guidance"})
+GENERATION_DEFAULT_FIELDS = frozenset({"steps", "guidance", "sample_method", "custom_sigmas"})
+GENERATION_REQUIRED_DEFAULT_FIELDS = frozenset({"steps", "guidance"})
 SD_EXTRA_TAG = "sd_cpp_extra_args"
 
 log = logging.getLogger("byom.gateway")
@@ -107,7 +115,7 @@ class GatewayConfig:
     #: Chave explícita do catálogo; None = sem transformação de prompt.
     thinking_policy: dict[str, Any] | None = None
     #: Padrões de geração do modelo de imagem, com nomes da documentação.
-    generation_defaults: dict[str, int | float] | None = None
+    generation_defaults: dict[str, int | float | str | list[float]] | None = None
     #: Papéis de imagem declarados no perfil (`repo::pattern`). Ausência de
     #: `vision` desabilita só a edição; a geração continua válida.
     image_roles: dict[str, str] | None = None
@@ -169,7 +177,7 @@ class GatewayConfig:
             defaults = self.generation_defaults
             if not isinstance(defaults, dict) or set(defaults) - GENERATION_DEFAULT_FIELDS:
                 raise ValueError(f"Invalid generation_defaults: {defaults!r}")
-            if set(defaults) != GENERATION_DEFAULT_FIELDS:
+            if not set(defaults) >= GENERATION_REQUIRED_DEFAULT_FIELDS:
                 raise ValueError("generation_defaults needs steps and guidance")
             steps = defaults["steps"]
             if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 1000:
@@ -181,6 +189,30 @@ class GatewayConfig:
                 or not 0 < guidance <= 1000
             ):
                 raise ValueError(f"Invalid generation_defaults.guidance: {guidance!r}")
+            if "sample_method" in defaults:
+                method = defaults["sample_method"]
+                if (
+                    not isinstance(method, str)
+                    or not method
+                    or method != method.strip()
+                    or any(char.isspace() for char in method)
+                ):
+                    raise ValueError(f"Invalid generation_defaults.sample_method: {method!r}")
+            if "custom_sigmas" in defaults:
+                sigmas = defaults["custom_sigmas"]
+                if (
+                    not isinstance(sigmas, list)
+                    or not 2 <= len(sigmas) <= 1001
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or (isinstance(value, float) and not math.isfinite(value))
+                        or value < 0
+                        for value in sigmas
+                    )
+                    or sigmas[-1] != 0.0
+                ):
+                    raise ValueError(f"Invalid generation_defaults.custom_sigmas: {sigmas!r}")
 
 
 @dataclass
@@ -315,8 +347,9 @@ class Gateway:
 
     # -- readiness and supervision ----------------------------------------
     async def poll_readiness(self) -> bool:
+        path = "/v1/audio/voices" if self.cfg.runtime == "tts" else "/v1/models"
         try:
-            response = await self.client().get("/v1/models")
+            response = await self.client().get(path)
             ready = response.status_code == 200
         except Exception as exc:
             # Diagnostics only: never log a prompt or a response body here.
@@ -586,13 +619,14 @@ def _apply_thinking_policy(body: bytes, policy: dict[str, Any] | None) -> bytes:
 
 
 def _inject_image_defaults(
-    body: bytes, defaults: dict[str, int | float] | None
+    body: bytes, defaults: dict[str, int | float | str | list[float]] | None
 ) -> bytes:
     """Map Unsloth's `steps`/`guidance` to sd-server's documented schema.
 
     sd-server documents `sd_cpp_extra_args` embedded in `prompt`; its native
     fields are `sample_params.sample_steps` and `sample_params.guidance.txt_cfg`.
-    Top-level `guidance` is NOT a documented sd-server field.
+    Top-level `guidance` is NOT a documented sd-server field. The Turbo
+    checkpoint adds `sample_params.sample_method` and `custom_sigmas`.
     """
     if not defaults:
         return body
@@ -614,13 +648,17 @@ def _inject_image_defaults(
     ):
         log.warning("Preserving image request with invalid client guidance=%r", guidance)
         return body
-    extra = {
-        "sample_params": {
-            "sample_steps": steps,
-            "guidance": {"txt_cfg": guidance},
-        }
+    sample_params: dict[str, Any] = {
+        "sample_steps": steps,
+        "guidance": {"txt_cfg": guidance},
     }
-    block = json.dumps(extra, separators=(",", ":"))
+    sample_method = defaults.get("sample_method")
+    if sample_method is not None:
+        sample_params["sample_method"] = sample_method
+    custom_sigmas = defaults.get("custom_sigmas")
+    if custom_sigmas is not None:
+        sample_params["custom_sigmas"] = list(custom_sigmas)
+    block = json.dumps({"sample_params": sample_params}, separators=(",", ":"))
     payload["prompt"] = f"{prompt} <{SD_EXTRA_TAG}>{block}</{SD_EXTRA_TAG}>"
     return json.dumps(payload).encode()
 
@@ -719,16 +757,34 @@ def create_app(
         reason = gateway.refuse_reason()
         if reason is not None:
             return JSONResponse(status_code=503, content={"error": {"message": reason}})
+        if cfg.runtime == "tts":
+            # O vLLM-Omni não publica /v1/models; o gateway anuncia o único
+            # checkpoint carregado para o frontend e para o /v1/models do proxy.
+            return {
+                "object": "list",
+                "data": [
+                    {
+                        "id": cfg.served_model_name,
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "byom",
+                    }
+                ],
+            }
         return await _forward_simple(gateway, request, "/v1/models")
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
-        if cfg.runtime == "image":
+        if cfg.runtime in ("image", "tts"):
+            endpoint = (
+                "/v1/images/generations" if cfg.runtime == "image" else "/v1/audio/speech"
+            )
+            kind = "Image" if cfg.runtime == "image" else "TTS"
             return JSONResponse(
                 status_code=501,
                 content={
                     "error": {
-                        "message": "Image model. Use POST /v1/images/generations; "
+                        "message": f"{kind} model. Use POST {endpoint}; "
                         "there is no /v1/chat/completions for this runtime."
                     }
                 },
@@ -784,6 +840,38 @@ def create_app(
                 },
             )
         return await _forward_image(gateway, request, "/v1/images/edits")
+
+    @app.post("/v1/audio/speech")
+    async def audio_speech(request: Request) -> Any:
+        """Qwen3-TTS via vLLM-Omni: fala, não conclusão de chat."""
+        if cfg.runtime != "tts":
+            return JSONResponse(
+                status_code=501,
+                content={"error": {"message": "Speech generation is unavailable in this runtime."}},
+            )
+        reason = gateway.refuse_reason()
+        if reason is not None:
+            return JSONResponse(status_code=503, content={"error": {"message": reason}})
+        body = await request.body()
+        job = await gateway.begin_job()
+        if job is None:
+            return JSONResponse(
+                status_code=503,
+                content={"error": {"message": gateway.refuse_reason() or "Request rejected"}},
+            )
+        task = asyncio.current_task()
+        if task is not None:
+            await gateway.attach_task(job, task)
+        return await _forward_stream(gateway, "/v1/audio/speech", body, job)
+
+    @app.get("/v1/audio/voices")
+    async def audio_voices(request: Request) -> Any:
+        if cfg.runtime != "tts":
+            return JSONResponse(
+                status_code=501,
+                content={"error": {"message": "Voice listing is unavailable in this runtime."}},
+            )
+        return await _forward_simple(gateway, request, "/v1/audio/voices")
 
     return app
 

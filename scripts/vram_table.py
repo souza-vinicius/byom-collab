@@ -41,7 +41,7 @@ def main() -> int:
         )
         kv_gib = (
             0.0
-            if profile.runtime == "image"
+            if not catalog.has_kv_cache(profile.runtime)
             else catalog.kv_cache_gib(
                 context,
                 entry,
@@ -56,6 +56,7 @@ def main() -> int:
                 context,
                 variant.memory_gib,
                 variant.vision_gib,
+                variant.overhead_gib,
                 kv_gib,
                 fit.required_gib,
                 kv_dtype,
@@ -68,19 +69,20 @@ def main() -> int:
         )
     header = (
         f"{'perfil':30s} {'gpu':8s} {'ctx':>7s} {'pesos':>6s} {'visao':>6s} "
-        f"{'kvGiB':>5s} {'req':>6s} {'dt':>4s} {'folga':>6s} {'sobra':>6s} "
-        f"fits origem draft"
+        f"{'pipe':>5s} {'kvGiB':>5s} {'req':>6s} {'dt':>4s} {'folga':>6s} "
+        f"{'sobra':>6s} fits origem draft"
     )
     print(header)
     for row in rows:
-        (profile_id, gpu_id, context, weights, vision, kv_gib, required, kv_dtype,
-         headroom, spare, fits, origin, drafter_gib) = row
+        (profile_id, gpu_id, context, weights, vision, overhead, kv_gib, required,
+         kv_dtype, headroom, spare, fits, origin, drafter_gib) = row
         print(
             f"{profile_id:30s} {gpu_id:8s} {context:7d} {weights:6.2f} {vision:6.2f} "
-            f"{kv_gib:5.2f} {required:6.2f} {kv_dtype or '-':>4s} {headroom:6.2f} "
-            f"{spare:6.2f} {'sim' if fits else 'NAO':4s} {origin} {drafter_gib:5.2f}"
+            f"{overhead:5.2f} {kv_gib:5.2f} {required:6.2f} {kv_dtype or '-':>4s} "
+            f"{headroom:6.2f} {spare:6.2f} {'sim' if fits else 'NAO':4s} {origin} "
+            f"{drafter_gib:5.2f}"
         )
-    print(f"\n{len(rows)} perfis; {sum(1 for row in rows if not row[10])} não cabem.")
+    print(f"\n{len(rows)} perfis; {sum(1 for row in rows if not row[11])} não cabem.")
     return 0
 
 

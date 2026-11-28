@@ -1,0 +1,89 @@
+name: build-sd-server
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag for the built sd-server asset"
+        required: true
+        default: "sd-server-unsloth-27b9ddc-cuda13"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: nvidia/cuda:13.0.0-devel-ubuntu24.04
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg unzip zip
+          mkdir -p /etc/apt/keyrings
+          curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            -o /tmp/nodesource-repo.gpg.key
+          gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key
+          rm /tmp/nodesource-repo.gpg.key
+          echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
+            > /etc/apt/sources.list.d/nodesource.list
+          apt-get update
+          apt-get install -y --no-install-recommends nodejs
+          npm install -g pnpm@10.15.1
+
+      - name: Clone stable-diffusion.cpp
+        run: |
+          git clone --recursive https://github.com/unslothai/stable-diffusion.cpp sd.cpp
+          cd sd.cpp
+          git checkout 27b9ddca07be0c25ace3d1a560bcbad281eb660d
+          git submodule update --init --recursive
+
+      - name: Build sd-server with CUDA
+        working-directory: sd.cpp
+        run: |
+          cmake . -B build \
+            -DSD_CUDA=ON \
+            -DSD_BUILD_SHARED_LIBS=ON \
+            -DGGML_NATIVE=OFF \
+            -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            "-DCMAKE_INSTALL_RPATH=\$ORIGIN" \
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;100;120" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j"$(nproc)"
+
+      - name: Package
+        run: |
+          mkdir -p out/sd-server
+          cp sd.cpp/build/bin/sd-server out/sd-server/
+          cp sd.cpp/build/bin/*.so* out/sd-server/
+          cp sd.cpp/LICENSE out/sd-server/stable-diffusion.cpp.txt
+          cp sd.cpp/thirdparty/cutlass/LICENSE.txt out/sd-server/cutlass.txt
+          (cd out && zip -r sd-server-linux-x86_64-cuda13.zip sd-server)
+          sha256sum out/sd-server-linux-x86_64-cuda13.zip \
+            | tee out/sd-server-linux-x86_64-cuda13.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd-server-linux-x86_64-cuda13
+          path: |
+            out/sd-server-linux-x86_64-cuda13.zip
+            out/sd-server-linux-x86_64-cuda13.sha256
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          body: |
+            sd-server build from unslothai/stable-diffusion.cpp commit
+            27b9ddca07be0c25ace3d1a560bcbad281eb660d, CUDA 13, Ubuntu 24.04,
+            sm_75/80/86/89/90/100/120.
+          files: |
+            out/sd-server-linux-x86_64-cuda13.zip
+            out/sd-server-linux-x86_64-cuda13.sha256

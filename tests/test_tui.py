@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -602,7 +601,7 @@ def test_proximo_passo_apos_up_oferece_chat_primeiro(monkeypatch):
     assert primeira.value == "acao:chat"
 
 
-def test_renderizar_menu_estatico_tem_oito_itens_sem_ajuda():
+def test_renderizar_menu_estatico_tem_nove_itens_sem_ajuda():
     estado = tui.EstadoLocal(
         config_existe=True,
         chave_ssh_existe=True,
@@ -619,41 +618,32 @@ def test_renderizar_menu_estatico_tem_oito_itens_sem_ajuda():
     tui.renderizar_menu_estatico(rec, estado)
     texto = rec.export_text(clear=False)
     itens = [
-        linha.strip() for linha in texto.splitlines() if re.match(r"^[1-5chq]\.\s", linha.strip())
+        linha.strip()
+        for linha in texto.splitlines()
+        if re.match(r"^[1-5ciahq]\.\s", linha.strip())
     ]
 
-    assert [item.split()[0] for item in itens] == ["1.", "2.", "3.", "4.", "5.", "c.", "h.", "q."]
+    assert [item.split()[0] for item in itens] == [
+        "1.",
+        "2.",
+        "3.",
+        "4.",
+        "5.",
+        "c.",
+        "i.",
+        "a.",
+        "h.",
+        "q.",
+    ]
     assert itens[0].startswith("1. Preparar ambiente local")
     assert "★ recomendado" in itens[0]
     assert itens[1] == "2. Selecionar GPU"
     assert "[requer preparar ambiente]" in itens[2]
-    assert itens[6] == "h. Configurar harness (OpenCode / dsh)"
-    assert itens[7] == "q. Sair"
+    assert itens[6].startswith("i. Gerar imagem")
+    assert itens[7].startswith("a. Gerar áudio")
+    assert itens[8] == "h. Configurar harness (OpenCode / dsh)"
+    assert itens[9] == "q. Sair"
     assert "Ajuda" not in texto
-
-
-def test_submenu_selecionar_gpu_oferece_perfil_gpu_e_voltar(monkeypatch):
-    import questionary
-
-    capturadas: list[Any] = []
-
-    class Pergunta:
-        def ask(self):
-            return "menu"
-
-    def fake_select(mensagem, *, choices, **kwargs):
-        capturadas.extend(choices)
-        return Pergunta()
-
-    monkeypatch.setattr(questionary, "select", fake_select)
-    rec = tui.criar_console(width=100, height=30, record=True)
-
-    assert tui._executar_selecionar_gpu(rec, tui.ler_estado_local()) == "menu"
-    assert [choice.title for choice in capturadas] == [
-        M.SUBMENU_PERFIL,
-        M.SUBMENU_GPU_MODELOS,
-        "Voltar ao menu principal",
-    ]
 
 
 def test_aplicar_par_gpu_modelo_fixa_gpu_escolhida_sobre_a_do_perfil(isolated_home):
@@ -689,12 +679,14 @@ def test_aplicar_par_gpu_modelo_recusa_par_que_nao_cabe_e_nao_grava(isolated_hom
     assert "não cabe em T4" in rec.export_text(clear=False)
 
 
-def test_menu_fecha_com_chat_e_harness_antes_de_sair():
-    assert M.MENU_INICIAL[-2:] == ("chat", "harness")
-    assert len(M.MENU_INICIAL) == 7
+def test_menu_fecha_com_audio_e_harness_antes_de_sair():
+    assert M.MENU_INICIAL[-2:] == ("audio", "harness")
+    assert len(M.MENU_INICIAL) == 9
     assert set(M.ATALHOS_MENU) == set(M.MENU_INICIAL)
     assert len(set(M.ATALHOS_MENU.values())) == len(M.ATALHOS_MENU)
     assert "chat" in M.ACOES and "chat" in M.PROXIMO_ACAO
+    assert "imagem" in M.ACOES and "imagem" in M.PROXIMO_ACAO
+    assert "audio" in M.ACOES and "audio" in M.PROXIMO_ACAO
 
 
 def test_chat_tui_sem_sessao_oferece_iniciar_sessao(monkeypatch, isolated_home):
@@ -774,6 +766,50 @@ def test_chat_tui_com_falha_real_mostra_stderr_nos_detalhes_tecnicos(monkeypatch
     assert "terminou com erro" in saida
     assert "Detalhes técnicos" in saida
     assert "Traceback: boom" in saida
+
+
+def test_up_tui_explica_indisponibilidade_do_colab_sem_culpar_a_cota(
+    monkeypatch, isolated_home
+):
+    """503 no assign não é falta de unidades de computação.
+
+    O `colab new` já repete o pedido por ~3 min e então imprime o traceback.
+    A TUI deve dizer que o serviço estava indisponível e mandar tentar de novo,
+    sem sugerir conferir a cota (que estava com saldo).
+    """
+    cfg = config.Config()
+    config.apply_profile(cfg, "gemma-4-12b-q4-gguf")
+    cfg.ssh_key_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.ssh_key_path.write_text("PRIVATE", encoding="utf-8")
+    config.save_config(cfg)
+
+    class FakeProc:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        if args and args[0] == "new":
+            raise colab.ColabCliError(
+                "`colab new -s byom-test --gpu L4` failed (exit code 1): "
+                "ColabRequestError: Failed to issue request POST "
+                "https://colab.research.google.com/tun/m/assign?nbh=x: Service Unavailable"
+            )
+        return FakeProc()
+
+    monkeypatch.setattr(colab, "run", fake_run)
+    monkeypatch.setattr(tui, "_confirmar", lambda *a, **kw: True)
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    with pytest.raises(tui._ErroEtapa) as exc:
+        tui._executar_up(rec, cli, tui.ler_estado_local())
+
+    erro = exc.value
+    assert "indispon" in erro.causa.lower()
+    assert "não é falta de unidades de computação" in erro.acao.lower()
+    assert "verifique suas unidades" not in erro.acao.lower()
+    assert "tente" in erro.acao.lower()
+    assert "Service Unavailable" in erro.detalhes_tecnicos
 
 
 def test_up_tui_recusa_quando_outro_up_esta_em_andamento(monkeypatch, isolated_home):

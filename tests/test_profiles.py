@@ -19,6 +19,7 @@ PROFILE_IDS = {
     "inkling-2-mini-q4-gguf",
     "inkling-2-mini-q8-gguf",
     "inkling-2-mini-ad-q6k",
+    "inkling-2-mini-ad-q6k-dspark",
     "inkling-2-mini-ad-q4k",
     "inkling-2-mini-ad-iq2xxs",
     "qwen3.8-27b-q3-gguf",
@@ -31,9 +32,26 @@ PROFILE_IDS = {
     "muse-glimmer-30b-q4-gguf",
     "qwen-image-2.1-q4km",
     "qwen-image-2.1-fp8",
+    "qwen-image-2.1-turbo-uncensored-q4k",
+    "qwen-image-2.1-turbo-uncensored-q8",
     "ternary-bonsai-25-27b-q2",
     "ternary-bonsai-25-27b-ptq1",
     "ternary-bonsai-25-27b-ptq1-mtp",
+    "inkling-2-mini-strata-sq10",
+    "inkling-2-mini-strata-sq15",
+    "inkling-2-mini-strata-sq20",
+    "qwen3-tts-0.6b-customvoice",
+    "qwen3-tts-1.7b-customvoice",
+}
+
+#: Perfis que não entram nos aliases do OpenCode: imagem e TTS não conversam.
+NON_CHAT_PROFILE_IDS = {
+    "qwen-image-2.1-q4km",
+    "qwen-image-2.1-fp8",
+    "qwen-image-2.1-turbo-uncensored-q4k",
+    "qwen-image-2.1-turbo-uncensored-q8",
+    "qwen3-tts-0.6b-customvoice",
+    "qwen3-tts-1.7b-customvoice",
 }
 
 
@@ -49,7 +67,7 @@ def test_templates_definem_os_dois_contextos_e_aliases_opencode():
     assert profiles["qwen3.8-27b-256k"].settings["gpu_high_mem"] is True
 
     aliases = opencode.profile_aliases_from_config()
-    assert set(aliases) == PROFILE_IDS
+    assert set(aliases) == PROFILE_IDS - NON_CHAT_PROFILE_IDS
     assert aliases["qwen3.8-27b-32k"]["id"] == "qwen3.8-27b"
     assert aliases["qwen3.8-27b-32k"]["limit"]["context"] == 32768
     assert aliases["qwen3.8-27b-256k"]["limit"]["context"] == 262144
@@ -146,6 +164,7 @@ def test_perfis_nao_repetem_reasoning_nem_steps():
         ("gemma-4-12b-q4-gguf", None, True, False),
         ("muse-glimmer-30b-q4-gguf", "high", False, False),
         ("qwen-image-2.1-q4km", None, False, True),
+        ("qwen-image-2.1-turbo-uncensored-q4k", None, False, True),
     ],
 )
 def test_payload_da_sessao_propagas_propriedades_do_modelo(
@@ -167,9 +186,8 @@ def test_payload_da_sessao_propagas_propriedades_do_modelo(
         assert payload["thinking_policy"]["system_token"] == "<|think|>"
         assert payload["thinking_policy"]["strip_history_thought"] is True
     if has_generation:
-        assert payload["generation_defaults"] == catalog.model_by_id(
-            "qwen-image-2.1"
-        ).generation_defaults
+        model_id, _variant_id = config.active_catalog_ref(cfg)
+        assert payload["generation_defaults"] == catalog.model_by_id(model_id).generation_defaults
         assert "steps" not in (payload["worker"] or {})
 
 
@@ -220,3 +238,185 @@ def test_perfis_atomicchat_nao_alteram_os_perfis_unsloth():
     assert unsloth.worker["model_repo"] == "unsloth/Inkling-2-Mini-GGUF"
     assert unsloth.worker["main_pattern"] == "Mainline_Support/Inkling-2-Mini-UD-IQ2_XXS.gguf_file"
     assert unsloth.settings["gpu"] == "T4"
+
+
+# ---------------------------------------------------------------------------
+# Runtime `strata`: perfis, campos proibidos e dtype do KV
+# ---------------------------------------------------------------------------
+
+_STRATA_TOML = """
+name = "Inkling 2 Mini (Strata teste)"
+runtime = "strata"
+catalog_model = "inkling-2-mini-strata"
+catalog_variant = "sq10"
+
+[config]
+model = "inkling-2-mini-strata"
+served_model_name = "inkling-2-mini-strata"
+max_model_len = 32768
+gpu = "T4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+kv_cache_dtype = "{kv}"
+enable_auto_tool_choice = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+[worker]
+control_url = "https://example.invalid/control.tar.gz"
+control_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+control_dir = "strata-control"
+engine_url = "https://example.invalid/engine.tar.gz"
+engine_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+engine_dir = "strata-engine"
+model_repo = "strata-engine/Inkling-2-Mini-Strata"
+pack_pattern = "Inkling-2-Mini-SQ-10.strata"
+sums_pattern = "SHA256SUMS.txt"
+{extra}
+"""
+
+
+def _perfil_strata(tmp_path: Path, extra: str = "", kv: str = "fp8"):
+    pasta = tmp_path / "profiles"
+    pasta.mkdir()
+    (pasta / "strata-teste.toml").write_text(
+        _STRATA_TOML.format(kv=kv, extra=extra), encoding="utf-8"
+    )
+    return config.available_profiles(pasta)
+
+
+def test_perfis_strata_pinam_engine_control_e_pack(tmp_path: Path):
+    perfis = {p.id: p for p in config.available_profiles()}
+    esperado = {
+        "inkling-2-mini-strata-sq10": ("Inkling-2-Mini-SQ-10.strata", "T4"),
+        "inkling-2-mini-strata-sq15": ("Inkling-2-Mini-SQ-15.strata", "L4"),
+        "inkling-2-mini-strata-sq20": ("Inkling-2-Mini-SQv2-20.strata", "L4"),
+    }
+    for profile_id, (pack, gpu) in esperado.items():
+        profile = perfis[profile_id]
+        assert profile.runtime == "strata"
+        assert profile.catalog_model == "inkling-2-mini-strata"
+        assert profile.settings["kv_cache_dtype"] == "fp8"
+        assert profile.settings["served_model_name"] == "inkling-2-mini-strata"
+        assert profile.settings["gpu"] == gpu
+        assert profile.settings["max_model_len"] == 32_768
+        worker = profile.worker or {}
+        assert worker["engine_url"].endswith(
+            "v0.2.23/strata-inkling-0.1.70-linux-x86_64-cuda-cuda12.tar.gz"
+        )
+        assert worker["control_url"].endswith(
+            "v0.2.23/strata-control-0.1.70-linux-x86_64.tar.gz"
+        )
+        assert worker["engine_sha256"] == (
+            "cc078a9cf15e5e738a0396973748cbab352aed5f9cdf3a892802dfd407c6e526"
+        )
+        assert worker["control_sha256"] == (
+            "f38d85bd5bd19393808e2bd0c7867e34c4fed968065371d77f37c11c451eeb6a"
+        )
+        assert worker["engine_dir"] == "strata-engine"
+        assert worker["control_dir"] == "strata-control"
+        assert worker["model_repo"] == "strata-engine/Inkling-2-Mini-Strata"
+        assert worker["pack_pattern"] == pack
+        assert worker["sums_pattern"] == "SHA256SUMS.txt"
+        # A descrição precisa avisar do driver mínimo e da ausência de visão.
+        assert "575.51" in profile.description
+        assert "sem visão" in profile.description
+        cfg = config.Config()
+        config.apply_profile(cfg, profile_id)
+        assert cfg.runtime == "strata"
+        fit = config.check_compatibility(cfg)
+        assert fit.fits, (profile_id, fit.reason)
+        assert fit.available_gib - fit.required_gib >= fit.headroom_gib
+
+
+def test_perfil_strata_valido_carrega(tmp_path: Path):
+    (perfil,) = _perfil_strata(tmp_path, extra='run_config_extra = ["--vram-reserve-mib", "512"]')
+
+    assert perfil.runtime == "strata"
+    assert perfil.settings["kv_cache_dtype"] == "fp8"
+    assert perfil.worker["run_config_extra"] == ["--vram-reserve-mib", "512"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "esperado"),
+    [
+        ('drafter_pattern = "dspark.gguf"', "drafter_pattern"),
+        ("dspark = true", "dspark"),
+        ('main_pattern = "modelo.gguf"', "main_pattern"),
+        ('mmproj_pattern = "mmproj.gguf"', "mmproj_pattern"),
+    ],
+)
+def test_perfil_strata_recusa_campos_do_llama_cpp(tmp_path: Path, extra: str, esperado: str):
+    with pytest.raises(ValueError) as excinfo:
+        _perfil_strata(tmp_path, extra=extra)
+
+    assert "not valid for runtime 'strata'" in str(excinfo.value)
+    assert esperado in str(excinfo.value)
+
+
+def test_perfil_strata_recusa_image_roles(tmp_path: Path):
+    extra = '\n[worker.image_roles]\ndiffusion = "a/b::c.gguf"'
+    with pytest.raises(ValueError) as excinfo:
+        _perfil_strata(tmp_path, extra=extra)
+
+    assert "image_roles" in str(excinfo.value)
+
+
+def test_perfil_strata_recusa_worker_spec(tmp_path: Path):
+    extra = '\n[worker.spec]\ntype = "draft-dspark"\nn_max = 3'
+    with pytest.raises(ValueError) as excinfo:
+        _perfil_strata(tmp_path, extra=extra)
+
+    assert "[worker.spec]" in str(excinfo.value)
+    assert "llama-cpp" in str(excinfo.value)
+
+
+def test_perfil_strata_exige_os_componentes_fixados(tmp_path: Path):
+    pasta = tmp_path / "profiles"
+    pasta.mkdir()
+    texto = _STRATA_TOML.format(kv="fp8", extra="").replace(
+        'engine_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"\n', ""
+    )
+    (pasta / "strata-teste.toml").write_text(texto, encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        config.available_profiles(pasta)
+
+    assert "engine_sha256" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("kv", ["fp8", "fp16"])
+def test_perfil_strata_aceita_os_dtypes_do_engine(tmp_path: Path, kv: str):
+    (perfil,) = _perfil_strata(tmp_path, kv=kv)
+    assert perfil.settings["kv_cache_dtype"] == kv
+
+
+@pytest.mark.parametrize("kv", ["int8", "k8v8", "k8v4", "q4_0"])
+def test_perfil_strata_recusa_dtypes_que_o_engine_nao_aceita(tmp_path: Path, kv: str):
+    """`int8` é do launcher; `k8v8`/`k8v4`/`q4_0` não têm fator no catálogo."""
+    with pytest.raises(ValueError) as excinfo:
+        _perfil_strata(tmp_path, kv=kv)
+
+    assert "runtime 'strata'" in str(excinfo.value)
+    assert kv in str(excinfo.value)
+
+
+def test_perfis_de_imagem_e_llama_cpp_continuam_proibidos_de_declarar_kv(tmp_path: Path):
+    pasta = tmp_path / "profiles"
+    pasta.mkdir()
+    texto = (
+        _STRATA_TOML.format(kv="fp8", extra="")
+        .replace('runtime = "strata"', 'runtime = "llama-cpp"')
+        .replace('catalog_model = "inkling-2-mini-strata"', 'catalog_model = "qwen3.8-27b-gguf"')
+        .replace('catalog_variant = "sq10"', 'catalog_variant = "q4"')
+    )
+    (pasta / "llama.toml").write_text(texto, encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        config.available_profiles(pasta)
+
+    assert "kv_cache_dtype" in str(excinfo.value)
+    assert "f16" in str(excinfo.value)

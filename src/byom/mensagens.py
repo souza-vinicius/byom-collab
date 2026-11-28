@@ -27,7 +27,7 @@ DICA_PAGINACAO = (
     "role com ↑↓/PageUp/PageDown ou use os números para abrir um item."
 )
 
-TECLAS_MENU = "↑↓ navegar • atalhos 1–5 / c / h / q • Enter selecionar • Ctrl+C sair"
+TECLAS_MENU = "↑↓ navegar • atalhos 1–5 / c / i / a / h / q • Enter selecionar • Ctrl+C sair"
 TECLAS_SELECAO = "↑↓ navegar • digite para filtrar • Enter selecionar • Ctrl+C voltar"
 TECLAS_LISTA = "↑↓ navegar • Enter abrir • Ctrl+C voltar"
 TECLAS_CONFIRMACAO = "↑↓ ou s/n escolher • Enter confirmar • Ctrl+C cancelar"
@@ -43,6 +43,8 @@ MENU_INICIAL: tuple[str, ...] = (
     "status",
     "down",
     "chat",
+    "imagem",
+    "audio",
     "harness",
 )
 
@@ -53,6 +55,8 @@ ATALHOS_MENU: dict[str, str] = {
     "status": "4",
     "down": "5",
     "chat": "c",
+    "imagem": "i",
+    "audio": "a",
     "harness": "h",
 }
 
@@ -62,12 +66,12 @@ ACOES: dict[str, tuple[str, str]] = {
         "Verifica ssh e Colab CLI, cria a chave SSH e salva config.toml.",
     ),
     "configure": (
-        "Selecionar perfil de modelo",
-        "Grava em config.toml o modelo e a GPU para a próxima sessão.",
+        "Aplicar modelo e GPU",
+        "Grava o modelo, a GPU e a janela de contexto em config.toml.",
     ),
     "selecionar_gpu": (
         "Selecionar GPU",
-        "Escolhe um perfil pronto ou um par GPU + modelo para a próxima sessão.",
+        "Escolhe a GPU e o modelo; a janela de contexto é a maior que cabe nela.",
     ),
     "harness": (
         "Configurar harness (OpenCode / dsh)",
@@ -89,6 +93,14 @@ ACOES: dict[str, tuple[str, str]] = {
         "Conversar com o modelo (llm chat)",
         "Abre um chat no terminal com o modelo servido no Colab; histórico fica só no byom.",
     ),
+    "imagem": (
+        "Gerar imagem",
+        "Envia um prompt para o runtime de imagem e salva o PNG no diretório do byom.",
+    ),
+    "audio": (
+        "Gerar áudio",
+        "Envia um texto para o runtime TTS e salva o WAV no diretório do byom.",
+    ),
 }
 
 #: Listas objetivas do que cada ação com efeito colateral/custo executa (D4).
@@ -99,12 +111,13 @@ O_QUE_VAI_ACONTECER: dict[str, tuple[str, ...]] = {
         "Grava as configurações padrão locais em config.toml.",
     ),
     "configure": (
-        "Atualiza o perfil, o modelo e a GPU padrão em config.toml.",
+        "Atualiza o modelo, a GPU padrão e a janela de contexto em config.toml.",
         "Não aloca GPU nem inicia sessão no Colab.",
     ),
     "selecionar_gpu": (
-        "Mostra os perfis prontos e as GPUs com os modelos compatíveis.",
-        "Nada é gravado em config.toml até você confirmar um perfil ou um par GPU + modelo.",
+        "Mostra as GPUs e os modelos que cabem em cada uma.",
+        "A janela exibida é a maior que a VRAM da GPU permite, até o máximo do modelo.",
+        "Nada é gravado em config.toml até você confirmar GPU + modelo.",
     ),
     "harness": (
         "Exibe as instruções para configurar manualmente o harness escolhido.",
@@ -123,11 +136,19 @@ O_QUE_VAI_ACONTECER: dict[str, tuple[str, ...]] = {
         "Ajusta o chat para a API local atual (grava só dentro da pasta do byom).",
         "Abre a conversa no terminal; digite `exit` ou `quit` para voltar ao menu.",
     ),
+    "imagem": (
+        "Envia o prompt para POST /v1/images/generations no proxy local.",
+        "Salva o PNG em byom_home()/images; requer uma sessão com runtime de imagem.",
+    ),
+    "audio": (
+        "Envia o texto para POST /v1/audio/speech no proxy local.",
+        "Salva o WAV em byom_home()/audio; requer uma sessão com runtime TTS.",
+    ),
 }
 
 CONFIRMACOES = {
     "init": "Deseja preparar o ambiente local agora?",
-    "configure": "Deseja aplicar este perfil em config.toml?",
+    "configure": "Deseja aplicar este modelo e esta GPU em config.toml?",
     "harness": "Deseja gravar automaticamente a conexão no arquivo do harness?",
     "up": "Deseja alocar a GPU e iniciar a sessão no Colab agora?",
     "up_force": ("Já existe uma sessão registrada. Deseja encerrá-la antes e criar uma nova?"),
@@ -135,15 +156,53 @@ CONFIRMACOES = {
 }
 
 SELECAO_GPU = "Escolha a GPU que será usada na próxima sessão:"
-SELECAO_PERFIL = "Escolha um perfil para abrir os detalhes ou aplicar:"
 SELECAO_HARNESS = "Qual harness de codificação você deseja configurar?"
 SELECAO_PROXIMO = "O que fazer agora?"
 
-SELECAO_SUBMENU_GPU = "O que você quer selecionar?"
 SELECAO_MODELO_GPU = "Escolha o modelo desta GPU para gravar em config.toml:"
-SUBMENU_PERFIL = "Selecionar perfil de modelo"
-SUBMENU_GPU_MODELOS = "Selecionar uma GPU para ver os modelos compatíveis"
-USAR_PAR_GPU_MODELO = "Usar este perfil (GPU escolhida + modelo escolhido)"
+USAR_PAR_GPU_MODELO = "Usar este modelo nesta GPU"
+
+PROMPT_IMAGEM = "Descreva a imagem que você quer gerar:"
+SELECAO_TAMANHO_IMAGEM = "Escolha o tamanho da imagem:"
+PASSOS_IMAGEM = "Passos:"
+GUIDANCE_IMAGEM = "Guidance:"
+PROMPT_AUDIO = "Digite o texto que será falado:"
+SELECAO_VOZ_AUDIO = "Escolha a voz:"
+SELECAO_IDIOMA_AUDIO = "Escolha o idioma:"
+GERANDO_IMAGEM = "Gerando imagem..."
+GERANDO_AUDIO = "Gerando áudio..."
+
+TAMANHOS_IMAGEM: tuple[tuple[str, str], ...] = (
+    ("1024x1024", "1024x1024 (quadrada)"),
+    ("1152x864", "1152x864 (4:3)"),
+    ("864x1152", "864x1152 (3:4)"),
+    ("512x512", "512x512 (teste rápido)"),
+)
+
+VOZES_AUDIO: tuple[str, ...] = (
+    "vivian",
+    "serena",
+    "uncle_fu",
+    "dylan",
+    "eric",
+    "ryan",
+    "aiden",
+    "ono_anna",
+    "sohee",
+)
+
+IDIOMAS_AUDIO: tuple[str, ...] = (
+    "Portuguese",
+    "English",
+    "Chinese",
+    "Japanese",
+    "Korean",
+    "German",
+    "French",
+    "Russian",
+    "Spanish",
+    "Italian",
+)
 
 HARNESS_OPCOES: tuple[tuple[str, str, str, bool], ...] = (
     (
@@ -176,7 +235,7 @@ COMANDO_BASE = "byom"
 EQUIVALENTE_CLI = "Equivalente na CLI: {comando}"
 
 PROXIMO_ACAO: dict[str, tuple[str, str]] = {
-    "init": ("configure", "Selecionar perfil de modelo"),
+    "init": ("selecionar_gpu", "Selecionar GPU"),
     "selecionar_gpu": ("up", "Iniciar sessão no Colab"),
     "configure": ("up", "Iniciar sessão no Colab"),
     "harness": ("up", "Iniciar sessão no Colab"),
@@ -184,6 +243,8 @@ PROXIMO_ACAO: dict[str, tuple[str, str]] = {
     "status": ("down", "Encerrar sessão no Colab"),
     "down": ("selecionar_gpu", "Selecionar GPU"),
     "chat": ("down", "Encerrar sessão no Colab"),
+    "imagem": ("imagem", "Gerar outra imagem"),
+    "audio": ("audio", "Gerar outro áudio"),
 }
 
 #: Mantido para compatibilidade e cobertura textual.
@@ -209,7 +270,7 @@ ERROS_COMUNS = {
     ),
     "cancelado": (
         "Operação cancelada pelo usuário.",
-        "Você pressionou Ctrl+C, Esc ou recusou a confirmação.",
+        "Você pressionou Ctrl+C, Ctrl+D/EOF, Esc ou recusou a confirmação.",
         "Nenhuma nova ação foi iniciada. Verifique o estado da sessão se já havia uma ativa.",
     ),
     "inesperado": (
@@ -229,6 +290,31 @@ ERROS_COMUNS = {
     ),
 }
 
+#: Falhas de alocação que o `colab new` já reconhece. A TUI escolhe a entrada
+#: pelo tipo da exceção (`byom.colab`), nunca pelo texto do traceback.
+FALHAS_UP = {
+    "colab_indisponivel": (
+        "O serviço do Colab recusou o pedido de GPU por indisponibilidade "
+        "temporária (HTTP 5xx), mesmo após as tentativas automáticas da CLI.",
+        "Isso não é falta de unidades de computação. Tente novamente em alguns "
+        "minutos; se persistir, tente outra GPU em 'Selecionar GPU'.",
+    ),
+    "alocacao_recusada": (
+        "O Colab recusou a alocação por limite de sessões ativas ou de uso "
+        "simultâneo do runtime pedido.",
+        "Encerre outras sessões no Colab ou aguarde alguns minutos e tente "
+        "novamente. Nenhuma VM foi alocada.",
+    ),
+    "acelerador_rejeitado": (
+        "A conta não tem cota ou permissão para a GPU selecionada.",
+        "Escolha outra GPU em 'Selecionar GPU' ou confira a assinatura do Colab. "
+        "Nenhuma VM foi alocada.",
+    ),
+}
+
+#: Ação para falhas de `up` sem classificação própria.
+FALHA_UP_GENERICA = "Confira os detalhes técnicos abaixo e tente novamente."
+
 TERMINAL_PEQUENO = (
     "Terminal compacto ({largura}×{altura}); usando visualização adaptada para caber na tela."
 )
@@ -245,9 +331,11 @@ FAMILIAS_MODELOS: dict[str, str] = {
     "qwen3.8-27b-awq": "Qwen3.8 27B",
     "qwen3.8-27b-gguf": "Qwen3.8 27B",
     "inkling-2-mini": "Inkling 2 Mini",
+    "inkling-2-mini-strata": "Inkling 2 Mini (Strata)",
     "gemma-4": "Gemma 4",
     "muse-glimmer-30b": "Muse Glimmer 30B",
     "qwen-image-2.1": "Qwen-Image-2.1",
+    "qwen-image-2.1-turbo-uncensored": "Qwen-Image-2.1 Turbo Uncensored",
 }
 
 MODELOS_COM_VISAO: frozenset[str] = frozenset(
@@ -276,12 +364,22 @@ ROTULOS_VARIANTES: dict[tuple[str, str], str] = {
     ("muse-glimmer-30b", "q6"): "6 bits (GGUF)",
     ("qwen-image-2.1", "q4km"): "4 bits (GGUF)",
     ("qwen-image-2.1", "fp8-int8"): "8 bits (FP8)",
+    ("qwen-image-2.1-turbo-uncensored", "q4k"): "4 bits (AD-Q4_K)",
+    ("qwen-image-2.1-turbo-uncensored", "q8"): "8 bits (Q8_0)",
+    # Packs `.strata` do engine Strata: o número do pack diz o tamanho, não o
+    # número de bits; o KV é de 8 bits nos três. O rótulo longo (com o card de
+    # destino) fica no catálogo, onde há espaço.
+    ("inkling-2-mini-strata", "sq10"): "SQ-10 • 8 bits",
+    ("inkling-2-mini-strata", "sq15"): "SQ-15 • 8 bits",
+    ("inkling-2-mini-strata", "sq20"): "SQ-20 v2 • 8 bits",
 }
 
 NOMES_RUNTIMES: dict[str, str] = {
     "vllm": "vLLM",
     "llama-cpp": "llama.cpp",
     "image": "sd-server (geração de imagens)",
+    "strata": "Strata (engine nativo, packs SQ)",
+    "tts": "vLLM-Omni (texto para fala)",
 }
 
 ESFORCO_RACIOCINIO_PT: dict[str, str] = {
@@ -322,6 +420,12 @@ DESCRICOES_PERFIS: dict[str, str] = {
     ),
     "qwen-image-2.1-fp8": ("Geração de imagens em 8 bits (FP8/INT8) para GPUs com 24 GiB ou mais."),
     "qwen-image-2.1-q4km": ("Geração de imagens compacta (4 bits) compatível com T4 ou L4."),
+    "qwen-image-2.1-turbo-uncensored-q4k": (
+        "Pipeline Turbo completo (encoder + denoiser) em 4 bits; cabe na T4."
+    ),
+    "qwen-image-2.1-turbo-uncensored-q8": (
+        "Pipeline Turbo completo em 8 bits; requer L4 (24 GiB)."
+    ),
     "qwen3.8-27b-256k": ("Contexto completo de 256K para GPU A100 de 80 GiB (memória estendida)."),
     "qwen3.8-27b-32k": ("Perfil com contexto de 32K para GPU A100 padrão (40 GiB) ou L4."),
     "qwen3.8-27b-q3-gguf": ("Variante GGUF de 3 bits para L4; alternativa leve ao perfil AWQ."),
@@ -388,6 +492,16 @@ MOTIVOS_CONTEXTO_PERFIS: dict[str, str] = {
     "qwen-image-2.1-fp8": (
         "Modelo de difusão para geração de imagens; não utiliza janela de contexto de texto."
     ),
+    "qwen-image-2.1-turbo-uncensored-q4k": (
+        "9,47 GiB de pesos (AD-Q4_K do encoder 4,92 + AD-Q4_K do denoiser 3,91 + "
+        "VAE 0,63) + 1,08 de visão + 2 de runtime = 12,55, mais 1,0 de folga = 13,55 "
+        "<= 15 GiB utilizáveis da T4."
+    ),
+    "qwen-image-2.1-turbo-uncensored-q8": (
+        "15,81 GiB de pesos (Q8_0 do encoder 8,11 + Q8_0 do denoiser 7,07 + VAE 0,63) "
+        "+ 1,08 de visão + 2 de runtime = 18,89, mais 1,2 de folga = 20,09 <= 24 GiB da "
+        "L4; a T4 (15 GiB utilizáveis) não comporta."
+    ),
 }
 
 NOTAS_MODELOS: dict[str, tuple[str, ...]] = {
@@ -405,6 +519,13 @@ NOTAS_MODELOS: dict[str, tuple[str, ...]] = {
     "qwen-image-2.1": (
         "Modelo de difusão atendido em POST /v1/images/generations (não usa /v1/chat/completions).",
         "Padrão da API: 25 passos de geração e guidance 1,0.",
+    ),
+    "qwen-image-2.1-turbo-uncensored": (
+        "Encoder abliterado (direção de recusa projetada fora, Apache-2.0) com o "
+        "denoiser Turbo inalterado.",
+        "Schedule fixo: 8 passos, CFG 1,0, euler e 9 sigmas injetadas como "
+        "sample_params.custom_sigmas.",
+        "Encoder Qwen3-VL GGUF comum; o mmproj F16 é o projetor de visão usado só na edição.",
     ),
 }
 
@@ -485,7 +606,9 @@ def formatar_gib(valor: float, *, aproximado: bool = False) -> str:
 
 
 def formatar_contexto(tokens: int, runtime: str = "") -> str:
-    """Converte contagem de tokens em K/M legível ou 'não se aplica' para imagem."""
+    """Converte contagem de tokens em K/M legível ou 'não se aplica' para imagem/TTS."""
+    if runtime == "tts":
+        return "fala"
     if runtime == "image" or tokens <= 1:
         return "não se aplica"
     if tokens >= 1_000_000:
@@ -504,6 +627,8 @@ def formatar_contexto(tokens: int, runtime: str = "") -> str:
 
 def formatar_contexto_detalhe(tokens: int, runtime: str = "") -> str:
     """Formato detalhado do contexto: '32K (32.768 tokens)' ou 'não se aplica'."""
+    if runtime == "tts":
+        return "não se aplica (modelo de fala)"
     if runtime == "image" or tokens <= 1:
         return "não se aplica (modelo de geração de imagens)"
     return f"{formatar_contexto(tokens, runtime)} ({formatar_numero(tokens)} tokens)"

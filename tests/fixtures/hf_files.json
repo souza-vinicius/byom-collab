@@ -134,6 +134,98 @@
         "size": 675509688
       }
     ],
+    "AtomicChat/Qwen-Image-2.1-Turbo-GGUF": [
+      {
+        "path": ".gitattributes",
+        "size": 2447
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-AD-Q2_K.gguf",
+        "size": 2553333472
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-AD-Q3_K.gguf",
+        "size": 3599812320
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-AD-Q4_K.gguf",
+        "size": 4201694944
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-AD-Q5_K.gguf",
+        "size": 5399168736
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-AD-Q6_K.gguf",
+        "size": 6711985888
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-BF16.gguf",
+        "size": 14230275808
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-Q8_0.gguf",
+        "size": 7591577312
+      },
+      {
+        "path": "README.md",
+        "size": 12247
+      },
+      {
+        "path": "quality-vs-size.png",
+        "size": 108564
+      },
+      {
+        "path": "samples-grid.png",
+        "size": 3587494
+      }
+    ],
+    "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF": [
+      {
+        "path": ".gitattributes",
+        "size": 3179
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q2_K.gguf",
+        "size": 3336289216
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q3_K.gguf",
+        "size": 4184140736
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf",
+        "size": 5287517120
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q5_K.gguf",
+        "size": 6281292736
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q6_K.gguf",
+        "size": 7490550720
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-Uncensored-BF16.gguf",
+        "size": 16388045536
+      },
+      {
+        "path": "Qwen-Image-2.1-Turbo-Uncensored-Q8_0.gguf",
+        "size": 8709520096
+      },
+      {
+        "path": "README.md",
+        "size": 12073
+      },
+      {
+        "path": "mmproj-Qwen-Image-2.1-Turbo-Uncensored-BF16.gguf",
+        "size": 1162568928
+      },
+      {
+        "path": "mmproj-Qwen-Image-2.1-Turbo-Uncensored-F16.gguf",
+        "size": 1159029984
+      }
+    ],
     "Qwen/Qwen3-VL-8B-Instruct-GGUF": [
       {
         "path": ".gitattributes",

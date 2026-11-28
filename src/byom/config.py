@@ -270,6 +270,9 @@ class Profile:
 
 #: Chaves aceitas na tabela [worker] de um perfil. Valores são strings ou
 #: listas de strings; nada é interpretado como código.
+#: O bloco `engine_*`/`control_*`/`pack_*`/`sums_*`/`run_config_extra` é do
+#: runtime `strata` (componentes fixados da release do engine e o pack `.strata`);
+#: `available_profiles` recusa cada um deles nos outros runtimes.
 WORKER_FIELDS = frozenset(
     {
         "binary_url",
@@ -288,8 +291,64 @@ WORKER_FIELDS = frozenset(
         "chat_template_kwargs",
         "sampling",
         "spec",
+        "engine_url",
+        "engine_sha256",
+        "engine_dir",
+        "control_url",
+        "control_sha256",
+        "control_dir",
+        "pack_pattern",
+        "sums_pattern",
+        "run_config_extra",
+        "deploy_config",
+        "trust_remote_code",
+        "vllm_omni_spec",
     }
 )
+
+#: Componentes que um perfil `strata` PRECISA fixar: sem URL+sha256 dos dois
+#: tarballs da release não há como servir (o engine não é instalável por pip) e
+#: sem `model_repo`+`pack_pattern` não há pesos.
+STRATA_REQUIRED_WORKER = (
+    "engine_url",
+    "engine_sha256",
+    "control_url",
+    "control_sha256",
+    "model_repo",
+    "pack_pattern",
+)
+
+#: Campos de `[worker]` de outros runtimes, com o motivo. O erro cita o campo e
+#: o motivo: um `main_pattern` herdado de um perfil llama-cpp deixaria o
+#: `prepare_runtime` sem pack e o argv sem `--native`.
+STRATA_FORBIDDEN_WORKER: dict[str, str] = {
+    "drafter_pattern": (
+        "o pack `.strata` já traz o drafter DSpark embutido e o engine não recebe "
+        "arquivo de rascunho separado"
+    ),
+    "dspark": (
+        "no Strata a decodificação especulativa é do engine, ligada por "
+        "`--draft auto|dspark|off` — não há `--model-draft`"
+    ),
+    "image_roles": "papéis de imagem são do sd-server (runtime 'image')",
+    "main_pattern": (
+        "o peso é escolhido por `pack_pattern` (um `.strata`), não por "
+        "`main_pattern` (GGUF do llama.cpp)"
+    ),
+    "mmproj_pattern": (
+        "no Strata o leitor de imagem é o shard `--vision <arquivo>.strata`, que "
+        "esta versão não baixa"
+    ),
+}
+
+#: dtypes de KV que o runtime `strata` aceita declarar. O engine `strata-inkling`
+#: 0.1.70 recebe `--kv auto|fp16|fp8|k8v8|k8v4`; o byom modela `fp8` (1 byte por
+#: elemento, o mesmo 8 bits que o launcher do Strata chama de `int8`) e `fp16`.
+#: `int8` NÃO entra: o binário recusa com "unknown --kv value 'int8'" (conferido
+#: no 0.1.70). `k8v4` custa 1,5 byte por elemento e `k8v8` é outro nome dos mesmos
+#: 8 bits — nenhum dos dois tem fator no catálogo, então declarar um deles seria
+#: prometer uma conta que o catálogo não faz.
+STRATA_KV_DTYPES = frozenset({"fp8", "fp16"})
 
 #: Chaves aceitas em `[worker.spec]`. `drafter_pattern` dentro da spec é o
 #: arquivo separado (`-md`); fora dela, no `[worker]`, continua valendo para o
@@ -408,6 +467,61 @@ def _validate_spec(
         )
 
 
+def _validate_kv_cache_dtype(name: str, runtime: str, declared: object) -> None:
+    """Recusa `kv_cache_dtype` onde o runtime não o usa ou não o aceita.
+
+    O campo só faz sentido onde o argv do worker realmente recebe o dtype: vLLM
+    (`--kv-cache-dtype`) e Strata (`--kv`). llama-server e sd-server não recebem
+    nada — declarar ali fazia o orçamento cobrar metade do KV que o runtime não
+    usa (foi um bug real nos perfis llama-cpp).
+    """
+    if runtime == "vllm":
+        return
+    if runtime == "strata":
+        if not isinstance(declared, str) or declared.strip().lower() not in STRATA_KV_DTYPES:
+            aceitos = ", ".join(sorted(STRATA_KV_DTYPES))
+            raise ValueError(
+                f"{name} declares kv_cache_dtype {declared!r}, but runtime 'strata' only "
+                f"accepts {aceitos} (the engine's --kv values the catalog models); "
+                "int8 is not an engine value (the 0.1.70 binary refuses it), and "
+                "k8v8/k8v4/q4_0 have no VRAM factor here"
+            )
+        return
+    detalhe = (
+        "has no KV cache at all"
+        if runtime in ("image", "tts")
+        else "always uses the f16 KV cache"
+    )
+    raise ValueError(
+        f"{name} declares kv_cache_dtype, but runtime {runtime!r} {detalhe}; "
+        "remove the field or use runtime 'vllm'/'strata'"
+    )
+
+
+def _validate_strata_worker(name: str, worker: dict) -> None:
+    """Confere o `[worker]` de um perfil `strata` antes de qualquer download.
+
+    O Strata serve o peso de um único arquivo `.strata` por um engine fixado; os
+    campos do llama.cpp/sd-server não têm equivalente e seriam descartados em
+    silêncio (o argv sairia sem `--native`, ou o manifesto sem `engine`).
+    """
+    for key, motivo in STRATA_FORBIDDEN_WORKER.items():
+        if key in worker:
+            raise ValueError(
+                f"{name}: [worker] {key} is not valid for runtime 'strata': {motivo}"
+            )
+    faltando = [
+        key
+        for key in STRATA_REQUIRED_WORKER
+        if not isinstance(worker.get(key), str) or not str(worker[key]).strip()
+    ]
+    if faltando:
+        raise ValueError(
+            f"{name}: runtime 'strata' requires {', '.join(faltando)} "
+            "(the pinned engine and control tarballs, the pack repo and its pattern)"
+        )
+
+
 def available_profiles(directory: Path | None = None) -> list[Profile]:
     """Returns validated model profiles packaged with the `byom` module.
 
@@ -465,17 +579,43 @@ def available_profiles(directory: Path | None = None) -> list[Profile]:
         if not isinstance(worker, dict):
             raise ValueError(f"profile {path.name}: [worker] must be a table")
         if runtime != "vllm" and "kv_cache_dtype" in settings:
-            # O llama-server não recebe `--cache-type-k/-v`; declarar fp8 ali
-            # fazia o orçamento cobrar metade do KV que o runtime não usa.
-            raise ValueError(
-                f"{path.name} declares kv_cache_dtype, but runtime {runtime!r} always "
-                "uses the f16 KV cache; remove the field or use runtime 'vllm'"
-            )
+            _validate_kv_cache_dtype(path.name, runtime, settings["kv_cache_dtype"])
         unknown_worker = set(worker) - WORKER_FIELDS
         if unknown_worker:
             raise ValueError(
                 f"Unknown [worker] fields in {path.name}: {', '.join(sorted(unknown_worker))}"
             )
+        if runtime == "strata":
+            _validate_strata_worker(path.name, worker)
+        if runtime == "tts":
+            deploy = worker.get("deploy_config")
+            if deploy is not None and (
+                not isinstance(deploy, str) or Path(deploy).name != deploy or not deploy
+            ):
+                raise ValueError(
+                    f"profile {path.name}: [worker].deploy_config must be a file name "
+                    "(not a path), e.g. qwen3_tts.yaml"
+                )
+            if "trust_remote_code" in worker and not isinstance(
+                worker["trust_remote_code"], bool
+            ):
+                raise ValueError(
+                    f"profile {path.name}: [worker].trust_remote_code must be boolean"
+                )
+            omni_spec = worker.get("vllm_omni_spec")
+            if not isinstance(omni_spec, str) or not omni_spec.strip():
+                raise ValueError(
+                    f"profile {path.name}: runtime 'tts' requires "
+                    "[worker].vllm_omni_spec (e.g. vllm-omni==0.34.0); "
+                    "vllm_spec alone installs only vLLM"
+                )
+        else:
+            for key in ("deploy_config", "trust_remote_code", "vllm_omni_spec"):
+                if key in worker:
+                    raise ValueError(
+                        f"profile {path.name}: [worker] {key} is only valid for "
+                        "runtime 'tts'"
+                    )
         if worker.get("dspark"):
             # DSpark precisa dos DOIS lados: o drafter para baixar/emitir e o
             # runtime llama-cpp para receber `--model-draft`.
@@ -613,6 +753,14 @@ def drafter_gib_by_profile() -> dict[str, float]:
     """Custo do drafter DSpark por perfil (0,0 quando `[worker] dspark` não existe)."""
     return {
         profile.id: catalog.drafter_gib(profile.worker)
+        for profile in available_profiles()
+    }
+
+
+def kv_cache_dtype_by_profile() -> dict[str, str | None]:
+    """dtype de KV declarado por perfil (None = default do runtime)."""
+    return {
+        profile.id: profile.settings.get("kv_cache_dtype")
         for profile in available_profiles()
     }
 

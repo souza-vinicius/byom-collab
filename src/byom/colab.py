@@ -64,6 +64,41 @@ class ColabNotInstalled(ColabCliError):
     """Error raised when the `colab` CLI is not available on PATH."""
 
 
+class ColabBackendUnavailable(ColabCliError):
+    """The allocation service answered 502/503/504; retrying later may work."""
+
+
+class ColabAllocationRefused(ColabCliError):
+    """The backend refused the assignment (HTTP 412): session or usage limit."""
+
+
+class ColabAcceleratorRejected(ColabCliError):
+    """The account has no quota or entitlement for the requested accelerator."""
+
+
+#: Reason phrases the CLI prints instead of the HTTP status code. There is no
+#: `503` in the traceback, so the classification has to match the text.
+_BACKEND_UNAVAILABLE_MARKERS = (
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+)
+_ALLOCATION_REFUSED_MARKERS = ("allocation refused (precondition failed)",)
+_ACCELERATOR_REJECTED_MARKERS = ("backend rejected accelerator",)
+
+
+def _failure_type(message: str) -> type[ColabCliError] | None:
+    """Map the CLI's text output to a typed allocation failure."""
+    lowered = message.lower()
+    if any(marker in lowered for marker in _BACKEND_UNAVAILABLE_MARKERS):
+        return ColabBackendUnavailable
+    if any(marker in lowered for marker in _ALLOCATION_REFUSED_MARKERS):
+        return ColabAllocationRefused
+    if any(marker in lowered for marker in _ACCELERATOR_REJECTED_MARKERS):
+        return ColabAcceleratorRejected
+    return None
+
+
 @dataclass
 class SessionLine:
     name: str | None
@@ -313,7 +348,11 @@ def new(name: str, gpu: str = "", *, high_mem: bool = False) -> None:
     try:
         run(args, timeout=900)
     except ColabCliError as exc:
-        raise ColabCliError(f"{exc}{_orphan_hint()}") from exc
+        message = f"{exc}{_orphan_hint()}"
+        failure = _failure_type(str(exc))
+        if failure is None:
+            raise ColabCliError(message) from exc
+        raise failure(message) from exc
 
 
 def _orphan_hint() -> str:

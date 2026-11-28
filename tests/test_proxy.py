@@ -594,6 +594,31 @@ def test_imagem_non_stream_espera_a_geracao_terminar():
     assert response.json()["data"][0]["url"].endswith(".png")
 
 
+def test_proxy_repassa_audio_binario_do_tts():
+    visto: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        visto.append(request)
+
+        async def corpo():
+            yield b"RIFFwav"
+
+        return httpx.Response(
+            200, content=corpo(), headers={"content-type": "audio/wav"}
+        )
+
+    runtime = make_runtime()
+    with client_for(runtime, httpx.MockTransport(handler)) as client:
+        response = client.post(
+            "/v1/audio/speech", json={"input": "oi", "voice": "vivian"}
+        )
+
+    assert visto[0].url.path == "/v1/audio/speech"
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/wav"
+    assert response.content == b"RIFFwav"
+
+
 def test_chat_stream_false_espera_a_geracao_terminar():
     demora = 0.2
 

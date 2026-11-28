@@ -19,7 +19,16 @@ import contextlib
 import math
 from dataclasses import dataclass, field
 
-RUNTIMES = ("vllm", "llama-cpp", "image")
+RUNTIMES = ("vllm", "llama-cpp", "image", "strata", "tts")
+
+#: Runtimes sem KV cache autoregressivo: difusão de imagem e TTS. O contexto
+#: deles é uma sentinela (1), não uma janela de chat.
+NON_CHAT_RUNTIMES = frozenset({"image", "tts"})
+
+
+def has_kv_cache(runtime: str) -> bool:
+    """Difusão e TTS não têm KV por token; os demais runtimes têm."""
+    return runtime not in NON_CHAT_RUNTIMES
 
 GIB = 2**30
 
@@ -66,6 +75,37 @@ GENERATION_SOURCE_IMAGE = (
     "defaults documentados da API Unsloth (25/1) conforme o briefing"
 )
 
+#: Sigmas fixas do schedule Turbo (8 passos). O último 0.0 encerra a amostragem;
+#: o sd-server deriva o número de passos da CONTAGEM de `custom_sigmas`.
+QWEN_IMAGE_TURBO_SIGMAS = [
+    1.0,
+    0.978453,
+    0.95418,
+    0.926626,
+    0.89508,
+    0.845148,
+    0.704534,
+    0.414568,
+    0.0,
+]
+
+GENERATION_SOURCE_IMAGE_TURBO = (
+    "https://huggingface.co/AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF "
+    "(2026-11-28): o card fixa 8 passos, CFG 1 e a lista exata de sigmas do "
+    "schedule Turbo, e pede build c150a6b ou mais nova. Equivalência com "
+    "sd-server na build fixada `master-982-0518b34-u27b9ddc` (2026-11-15, "
+    "depois da correção c150a6b de 2026-10-06): "
+    "https://github.com/leejet/stable-diffusion.cpp/blob/0518b34/docs/"
+    "qwen_image_2.1.md documenta o preset `qwen-image-2.1-turbo` com "
+    "`--sampling-method euler`, e "
+    "https://github.com/leejet/stable-diffusion.cpp/blob/0518b34/examples/"
+    "server/api.md documenta `sample_params.custom_sigmas` (o número de "
+    "sigmas determina os passos) dentro de `sd_cpp_extra_args`"
+)
+
+GENERATION_DEFAULT_FIELDS = frozenset({"steps", "guidance", "sample_method", "custom_sigmas"})
+GENERATION_REQUIRED_DEFAULT_FIELDS = frozenset({"steps", "guidance"})
+
 # Margens determinísticas (heurística de engenharia, não valor de documentação):
 # 2 GiB para runtime/processo e 2 GiB por 32K de contexto em f16 (mínimo 1 GiB).
 # O heurístico é o padrão de quem NÃO declarou `ModelEntry.kv_shape`: ele é
@@ -79,10 +119,22 @@ MIN_KV_CACHE_GIB = 1.0
 #: `vllm` respeita `--kv-cache-dtype` do perfil; `llama-cpp` usa o default do
 #: llama-server, que é f16 (docs de `--cache-type-k/-v`: default f16, consultadas
 #: em 2026-11-24) — por isso os perfis llama-cpp não declaram `kv_cache_dtype`.
-KV_CACHE_DTYPE_FACTORS = {"fp8": 0.5, "f16": 1.0}
+#: `int8` é o valor de 8 bits do launcher do Strata e o do `--kv int8` que a
+#: tabela de `docs/TERMINAL_LAUNCH.md` do control 0.1.70 publica (1 byte por
+#: elemento, metade do f16); `fp16` é como o engine gráfico escreve o f16.
+KV_CACHE_DTYPE_FACTORS = {"fp8": 0.5, "int8": 0.5, "fp16": 1.0, "f16": 1.0}
 
 #: dtype efetivo por runtime, usado na conta e nas mensagens.
-KV_CACHE_RUNTIME_DEFAULT = {"vllm": "fp8", "llama-cpp": "f16", "image": ""}
+#: `strata`: o engine `strata-inkling` 0.1.70 não aceita `--kv int8` (o `--help`
+#: dele lista `auto|fp16|fp8|k8v8|k8v4` e ele recusa `int8` com "unknown --kv
+#: value"), então o dtype de 8 bits vai no argv como `fp8` — mesmo 1 byte por
+#: elemento do int8 do launcher, logo o mesmo fator 0,5.
+KV_CACHE_RUNTIME_DEFAULT = {
+    "vllm": "fp8",
+    "llama-cpp": "f16",
+    "image": "",
+    "strata": "fp8",
+}
 
 #: Folga obrigatória entre o que o modelo ocupa e a VRAM utilizável da GPU.
 #: HEURÍSTICA, não número de documentação: driver, contexto CUDA, alocadores e
@@ -112,7 +164,9 @@ VISION_PROJECTOR_GIB_BY_MODEL = {
 
 #: Projetor do Qwen3-VL usado na edição de imagem (papel `vision`):
 #: `mmproj-Qwen3VL-8B-Instruct-F16.gguf`, 1.159.029.824 B = 1,08 GiB (API do HF,
-#: 2026-11-24).
+#: 2026-11-24). O `mmproj-Qwen-Image-2.1-Turbo-Uncensored-F16.gguf` do repo
+#: AtomicChat tem 1.159.029.984 B = 1,08 GiB (2026-11-28): 160 B a mais, mesmo
+#: valor arredondado, então a mesma constante cobre os dois.
 IMAGE_VISION_GIB = 1.08
 
 #: Projetor de visão do Bonsai 2.5: `Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf`,
@@ -195,6 +249,9 @@ class Variant:
     #: Custo do projetor de visão em GiB; > 0 apenas quando o perfil declara
     #: `mmproj_pattern` (o catálogo sozinho não carrega o projetor).
     vision_gib: float = 0.0
+    #: Reserva fixa extra do runtime, em GiB, além de RUNTIME_RESERVE_GIB.
+    #: Usada pelos pipelines multi-stage do TTS (talker + code2wav).
+    overhead_gib: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -267,7 +324,7 @@ class ModelEntry:
     reasoning_effort: str | None = None
     reasoning_source: str = ""
     thinking: ThinkingPolicy | None = None
-    generation_defaults: dict[str, int | float] = field(default_factory=dict)
+    generation_defaults: dict[str, int | float | str | list[float]] = field(default_factory=dict)
     generation_source: str = ""
     #: None = KV pelo heurístico `KV_CACHE_GIB_PER_32K` (não medido).
     #: Preenchido só com o `config.json` oficial em mãos.
@@ -307,10 +364,22 @@ COLAB_GPU_SOURCE = (
 )
 
 INKLING_SOURCE = "https://unsloth.ai/docs/models/inkling-2-mini.md"
+#: Card dos packs `.strata` do Inkling 2 Mini. O repositório NÃO publica GGUF nem
+#: safetensors: publica packs no container do engine Strata (MIT). Por isso o
+#: modelo entra pelo runtime `strata`, com binário fixado + pesos + argv montado.
+STRATA_INKLING_SOURCE = "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata"
+#: Release do engine cujos componentes o perfil fixa (URL + sha256 de control e
+#: engine). Publicada em 2026-11-27T18:43:32Z; os digests vieram da API do
+#: GitHub e foram conferidos com `sha256sum` nos dois tarballs.
+STRATA_ENGINE_SOURCE = "https://github.com/Niko1221/Strata/releases/tag/v0.2.23"
 QWEN38_SOURCE = "https://unsloth.ai/docs/models/qwen3.8.md"
 GEMMA4_SOURCE = "https://unsloth.ai/docs/models/gemma-4.md"
 MUSE_SOURCE = "https://unsloth.ai/docs/models/muse-glimmer.md"
 IMAGE_SOURCE = "https://unsloth.ai/docs/models/qwen-image-2.1.md"
+TTS_SOURCE = (
+    "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice "
+    "(card e árvore de arquivos consultados em 2026-11-27)"
+)
 SDCPP_SOURCE = (
     "https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md"
 )
@@ -371,6 +440,13 @@ PROVIDER_SOURCES: dict[str, str] = {
         "https://huggingface.co/thinkingmachines/Inkling-2-Mini (2026-11-24): o card "
         "declara 'Model provider: Thinking Machines Lab, Inc.'"
     ),
+    "inkling-2-mini-strata": (
+        "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata (2026-11-27): o card "
+        "declara `license: apache-2.0` e `base_model: thinkingmachines/Inkling-2-Mini` e "
+        "descreve o repo como 'builds of thinkingmachines/Inkling-2-Mini packed for Strata'; "
+        "os pesos são da Thinking Machines Lab e o publicador do pack é `strata-engine`, "
+        "derivado do repositório de onde o byom baixa"
+    ),
     "qwen3.8-27b-awq": (
         "https://huggingface.co/Qwen (2026-11-24): 'the large language model family "
         "built by Alibaba Cloud'; https://huggingface.co/Qwen/Qwen3.8-27B é o repo oficial"
@@ -390,6 +466,16 @@ PROVIDER_SOURCES: dict[str, str] = {
     "qwen-image-2.1": (
         "https://huggingface.co/Qwen/Qwen-Image-2.1 (2026-11-24) é o repo oficial da "
         "família Qwen, 'built by Alibaba Cloud' (card da org, mesma data)"
+    ),
+    "qwen-image-2.1-turbo-uncensored": (
+        "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo (2026-11-28): checkpoint "
+        "oficial da família Qwen, 'built by Alibaba Cloud'; o encoder abliterado e as "
+        "quantizações são da AtomicChat"
+    ),
+    "qwen3-tts": (
+        "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (2026-11-27) é "
+        "o repo oficial da família Qwen3-TTS; o card atribui o modelo ao time Qwen "
+        "(Alibaba Cloud)"
     ),
     "minimax-m3.1-flash": (
         "https://huggingface.co/MiniMaxAI/MiniMax-M3.1-Flash (2026-11-24): repo oficial "
@@ -543,6 +629,85 @@ MODELS: tuple[ModelEntry, ...] = (
             "Requer llama.cpp mainline b12611+ com os arquivos Mainline_Support; "
             "builds anteriores perdem os scales NVFP4 nas passadas 2 e 3 do loop.",
             "Sampling: temperature 1.0, top_p 1.0, top_k 0, min_p 0.",
+        ),
+        sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0},
+        reasoning_effort="high",
+        reasoning_source=REASONING_SOURCE_INKLING,
+        kv_shape=inkling_kv_profile(),
+    ),
+    # --- Packs `.strata`: o mesmo modelo, num container que só o engine Strata
+    # lê. O repo do HF não publica GGUF nem safetensors, então o byom precisa de
+    # um runtime próprio (binário fixado + pesos baixados + argv montado), no
+    # mesmo molde do sd-server. Bytes do tree da API do HF (`?blobs=true`,
+    # revisão 5623ceb, consultado em 2026-11-27), divididos por 2^30.
+    ModelEntry(
+        "inkling-2-mini-strata", "Inkling 2 Mini (Strata, packs SQ)", "strata",
+        (
+            Variant("sq10", "SQ-10 (9,75 GiB, card de 12 GiB)", 9.75, 32_768, "T4",
+                    context_doc=1_048_576,
+                    context_reason="32K é o contexto servido: o KV em 8 bits custa 0,29 GiB "
+                                   "(só as 4 camadas completas crescem, como no GGUF). O 1M "
+                                   "documentado pediria 8,04 GiB só de KV e não caberia em "
+                                   "card de Colab nenhum junto dos 9,75 GiB de pesos.",
+                    notes=("HF `strata-engine/Inkling-2-Mini-Strata` (revisão 5623ceb, "
+                           "consultado em 2026-11-27): `Inkling-2-Mini-SQ-10.strata` tem "
+                           "10.471.526.400 B = 9,75 GiB, é o pack que o card recomenda para "
+                           "card de 12 GiB e acerta o próximo token do modelo original em "
+                           "92,35% dos casos (WikiText-2: 89,79%).",
+                           "Pack fechado: o byom baixa o arquivo inteiro (sem download "
+                           "seletivo de tensores) e o `prepare_runtime` confere o sha256 "
+                           "contra o `SHA256SUMS.txt` do próprio repo.")),
+            Variant("sq15", "SQ-15 (13,36 GiB, card de 16 GiB)", 13.36, 32_768, "L4",
+                    context_doc=1_048_576,
+                    context_reason="13,36 GiB de pesos + 2 de runtime + 0,29 de KV em 32K = "
+                                   "15,65, mais 1,0 de folga = 16,65 > 15 GiB utilizáveis da "
+                                   "T4: a GPU mínima é L4 (24 GiB), com 6,55 GiB de margem.",
+                    notes=("HF `strata-engine/Inkling-2-Mini-Strata` (revisão 5623ceb, "
+                           "consultado em 2026-11-27): `Inkling-2-Mini-SQ-15.strata` tem "
+                           "14.348.316.672 B = 13,36 GiB; card de 16 GiB; 96,68% de acerto "
+                           "de próximo token contra o original (WikiText-2: 95,97%).",)),
+            Variant("sq20", "SQ-20 v2 (18,04 GiB, card de 24 GiB)", 18.04, 32_768, "L4",
+                    context_doc=1_048_576,
+                    context_reason="18,04 GiB de pesos + 2 de runtime + 0,29 de KV em 32K = "
+                                   "20,33, mais 1,2 de folga = 21,53 <= 24 GiB da L4: cabe no "
+                                   "card para o qual o pack foi feito, e com 2,47 GiB de "
+                                   "margem extra na A100-40.",
+                    notes=("HF `strata-engine/Inkling-2-Mini-Strata` (revisão 5623ceb, "
+                           "consultado em 2026-11-27): `Inkling-2-Mini-SQv2-20.strata` tem "
+                           "19.374.768.128 B = 18,04 GiB; layout `.strata` v1.1 "
+                           "(16 KiB-aligned), mesmo trunk/experts do SQ-20 byte a byte e "
+                           "drafter DSpark recalibrado; exige Strata 0.2.23+.",
+                           "O `SHA256SUMS.txt` da mesma revisão (377 B) NÃO lista este "
+                           "arquivo — ele cobre SQ-10, SQ-15, SQ-20 (o legado) e o pack de "
+                           "visão. O sha256 conferido é o `lfs.oid` do tree do HF "
+                           "(`429671f8eb5b50e593856e6eb82ebb7da9d1f07e99b553438b196f72cc86a6d6`), "
+                           "que é o sha256 do conteúdo e bate com o `SHA256SUMS.txt` nos "
+                           "quatro packs que ele lista.",
+                           "O pack de visão (`Inkling-2-Mini-Vision.strata`, 636.526.592 B) "
+                           "fica de fora desta integração: o engine 0.1.70 avisa em "
+                           "`serve/inkling_kind.py` que 'does not read images yet'.")),
+        ),
+        STRATA_INKLING_SOURCE,
+        provider="Thinking Machines Lab",
+        notes=(
+            "Packs `.strata` (container proprietário do engine Strata, "
+            "github.com/Niko1221/Strata, MIT, C++/CUDA) que servem API compatível com "
+            "a da OpenAI. O card declara Apache-2.0 nos pesos e "
+            "`base_model: thinkingmachines/Inkling-2-Mini`; não há GGUF nem "
+            "safetensors neste repositório.",
+            "Engine `strata-inkling` 0.1.70 (release v0.2.23, publicada em "
+            "2026-11-27T18:43:32Z): `engine-component.json` traz "
+            "`min_driver.nvidia = \"575.51\"`, `backend: cuda`, `build_id "
+            "ebda56cbaa19+cuda12.9` e `archs` sm_60..sm_120 (T4 = sm_75, A100 = sm_80/86, "
+            "L4 = sm_89). Driver mais antigo que 575.51 faz o engine se recusar a subir.",
+            "Arquitetura idêntica à do Inkling 2 Mini: looped transformer de 26,4B "
+            "(3,4B ativos por token), 1M de contexto documentado, KV crescendo só nas 4 "
+            "camadas completas — 0,29 GiB em 32K no KV de 8 bits e 0,58 em f16.",
+            "Sem visão nesta versão (o engine só lê imagem com o shard "
+            "`Inkling-2-Mini-Vision.strata` anexado, que este catálogo não baixa).",
+            "Sampling: temperature 1.0, top_p 1.0, top_k 0, min_p 0 — o mesmo do card "
+            "do modelo; o servidor do Strata aplica o template do pack e aceita "
+            "`chat_template_kwargs.reasoning_effort`.",
         ),
         sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0},
         reasoning_effort="high",
@@ -758,6 +923,91 @@ MODELS: tuple[ModelEntry, ...] = (
         generation_source=GENERATION_SOURCE_IMAGE,
     ),
     ModelEntry(
+        "qwen-image-2.1-turbo-uncensored", "Qwen-Image-2.1 Turbo Uncensored", "image",
+        (
+            Variant("q4k", "AD-Q4_K • encoder + denoiser", 9.47, 0, "T4",
+                    notes=("AtomicChat (consultado em 2026-11-28): "
+                           "`Qwen-Image-2.1-Turbo-AD-Q4_K.gguf` tem 4.201.694.944 B = "
+                           "3,91 GiB; `Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf` "
+                           "tem 5.287.517.120 B = 4,92 GiB; o VAE compartilhado tem "
+                           "675.509.688 B = 0,63 GiB.",
+                           "Soma dos três: 10.164.721.752 B = 9,47 GiB; + 1,08 de "
+                           "visão + 2 de runtime + 1,0 de folga = 13,55 <= 15 GiB "
+                           "utilizáveis da T4."),
+                    vision_gib=IMAGE_VISION_GIB),
+            Variant("q8", "Q8_0 • encoder + denoiser", 15.81, 0, "L4",
+                    notes=("AtomicChat (consultado em 2026-11-28): "
+                           "`Qwen-Image-2.1-Turbo-Q8_0.gguf` tem 7.591.577.312 B = "
+                           "7,07 GiB; `Qwen-Image-2.1-Turbo-Uncensored-Q8_0.gguf` tem "
+                           "8.709.520.096 B = 8,11 GiB; o VAE compartilhado tem "
+                           "675.509.688 B = 0,63 GiB.",
+                           "Soma dos três: 16.976.607.096 B = 15,81 GiB; + 1,08 de "
+                           "visão + 2 de runtime + 1,2 de folga = 20,09 <= 24 GiB da "
+                           "L4; a T4 (15 GiB utilizáveis) não comporta."),
+                    vision_gib=IMAGE_VISION_GIB),
+        ),
+        "https://huggingface.co/AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF",
+        provider="Qwen (Alibaba Cloud)",
+        notes=(
+            "Encoder abliterado: a direção de recusa é projetada fora (Apache-2.0) e "
+            "o denoiser Turbo fica inalterado; o checkpoint oficial é da Qwen e as "
+            "quantizações AD são da AtomicChat.",
+            "Schedule Turbo fixo: 8 passos, CFG 1,0, `euler` e as 9 sigmas do card; o "
+            "gateway injeta os quatro em `sample_params` (sample_steps, "
+            "guidance.txt_cfg, sample_method e custom_sigmas).",
+            "O encoder de texto é um Qwen3-VL GGUF comum; o mmproj F16 do repo "
+            "uncensored é o projetor de visão usado só em /v1/images/edits.",
+        ),
+        generation_defaults={
+            "steps": 8,
+            "guidance": 1.0,
+            "sample_method": "euler",
+            "custom_sigmas": list(QWEN_IMAGE_TURBO_SIGMAS),
+        },
+        generation_source=GENERATION_SOURCE_IMAGE_TURBO,
+    ),
+    ModelEntry(
+        "qwen3-tts", "Qwen3-TTS", "tts",
+        (
+            Variant(
+                "0.6b-customvoice", "0.6B CustomVoice", 2.32, 1, "T4",
+                notes=(
+                    "Pesos somados pela API do HF (2026-01-29): model.safetensors "
+                    "1.811.626.576 B + speech_tokenizer/model.safetensors "
+                    "682.293.092 B = 2.493.919.668 B = 2,32 GiB.",
+                    "Pipeline vLLM-Omni (talker + code2wav); reserva de 6 GiB além "
+                    "dos 2 GiB de runtime.",
+                    "Não medido no Colab. A deploy config de 0.3 por stage foi "
+                    "validada pela receita em uma RTX 4090 de 24 GiB.",
+                ),
+                overhead_gib=6.0,
+            ),
+            Variant(
+                "1.7b-customvoice", "1.7B CustomVoice", 4.21, 1, "L4",
+                notes=(
+                    "Pesos somados pela API do HF (2026-01-29): model.safetensors "
+                    "3.833.402.552 B + speech_tokenizer/model.safetensors "
+                    "682.293.092 B = 4.515.695.644 B = 4,21 GiB.",
+                    "Pipeline vLLM-Omni (talker + code2wav); reserva de 9 GiB além "
+                    "dos 2 GiB de runtime. A receita só publica medição em MI300X; "
+                    "a L4 é o mínimo conservador.",
+                    "Não medido no Colab.",
+                ),
+                overhead_gib=9.0,
+            ),
+        ),
+        TTS_SOURCE,
+        provider="Qwen (Alibaba Cloud)",
+        notes=(
+            "TTS, não chat: POST /v1/audio/speech e GET /v1/audio/voices.",
+            "Servido por vLLM-Omni (`vllm serve <model> --omni --deploy-config ...`); "
+            "um checkpoint por vez e sem /v1/chat/completions.",
+            "CustomVoice traz 9 timbres embutidos. VoiceDesign e Base (clonagem) "
+            "usam o mesmo runtime e ficam para variantes futuras.",
+            "A receita oficial pede vLLM/vLLM-Omni >= 0.20; o perfil pina 0.34.0.",
+        ),
+    ),
+    ModelEntry(
         "minimax-m3.1-flash", "MiniMax-M3.1-Flash", "llama-cpp",
         (
             Variant("q4", "UD-Q4_K_XL (4 bit)", 256.0, 16_384, "H100-80",
@@ -818,6 +1068,12 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "A100-40", "22,15 GiB pesos + 0,65 visão + 2 runtime + 2,08 de KV em "
                               "128K = 26,88, mais 2,0 de folga = 28,88 <= 40 GiB da "
                               "A100-40. A L4 não comporta nem em 32K (25,38 + 1,2)."),
+    ProfileContext("inkling-2-mini-ad-q6k-dspark", "inkling-2-mini", "ad-q6k", 1_000_000,
+                   131_072, "A100-40",
+                   "Mesmos 26,88 GiB do AD-Q6_K em 128K mais o drafter DSpark de 0,47 "
+                   "GiB = 27,35, mais 2,0 de folga = 29,35 <= 40 GiB da A100-40. O "
+                   "drafter é um segundo arquivo (`--model-draft`), então entra na "
+                   "conta; a cabeça MTP do Bonsai não entraria."),
     ProfileContext("inkling-2-mini-ad-q4k", "inkling-2-mini", "ad-q4k", 1_000_000, 32_768,
                    "L4", "15,39 GiB pesos + 0,65 visão + 2 runtime + 0,58 de KV em 32K = "
                          "18,62, mais 1,2 de folga = 19,82 <= 24 GiB da L4 (5,38 de sobra). "
@@ -829,6 +1085,21 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "mais 1,0 de folga = 13,94 <= 15 GiB da T4. O KV medido pela arquitetura "
                    "(4 camadas completas, 20 com janela de 1024) é o que torna 32K "
                    "possível: pelo heurístico seriam 15,36 e o perfil ficaria em 16K."),
+    ProfileContext("inkling-2-mini-strata-sq10", "inkling-2-mini-strata", "sq10", 1_048_576,
+                   32_768, "T4",
+                   "9,75 GiB de pesos + 2 de runtime + 0,29 de KV em 32K no KV de 8 bits "
+                   "(o engine do Strata só cresce nas 4 camadas completas) = 12,04, mais "
+                   "1,0 de folga = 13,04 <= 15 GiB utilizáveis da T4."),
+    ProfileContext("inkling-2-mini-strata-sq15", "inkling-2-mini-strata", "sq15", 1_048_576,
+                   32_768, "L4",
+                   "13,36 GiB de pesos + 2 de runtime + 0,29 de KV em 32K = 15,65, mais "
+                   "1,2 de folga = 16,85 <= 24 GiB da L4; a T4 (15 GiB utilizáveis) não "
+                   "comporta nem os pesos sozinhos."),
+    ProfileContext("inkling-2-mini-strata-sq20", "inkling-2-mini-strata", "sq20", 1_048_576,
+                   32_768, "L4",
+                   "18,04 GiB de pesos (pack SQ-20 v2, layout v1.1) + 2 de runtime + 0,29 "
+                   "de KV em 32K = 20,33, mais 1,2 de folga = 21,53 <= 24 GiB da L4, o card "
+                   "para o qual o pack foi feito; na A100-40 sobram 18,47 GiB."),
     ProfileContext("qwen3.8-27b-q3-gguf", "qwen3.8-27b-gguf", "q3", 262_144, 32_768,
                    "L4", "12 GiB pesos + 2 runtime + 2 KV = 16 GiB: não cabe nos 15 GiB "
                          "utilizáveis da T4."),
@@ -859,6 +1130,24 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela. "
                          "12,07 GiB de pesos + 2 de runtime + 1,0 de folga = 15,07 > 15 GiB "
                          "da T4; a L4 (24 GiB) comporta."),
+    ProfileContext("qwen-image-2.1-turbo-uncensored-q4k", "qwen-image-2.1-turbo-uncensored",
+                   "q4k", 0, 1, "T4",
+                   "9,47 GiB de pesos (AD-Q4_K do encoder 4,92 + AD-Q4_K do denoiser "
+                   "3,91 + VAE 0,63) + 1,08 de visão + 2 de runtime = 12,55, mais 1,0 de "
+                   "folga = 13,55 <= 15 GiB utilizáveis da T4."),
+    ProfileContext("qwen-image-2.1-turbo-uncensored-q8", "qwen-image-2.1-turbo-uncensored",
+                   "q8", 0, 1, "L4",
+                   "15,81 GiB de pesos (Q8_0 do encoder 8,11 + Q8_0 do denoiser 7,07 + "
+                   "VAE 0,63) + 1,08 de visão + 2 de runtime = 18,89, mais 1,2 de folga = "
+                   "20,09 <= 24 GiB da L4; a T4 (15 GiB utilizáveis) não comporta."),
+    ProfileContext("qwen3-tts-0.6b-customvoice", "qwen3-tts", "0.6b-customvoice", 0, 1,
+                   "T4", "TTS não tem janela de chat; 1 é sentinela. 2,32 GiB de pesos + "
+                         "2 de runtime + 6 de pipeline = 10,32, mais 1,0 de folga = 11,32 "
+                         "<= 15 GiB da T4."),
+    ProfileContext("qwen3-tts-1.7b-customvoice", "qwen3-tts", "1.7b-customvoice", 0, 1,
+                   "L4", "TTS não tem janela de chat; 1 é sentinela. 4,21 GiB de pesos + "
+                         "2 de runtime + 9 de pipeline = 15,21, mais 1,2 de folga = 16,41 "
+                         "<= 24 GiB da L4."),
     ProfileContext("ternary-bonsai-25-27b-q2", "ternary-bonsai-2.5-27b", "q2", 262_144,
                    32_768, "T4",
                    "7,15 GiB de pesos + 0,59 de visão + 2 de runtime + 2,00 de KV em 32K "
@@ -950,8 +1239,8 @@ def format_models() -> str:
             status = "disponivel" if variant.available else "NAO CABE EM GPU UNICA DO COLAB"
             doc = str(variant.context_doc) if variant.context_doc else "n/a"
             served = ", ".join(str(value) for value in served_contexts_for(model.id, variant.id))
-            if model.runtime == "image":
-                served = "n/a (imagem)"
+            if model.runtime in NON_CHAT_RUNTIMES:
+                served = "n/a (imagem)" if model.runtime == "image" else "n/a (fala)"
             lines.append(
                 f"{model.id} | {model.provider} | {model.runtime} | "
                 f"{variant.id} ({variant.label}) | {variant.memory_gib:g} | {doc} | "
@@ -1040,15 +1329,17 @@ def effective_kv_dtype(runtime: str, declared: str | None) -> str:
 
     `llama-cpp` ignora `kv_cache_dtype` (o llama-server não recebe
     `--cache-type-k/-v`, logo fica no default f16); `vllm` recebe
-    `--kv-cache-dtype` com o valor do perfil.
+    `--kv-cache-dtype` e `strata` recebe `--kv`, ambos com o valor do perfil.
+    Sem valor declarado, cada um cai no próprio default
+    (`KV_CACHE_RUNTIME_DEFAULT`).
     """
-    if runtime != "vllm":
+    if runtime not in ("vllm", "strata"):
         return KV_CACHE_RUNTIME_DEFAULT.get(runtime, "f16")
     candidate = (declared or "").strip().lower()
     if candidate in KV_CACHE_DTYPE_FACTORS:
         return candidate
-    # Sem valor declarado, o argv do worker usa o default de `build_args`.
-    return KV_CACHE_RUNTIME_DEFAULT["vllm"]
+    # Sem valor declarado, o argv do worker usa o default do runtime.
+    return KV_CACHE_RUNTIME_DEFAULT.get(runtime, "f16")
 
 
 def kv_cache_gib(
@@ -1061,8 +1352,8 @@ def kv_cache_gib(
     """KV em GiB para `max_model_len`, no dtype que o runtime usa de fato.
 
     Sem `runtime` explícito a conta assume **f16** (o mais conservador): um
-    chamador que esqueça o argumento não subestima VRAM. Só `vllm` pode descer
-    para fp8, e apenas quando o perfil declara `kv_cache_dtype`.
+    chamador que esqueça o argumento não subestima VRAM. Só `vllm` e `strata`
+    podem descer para 8 bits, e apenas quando o perfil declara `kv_cache_dtype`.
 
     Com `model.kv_shape` a conta segue a arquitetura (`KvProfile.cache_gib`):
     só as camadas de atenção completa crescem com o contexto. Sem `kv_shape`,
@@ -1124,13 +1415,19 @@ def required_vram_gib(
     """
     kv = (
         0.0
-        if runtime == "image"
+        if not has_kv_cache(runtime)
         else kv_cache_gib(
             max_model_len, model, kv_cache_dtype=kv_cache_dtype, runtime=runtime
         )
     )
     return round(
-        variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv + drafter_gib, 2
+        variant.memory_gib
+        + variant.vision_gib
+        + RUNTIME_RESERVE_GIB
+        + variant.overhead_gib
+        + kv
+        + drafter_gib,
+        2,
     )
 
 
@@ -1155,6 +1452,53 @@ def _fits(
     # `<` e não `<=`: com igualdade a folga é zero, que é justamente o caso que
     # a folga existe para reprovar.
     return variant.available and required + vram_headroom_gib(gpu.vram_gib) < gpu.vram_gib
+
+
+def max_fitting_context(
+    model_id: str,
+    variant_id: str,
+    gpu_id: str,
+    *,
+    kv_cache_dtype: str | None = None,
+    drafter_gib: float = 0.0,
+    step: int = 1024,
+) -> int:
+    """Maior contexto múltiplo de `step` que cabe na GPU, até o limite documentado.
+
+    O KV cresce com o contexto e `_fits` é monotônico nele, então a busca é
+    binária. `context_limit` é o teto: pedir mais continua sendo recusado por
+    `validate_context_limit`. Devolve 0 quando nem o menor contexto cabe.
+    """
+    variant = variant_by_id(model_id, variant_id)
+    entry = model_by_id(model_id)
+    gpu = gpu_by_id(gpu_id)
+    if not variant.available:
+        return 0
+    if not has_kv_cache(entry.runtime):
+        # Difusão e TTS não têm janela autoregressiva: 1 é a sentinela.
+        return 1 if _fits(
+            variant, entry.runtime, gpu, 1, kv_cache_dtype, entry, drafter_gib
+        ) else 0
+    limite = context_limit(model_id, variant_id)
+    if limite <= 0:
+        return 0
+    if limite <= step:
+        return limite if _fits(
+            variant, entry.runtime, gpu, limite, kv_cache_dtype, entry, drafter_gib
+        ) else 0
+    low, high = 1, limite // step
+    best = 0
+    while low <= high:
+        middle = (low + high) // 2
+        context = middle * step
+        if _fits(
+            variant, entry.runtime, gpu, context, kv_cache_dtype, entry, drafter_gib
+        ):
+            best = context
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
 
 
 def min_gpu_for(
@@ -1217,7 +1561,7 @@ def check_fit(
     elif not fits:
         kv = (
             0.0
-            if runtime == "image"
+            if not has_kv_cache(runtime)
             else kv_cache_gib(
                 max_model_len,
                 entry,
@@ -1226,7 +1570,11 @@ def check_fit(
             )
         )
         dtype = effective_kv_dtype(runtime, kv_cache_dtype)
-        cache = f"KV ~{kv:.2f} GiB em {dtype}" if dtype else f"KV ~{kv:.2f} GiB"
+        cache = (
+            "sem KV autoregressivo"
+            if not has_kv_cache(runtime)
+            else f"KV ~{kv:.2f} GiB em {dtype}" if dtype else f"KV ~{kv:.2f} GiB"
+        )
         if entry.kv_shape is not None:
             shape = entry.kv_shape
             janela = (
@@ -1239,11 +1587,14 @@ def check_fit(
                 f"de atenção completa, {janela})"
             )
         visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
+        overhead = (
+            f" + pipeline {variant.overhead_gib:g}" if variant.overhead_gib else ""
+        )
         drafter = f" + drafter {drafter_gib:g}" if drafter_gib else ""
         reason = (
             f"{variant.label} precisa de ~{required:.2f} GiB "
             f"(pesos {variant.memory_gib:g}{visao} + runtime {RUNTIME_RESERVE_GIB:g} + "
-            f"{cache}{drafter}) mais {headroom:.1f} GiB de margem, "
+            f"{cache}{overhead}{drafter}) mais {headroom:.1f} GiB de margem, "
             f"mas {gpu.label} tem {gpu.vram_gib} GiB utilizáveis."
         )
     return CompatibilityResult(
@@ -1315,56 +1666,73 @@ class CompatibleSelection:
 
 
 def compatible_variants(
-    gpu_id: str, drafters: dict[str, float] | None = None
+    gpu_id: str,
+    drafters: dict[str, float] | None = None,
+    kv_dtypes: dict[str, str | None] | None = None,
 ) -> CompatibleSelection:
-    """Filtre variantes disponíveis com `check_fit` em cada contexto servido.
+    """Filtre variantes disponíveis pela maior janela que cabe na GPU.
 
-    Uma variante passa se pelo menos um contexto servido couber na GPU. O
-    perfil exibido é o daquele contexto, preferindo o registrado para a própria
-    GPU quando houver mais de um. Variantes indisponíveis são ignoradas.
+    Para cada perfil de uma variante, `max_fitting_context` calcula o maior
+    contexto que o orçamento permite, até o máximo documentado. A variante
+    entra com o maior contexto entre os perfis; empate prefere o perfil que já
+    serve aquele contexto e depois o registrado para a própria GPU. O contexto
+    exibido é o otimizado, não o `max_model_len` fixo do perfil.
 
-    `drafters` mapeia profile_id -> GiB do drafter DSpark. O catálogo não lê
-    `[worker]` (a tabela vive no perfil, e `config` importa este módulo), então
-    quem chama passa o custo — do mesmo jeito que `packages`.
+    `drafters` mapeia profile_id -> GiB do drafter DSpark e `kv_dtypes` mapeia
+    profile_id -> `kv_cache_dtype` declarado. O catálogo não lê `[worker]`
+    (a tabela vive no perfil, e `config` importa este módulo), então quem chama
+    passa os dois mapas.
     """
     gpu = gpu_by_id(gpu_id)
     custo_drafter = drafters or {}
+    dtypes = kv_dtypes or {}
     rows: list[CompatibleVariant] = []
     dropped = 0
     for model in MODELS:
         for variant in model.variants:
             if not variant.available:
                 continue
-            candidates: list[tuple[int, int, str, int, CompatibilityResult]] = []
-            for context in served_contexts_for(model.id, variant.id):
-                refs = [
-                    item
-                    for item in PROFILE_CONTEXTS
-                    if item.model_id == model.id
-                    and item.variant_id == variant.id
-                    and item.context_served == context
-                ]
-                if not refs:
-                    # Sem perfil registrado, served_contexts_for já devolveu
-                    # Variant.context como contexto de referência.
+            candidates: list[tuple[int, int, int, str, int, CompatibilityResult]] = []
+            refs = [
+                item
+                for item in PROFILE_CONTEXTS
+                if item.model_id == model.id and item.variant_id == variant.id
+            ]
+            if not refs:
+                context = max_fitting_context(model.id, variant.id, gpu.id)
+                if context:
                     fit = check_fit(model.id, variant.id, gpu.id, context)
-                    if fit.fits:
-                        candidates.append((1, -context, "", context, fit))
-                    continue
+                    candidates.append((0, 1, 1, "", context, fit))
+            else:
+                vistos: set[str] = set()
                 for ref in refs:
+                    if ref.profile_id in vistos:
+                        continue
+                    vistos.add(ref.profile_id)
+                    drafter = custo_drafter.get(ref.profile_id, 0.0)
+                    dtype = dtypes.get(ref.profile_id)
+                    context = max_fitting_context(
+                        model.id,
+                        variant.id,
+                        gpu.id,
+                        kv_cache_dtype=dtype,
+                        drafter_gib=drafter,
+                    )
+                    if not context:
+                        continue
                     fit = check_fit(
                         model.id,
                         variant.id,
                         gpu.id,
                         context,
-                        drafter_gib=custo_drafter.get(ref.profile_id, 0.0),
+                        kv_cache_dtype=dtype,
+                        drafter_gib=drafter,
                     )
-                    if not fit.fits:
-                        continue
                     candidates.append(
                         (
-                            0 if ref.gpu_id == gpu.id else 1,
                             -context,
+                            0 if ref.context_served >= context else 1,
+                            0 if ref.gpu_id == gpu.id else 1,
                             ref.profile_id,
                             context,
                             fit,
@@ -1373,7 +1741,7 @@ def compatible_variants(
             if not candidates:
                 dropped += 1
                 continue
-            _exact_gpu, _negative_context, profile_id, context, fit = min(
+            _negative_context, _serves, _exact_gpu, profile_id, context, fit = min(
                 candidates, key=lambda item: item[:4]
             )
             rows.append(
@@ -1396,6 +1764,7 @@ def format_compatible_models(
     gpu_id: str,
     packages: dict[str, str] | None = None,
     drafters: dict[str, float] | None = None,
+    kv_dtypes: dict[str, str | None] | None = None,
 ) -> str:
     """Tabela de compatíveis no mesmo estilo de colunas de `format_models`.
 
@@ -1403,9 +1772,10 @@ def format_compatible_models(
     de onde o byom baixa). A coluna "Pacote" só aparece quando algum perfil desta
     GPU publica os pesos em nome de outra org — repetir a coluna com o mesmo
     valor do fornecedor seria ruído. `drafters` leva o custo do drafter DSpark
-    por perfil para o orçamento (ver `compatible_variants`).
+    por perfil e `kv_dtypes` o dtype de KV declarado, ambos para o orçamento
+    (ver `compatible_variants`).
     """
-    selection = compatible_variants(gpu_id, drafters)
+    selection = compatible_variants(gpu_id, drafters, kv_dtypes)
     gpu = gpu_by_id(gpu_id)
     pacotes = packages or {}
     linha_pacote = {
@@ -1431,7 +1801,11 @@ def format_compatible_models(
     ]
     for row in selection.rows:
         doc = str(row.context_doc) if row.context_doc else "n/a"
-        served = "n/a (imagem)" if row.runtime == "image" else str(row.context_served)
+        served = (
+            "n/a (imagem)"
+            if row.runtime == "image"
+            else "n/a (fala)" if row.runtime == "tts" else str(row.context_served)
+        )
         profile = row.profile_id or "n/a (sem perfil)"
         celulas = [row.model_id, model_by_id(row.model_id).provider]
         if mostrar_pacote:
@@ -1494,16 +1868,53 @@ def validate_catalog() -> None:
             raise ValueError(f"reasoning_effort sem fonte: {model.id}")
         if model.thinking is not None and not model.thinking.source:
             raise ValueError(f"Política de thinking sem fonte: {model.id}")
-        for key, value in model.generation_defaults.items():
-            if key not in {"steps", "guidance"} or isinstance(value, bool) or not isinstance(
-                value, (int, float)
-            ):
+        for key in model.generation_defaults:
+            if key not in GENERATION_DEFAULT_FIELDS:
                 raise ValueError(f"Padrão de geração inválido: {model.id}:{key}")
         if model.generation_defaults and not model.generation_source:
             raise ValueError(f"Padrões de geração sem fonte: {model.id}")
-        expected_defaults = {"steps", "guidance"}
-        if model.generation_defaults and set(model.generation_defaults) != expected_defaults:
-            raise ValueError(f"Padrões de geração incompletos: {model.id}")
+        if model.generation_defaults:
+            defaults = model.generation_defaults
+            if not set(defaults) >= GENERATION_REQUIRED_DEFAULT_FIELDS:
+                raise ValueError(f"Padrões de geração incompletos: {model.id}")
+            steps = defaults["steps"]
+            if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 1000:
+                raise ValueError(f"Padrão de geração inválido: {model.id}:steps")
+            guidance = defaults["guidance"]
+            if (
+                isinstance(guidance, bool)
+                or not isinstance(guidance, (int, float))
+                or not 0 < guidance <= 1000
+            ):
+                raise ValueError(f"Padrão de geração inválido: {model.id}:guidance")
+            if "sample_method" in defaults:
+                method = defaults["sample_method"]
+                if (
+                    not isinstance(method, str)
+                    or not method
+                    or method != method.strip()
+                    or any(char.isspace() for char in method)
+                ):
+                    raise ValueError(
+                        f"Padrão de geração inválido: {model.id}:sample_method"
+                    )
+            if "custom_sigmas" in defaults:
+                sigmas = defaults["custom_sigmas"]
+                if (
+                    not isinstance(sigmas, list)
+                    or not 2 <= len(sigmas) <= 1001
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or (isinstance(value, float) and not math.isfinite(value))
+                        or value < 0
+                        for value in sigmas
+                    )
+                    or sigmas[-1] != 0.0
+                ):
+                    raise ValueError(
+                        f"Padrão de geração inválido: {model.id}:custom_sigmas"
+                    )
         seen_variants: set[str] = set()
         for variant in model.variants:
             if variant.id in seen_variants or variant.memory_gib <= 0 or variant.context < 0:

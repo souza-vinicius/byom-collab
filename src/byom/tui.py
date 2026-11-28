@@ -6,6 +6,7 @@ sem reescrever a CLI tradicional nem alterar o catálogo.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
 import os
@@ -14,10 +15,12 @@ import sys
 import time
 import traceback
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import typer
 from rich import box
 from rich.console import Console
@@ -27,7 +30,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-from . import catalog, config, dsh, llm_chat, opencode
+from . import catalog, colab, config, dsh, llm_chat, opencode
 from . import mensagens as M
 
 # ---------------------------------------------------------------------------
@@ -173,6 +176,7 @@ class EstadoLocal:
     sessao_criada_em: str
     erro_estado: str = ""
     erro_config: str = ""
+    runtime: str = ""
 
 
 def ler_estado_local() -> EstadoLocal:
@@ -193,9 +197,20 @@ def ler_estado_local() -> EstadoLocal:
     perfil_nome = perfil_id
     if perfil_id:
         try:
-            perfil_nome = config.load_profile(perfil_id).name
+            profile = config.load_profile(perfil_id)
         except ValueError:
-            perfil_nome = perfil_id
+            pass
+        else:
+            model_id, variant_id = config.active_catalog_ref(cfg)
+            try:
+                variant = catalog.variant_by_id(model_id, variant_id)
+            except ValueError:
+                perfil_nome = profile.name
+            else:
+                perfil_nome = (
+                    f"{M.nome_familia(model_id, profile.name)} — "
+                    f"{M.rotulo_variante(model_id, variant_id, variant.label)}"
+                )
 
     try:
         gpu = catalog.resolve_gpu(cfg.gpu, cfg.gpu_high_mem)
@@ -231,6 +246,7 @@ def ler_estado_local() -> EstadoLocal:
         sessao_criada_em=sessao_criada_em,
         erro_estado=erro_estado,
         erro_config=erro_config,
+        runtime=cfg.runtime,
     )
 
 
@@ -258,7 +274,7 @@ def _texto_barra_estado(estado: EstadoLocal, sim: Simbolos, compacto: bool) -> T
     sep = "\n" if compacto else f"  {sim.barra}  "
     texto.append(sep, style="dim")
 
-    texto.append("Perfil: ", style="dim")
+    texto.append("Modelo: ", style="dim")
     if estado.perfil_id:
         texto.append(f"{estado.perfil_nome}", style="cyan")
         texto.append(f" ({estado.gpu_id})", style="dim")
@@ -437,9 +453,11 @@ def _comando_equivalente(acao_id: str, kwargs: dict[str, Any] | None = None) -> 
 
 
 def _estilo_select() -> Any:
-    """Evita fundo invertido (`reverse`) aplicado pelo prompt_toolkit ao item default."""
+    """Evita fundo invertido (`reverse`) e respeita NO_COLOR no questionary."""
     import questionary
 
+    if os.environ.get("NO_COLOR"):
+        return questionary.Style([])
     return questionary.Style([("selected", "noreverse")])
 
 
@@ -532,7 +550,10 @@ def _aguardar_enter(con: Console) -> None:
     if not is_interactive():
         return
     con.print()
-    con.input(f"[dim]{M.ENTER_VOLTAR}[/dim]")
+    try:
+        con.input(f"[dim]{M.ENTER_VOLTAR}[/dim]")
+    except (EOFError, KeyboardInterrupt):
+        raise KeyboardInterrupt from None
 
 
 def _perguntar_proximo_passo(
@@ -546,7 +567,18 @@ def _perguntar_proximo_passo(
 
     escolhas: list[Any] = []
     if acao_id == "up":
-        escolhas.append(questionary.Choice(title=M.ACOES["chat"][0], value="acao:chat"))
+        if estado.runtime == "image":
+            escolhas.append(
+                questionary.Choice(title=M.ACOES["imagem"][0], value="acao:imagem")
+            )
+        elif estado.runtime == "tts":
+            escolhas.append(
+                questionary.Choice(title=M.ACOES["audio"][0], value="acao:audio")
+            )
+        else:
+            escolhas.append(
+                questionary.Choice(title=M.ACOES["chat"][0], value="acao:chat")
+            )
     for valor, rotulo in extras:
         escolhas.append(questionary.Choice(title=rotulo, value=valor))
 
@@ -751,6 +783,8 @@ class PerfilView:
     runtime_gib: float
     #: VRAM do drafter DSpark quando `[worker] dspark = true`; 0,0 sem ele.
     drafter_gib: float
+    #: Reserva extra do pipeline (TTS); 0,0 nos runtimes de chat/imagem.
+    overhead_gib: float
     kv_gib: float
     kv_dtype: str
     #: De onde veio o KV: arquitetura datada do `config.json` ou heurístico.
@@ -770,6 +804,8 @@ class PerfilView:
 def _tipo_modelo(model_id: str, runtime: str, tem_mmproj: bool) -> str:
     if runtime == "image":
         return "Imagem"
+    if runtime == "tts":
+        return "TTS"
     if tem_mmproj or model_id in M.MODELOS_COM_VISAO:
         return "Chat/visão"
     return "Chat"
@@ -819,7 +855,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
         kv_dtype = catalog.effective_kv_dtype(p.runtime, p.settings.get("kv_cache_dtype"))
         kv_gib = (
             0.0
-            if p.runtime == "image"
+            if not catalog.has_kv_cache(p.runtime)
             else catalog.kv_cache_gib(
                 ctx_servido,
                 entry,
@@ -870,7 +906,11 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
 
         notas = M.NOTAS_MODELOS.get(p.catalog_model, ())
         endpoint_aviso = (
-            "/v1/images/generations" if p.runtime == "image" else "/v1/chat/completions"
+            "/v1/images/generations"
+            if p.runtime == "image"
+            else "/v1/audio/speech"
+            if p.runtime == "tts"
+            else "/v1/chat/completions"
         )
         fornecedor = entry.provider if entry else ""
         pacote = catalog.package_owner(
@@ -894,6 +934,7 @@ def listar_perfis_estruturados(estado: EstadoLocal) -> list[PerfilView]:
                 visao_gib=visao_gib,
                 runtime_gib=runtime_gib,
                 drafter_gib=drafter,
+                overhead_gib=variant.overhead_gib if variant else 0.0,
                 kv_gib=kv_gib,
                 kv_dtype=kv_dtype,
                 kv_fonte=catalog.kv_shape_note(entry),
@@ -918,34 +959,22 @@ class GpuView:
     indice: int
     gpu: catalog.Gpu
     compativeis: int
-    total_perfis: int
     nota: str
 
 
 def listar_gpus_estruturadas() -> list[GpuView]:
-    perfis = config.available_profiles()
+    """GPU + quantos modelos têm receita e cabem, já com o contexto otimizado."""
     drafters = config.drafter_gib_by_profile()
-    total = len(perfis)
+    dtypes = config.kv_cache_dtype_by_profile()
     views: list[GpuView] = []
     for idx, gpu in enumerate(catalog.GPUS, 1):
-        compativeis = sum(
-            1
-            for p in perfis
-            if p.catalog_model
-            and catalog.check_fit(
-                p.catalog_model,
-                p.catalog_variant,
-                gpu.id,
-                int(p.settings["max_model_len"]),
-                drafter_gib=drafters.get(p.id, 0.0),
-            ).fits
-        )
+        selection = catalog.compatible_variants(gpu.id, drafters, dtypes)
+        compativeis = sum(1 for row in selection.rows if row.profile_id)
         views.append(
             GpuView(
                 indice=idx,
                 gpu=gpu,
                 compativeis=compativeis,
-                total_perfis=total,
                 nota=M.NOTAS_GPUS.get(gpu.id, ""),
             )
         )
@@ -1119,19 +1148,30 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
         add(rotulo, valor)
     add("Descrição", item.descricao)
 
-    if p.runtime == "image":
+    if not catalog.has_kv_cache(p.runtime):
+        tipo_sem_kv = "modelos de imagem" if p.runtime == "image" else "modelos de fala"
+        overhead = (
+            f" + {M.formatar_gib(item.overhead_gib)} para o pipeline"
+            if item.overhead_gib
+            else ""
+        )
         add(
             "Memória estimada",
             f"{M.formatar_gib(item.total_gib, aproximado=True)} "
             f"({M.formatar_gib(item.pesos_gib)} para os pesos do modelo + "
-            f"{M.formatar_gib(item.runtime_gib)} para o motor; "
-            "modelos de imagem não usam cache KV).",
+            f"{M.formatar_gib(item.runtime_gib)} para o motor{overhead}; "
+            f"{tipo_sem_kv} não usam cache KV).",
         )
         add("Contexto", f"Não se aplica (atendido em POST {item.endpoint_aviso}).")
     else:
         visao = (
             f" + {M.formatar_gib(item.visao_gib)} para o projetor de visão"
             if item.visao_gib
+            else ""
+        )
+        overhead = (
+            f" + {M.formatar_gib(item.overhead_gib)} para o pipeline"
+            if item.overhead_gib
             else ""
         )
         drafter = (
@@ -1143,7 +1183,7 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
             "Memória estimada",
             f"{M.formatar_gib(item.total_gib, aproximado=True)} "
             f"({M.formatar_gib(item.pesos_gib)} para os pesos{visao} + "
-            f"{M.formatar_gib(item.runtime_gib)} para o motor + "
+            f"{M.formatar_gib(item.runtime_gib)} para o motor{overhead} + "
             f"{M.formatar_gib(item.kv_gib)} para o cache KV{drafter}).",
         )
         # O número do KV muda de ordem de grandeza quando vem da arquitetura;
@@ -1199,7 +1239,7 @@ def renderizar_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLoca
         if "AWQ" in item.variante_curta
         else []
     )
-    if p.runtime != "image":
+    if catalog.has_kv_cache(p.runtime):
         termos.extend(["Contexto", "Cache KV", "Raciocínio"])
     if "visão" in item.tipo:
         termos.append("Visão")
@@ -1223,7 +1263,7 @@ def renderizar_gpus(con: Console, estado: EstadoLocal) -> list[GpuView]:
             marca = f" {sim.estrela} configurada" if g.id == estado.gpu_id else ""
             corpo = (
                 f"VRAM: {vram_txt}  |  Suporta bf16: {bf16_txt}\n"
-                f"Perfis compatíveis: {gv.compativeis} de {gv.total_perfis}"
+                f"Modelos compatíveis: {gv.compativeis}"
             )
             if gv.nota:
                 corpo += f"\n{gv.nota}"
@@ -1245,7 +1285,7 @@ def renderizar_gpus(con: Console, estado: EstadoLocal) -> list[GpuView]:
         tabela.add_column("GPU", no_wrap=True)
         tabela.add_column("VRAM", justify="right", no_wrap=True)
         tabela.add_column("Suporta bf16", justify="center", no_wrap=True)
-        tabela.add_column("Perfis compatíveis", no_wrap=True)
+        tabela.add_column("Modelos compatíveis", no_wrap=True)
         if modo == "completo":
             tabela.add_column("Observação")
 
@@ -1256,7 +1296,7 @@ def renderizar_gpus(con: Console, estado: EstadoLocal) -> list[GpuView]:
                 nome_gpu.append(f" {sim.estrela}", style="green")
             vram_txt = M.formatar_gib(g.vram_gib, aproximado=g.vram_approximate)
             bf16_cell = Text("Sim", style="green") if g.bf16 else Text("Não", style="yellow")
-            comp_txt = f"{gv.compativeis} de {gv.total_perfis}"
+            comp_txt = f"{gv.compativeis} modelo(s)"
             row: list[Any] = [nome_gpu, vram_txt, bf16_cell, comp_txt]
             if modo == "completo":
                 row.append(gv.nota or "—")
@@ -1270,15 +1310,67 @@ def renderizar_gpus(con: Console, estado: EstadoLocal) -> list[GpuView]:
     return views
 
 
+def _visao_otimizada(
+    base: PerfilView, gpu: catalog.Gpu, row: catalog.CompatibleVariant
+) -> PerfilView:
+    """Copia a visão do perfil com a janela que o orçamento permite na GPU."""
+    p = base.profile
+    entry = catalog.model_by_id(row.model_id)
+    variant = catalog.variant_by_id(row.model_id, row.variant_id)
+    drafter = catalog.drafter_gib(p.worker)
+    kv_dtype = catalog.effective_kv_dtype(p.runtime, p.settings.get("kv_cache_dtype"))
+    kv_gib = (
+        0.0
+        if not catalog.has_kv_cache(p.runtime)
+        else catalog.kv_cache_gib(
+            row.context_served,
+            entry,
+            kv_cache_dtype=p.settings.get("kv_cache_dtype"),
+            runtime=p.runtime,
+        )
+    )
+    return replace(
+        base,
+        contexto_servido=row.context_served,
+        contexto_curto=M.formatar_contexto(row.context_served, p.runtime),
+        gpu_minima=gpu.id,
+        cabe_gpu_atual=True,
+        motivo_contexto=(
+            f"Maior janela que cabe em {gpu.id}: "
+            f"{M.formatar_contexto_detalhe(row.context_served, p.runtime)}. "
+            "O limite é a VRAM da GPU, não o perfil."
+        ),
+        kv_gib=kv_gib,
+        kv_dtype=kv_dtype,
+        total_gib=catalog.required_vram_gib(
+            variant,
+            row.context_served,
+            p.runtime,
+            kv_cache_dtype=p.settings.get("kv_cache_dtype"),
+            model=entry,
+            drafter_gib=drafter,
+        ),
+    )
+
+
 def renderizar_modelos_por_gpu(
     con: Console, gpu_id: str, estado: EstadoLocal
 ) -> tuple[catalog.CompatibleSelection, dict[str, PerfilView]]:
     """Renderiza variantes compatíveis com uma GPU usando Rich em português."""
     gpu = catalog.gpu_by_id(gpu_id)
-    selection = catalog.compatible_variants(gpu.id, config.drafter_gib_by_profile())
+    selection = catalog.compatible_variants(
+        gpu.id,
+        config.drafter_gib_by_profile(),
+        config.kv_cache_dtype_by_profile(),
+    )
     modo = _modo_layout(con)
 
-    perfis_por_id = {pv.profile.id: pv for pv in listar_perfis_estruturados(estado)}
+    bases = {pv.profile.id: pv for pv in listar_perfis_estruturados(estado)}
+    perfis_por_id = {
+        row.profile_id: _visao_otimizada(bases[row.profile_id], gpu, row)
+        for row in selection.rows
+        if row.profile_id and row.profile_id in bases
+    }
     vram_txt = M.formatar_gib(gpu.vram_gib, aproximado=gpu.vram_approximate)
     con.print(f"Modelos compatíveis com {gpu.id} ({gpu.label} — {vram_txt})", style="bold cyan")
     largura = _largura_terminal(con)
@@ -1293,9 +1385,9 @@ def renderizar_modelos_por_gpu(
             ctx = M.formatar_contexto(row.context_served, row.runtime)
             mem = M.formatar_gib(row.required_gib, aproximado=True)
             perfil_txt = (
-                f"{obter_simbolos(con).ok} disponível"
+                f"{obter_simbolos(con).ok} pronta"
                 if row.profile_id in perfis_por_id
-                else "sem perfil pronto"
+                else "sem receita"
             )
             fornecedor_txt = M.fornecedor_resumo(
                 catalog.model_by_id(row.model_id).provider,
@@ -1303,7 +1395,7 @@ def renderizar_modelos_por_gpu(
             )
             linhas_corpo = [
                 f"Memória: {mem}  |  Contexto: {ctx}",
-                f"Perfil: {perfil_txt}",
+                f"Receita: {perfil_txt}",
             ]
             if fornecedor_txt:
                 linhas_corpo.insert(0, f"{M.ROTULO_FORNECEDOR}: {fornecedor_txt}")
@@ -1331,7 +1423,7 @@ def renderizar_modelos_por_gpu(
             tabela.add_column("Tipo", no_wrap=True)
         tabela.add_column("Memória", justify="right", no_wrap=True)
         tabela.add_column("Contexto", no_wrap=True)
-        tabela.add_column("Perfil", no_wrap=True)
+        tabela.add_column("Receita", no_wrap=True)
 
         for idx, row in enumerate(selection.rows, 1):
             fam = M.nome_familia(row.model_id, row.model_id)
@@ -1350,7 +1442,7 @@ def renderizar_modelos_por_gpu(
                 perfil_txt = f"{sim.ok} sim" if row.profile_id in perfis_por_id else "não"
             else:
                 perfil_txt = (
-                    f"{sim.ok} disponível" if row.profile_id in perfis_por_id else "sem perfil"
+                    f"{sim.ok} pronta" if row.profile_id in perfis_por_id else "sem receita"
                 )
             entry = catalog.model_by_id(row.model_id)
             pacote = (
@@ -1438,7 +1530,7 @@ def _escolher_gpu(con: Console, estado: EstadoLocal) -> str:
             title=(
                 f"{gv.gpu.id} ({gv.gpu.label}) — "
                 f"{M.formatar_gib(gv.gpu.vram_gib, aproximado=gv.gpu.vram_approximate)} • "
-                f"{gv.compativeis} de {gv.total_perfis} perfis"
+                f"{gv.compativeis} modelo(s)"
             ),
             value=gv.gpu.id,
         )
@@ -1458,56 +1550,20 @@ def _escolher_gpu(con: Console, estado: EstadoLocal) -> str:
     return str(escolha)
 
 
-def _escolher_perfil(
-    con: Console, estado: EstadoLocal, *, itens: Sequence[PerfilView] | None = None
-) -> PerfilView:
-    import questionary
-
-    lista = list(itens) if itens is not None else listar_perfis_estruturados(estado)
-    if not lista:
-        raise ValueError(_erro("vazio", origem="catálogo de perfis"))
-
-    escolhas = []
-    for item in lista:
-        atual = " • atual" if item.profile.id == estado.perfil_id else ""
-        fornecedor_txt = M.fornecedor_resumo(item.fornecedor, item.pacote)
-        sufixo = f" · {fornecedor_txt}" if fornecedor_txt else ""
-        escolhas.append(
-            questionary.Choice(
-                title=(
-                    f"{item.indice:2d}. {item.familia} — {item.variante_curta} "
-                    f"({item.gpu_minima}, {item.contexto_curto}){sufixo}{atual}"
-                ),
-                value=item,
-            )
-        )
-    escolhas.append(questionary.Choice(title="Voltar ao menu principal", value="__voltar__"))
-
-    escolha = questionary.select(
-        M.SELECAO_PERFIL,
-        choices=escolhas,
-        use_search_filter=True,
-        use_jk_keys=False,
-        style=_estilo_select(),
-        instruction=M.TECLAS_SELECAO,
-    ).ask()
-    if escolha is None or escolha == "__voltar__":
-        raise KeyboardInterrupt
-    return escolha
-
-
 def _aplicar_perfil_interativo(
     con: Console,
     item: PerfilView,
     *,
     pedir_confirmacao: bool = True,
     gpu_id: str | None = None,
+    max_model_len: int | None = None,
 ) -> tuple[bool, float]:
     """Aplica um perfil em config.toml; com `gpu_id`, fixa essa GPU por último.
 
     `apply_profile` copia `profile.settings`, que inclui `gpu`/`gpu_high_mem`.
     Quando o usuário escolheu a GPU no caminho GPU + modelo, essa escolha
-    sobrescreve o que o perfil declara, e o par precisa passar por
+    sobrescreve o que o perfil declara, e `max_model_len` sobrescreve a janela
+    fixa do perfil com o valor otimizado para a GPU. O par precisa passar por
     `config.check_compatibility` antes de ser gravado.
     """
     p = item.profile
@@ -1543,6 +1599,8 @@ def _aplicar_perfil_interativo(
         )
         return False, time.monotonic() - inicio
     config.apply_profile(cfg, p.id)
+    if max_model_len is not None:
+        cfg.max_model_len = max_model_len
     fit: catalog.CompatibilityResult | None = None
     if gpu is not None:
         cfg.gpu, cfg.gpu_high_mem = catalog.colab_settings_for_gpu(gpu.id)
@@ -1571,7 +1629,7 @@ def _aplicar_perfil_interativo(
     memoria = "memória estendida" if cfg.gpu_high_mem else "memória padrão"
 
     detalhes = [
-        f"Perfil ativo: {item.familia} — {item.variante_curta}",
+        f"Modelo ativo: {item.familia} — {item.variante_curta}",
         f"GPU padrão: {cfg.gpu} ({memoria})",
         f"Contexto servido: {M.formatar_contexto_detalhe(cfg.max_model_len, cfg.runtime)}",
     ]
@@ -1580,56 +1638,18 @@ def _aplicar_perfil_interativo(
             f"Compatível: {M.formatar_gib(fit.required_gib, aproximado=True)} necessários "
             f"de {M.formatar_gib(fit.available_gib)} disponíveis em {fit.gpu_id}"
         )
-    detalhes += [
-        f"Arquivo salvo: {M.encurtar_caminho(caminho)}",
-        f"No OpenCode, use o modelo: {p.opencode_model}",
-    ]
+    detalhes.append(f"Arquivo salvo: {M.encurtar_caminho(caminho)}")
+    if p.runtime not in catalog.NON_CHAT_RUNTIMES:
+        detalhes.append(f"No OpenCode, use o modelo: {p.opencode_model}")
     _mostrar_resultado(
         con,
         "configure",
-        titulo_ok="Perfil selecionado",
+        titulo_ok="Modelo selecionado",
         linhas_detalhe=detalhes,
         duracao_s=duracao,
         kwargs_cli={"profile_id": p.id},
     )
     return True, duracao
-
-
-def _fluxo_detalhe_perfil(con: Console, item: PerfilView, estado: EstadoLocal) -> str:
-    """Abre tela de detalhe do perfil e retorna 'lista', 'menu' ou 'acao:<id>'."""
-    import questionary
-
-    renderizar_cabecalho(con, estado, subtela="Detalhe do perfil")
-    renderizar_detalhe_perfil(con, item, estado)
-    con.print()
-    escolha = questionary.select(
-        "O que você quer fazer com este perfil?",
-        choices=[
-            questionary.Choice(title="Usar este perfil", value="usar"),
-            questionary.Choice(title="Voltar para a lista", value="lista"),
-            questionary.Choice(title="Voltar ao menu principal", value="menu"),
-        ],
-        use_jk_keys=False,
-        style=_estilo_select(),
-        instruction=M.TECLAS_DETALHE,
-    ).ask()
-
-    if escolha is None or escolha == "menu":
-        return "menu"
-    if escolha == "lista":
-        return "lista"
-    if escolha == "usar":
-        ok, _ = _aplicar_perfil_interativo(con, item, pedir_confirmacao=True)
-        if not ok:
-            _aguardar_enter(con)
-            return "lista"
-        novo_estado = ler_estado_local()
-        return _perguntar_proximo_passo(
-            "configure",
-            novo_estado,
-            extras=[("acao:harness", M.ACOES["harness"][0])],
-        )
-    return "menu"
 
 
 def _executar_init(con: Console, cli: Any, estado: EstadoLocal) -> str:
@@ -1800,27 +1820,6 @@ def _troca_bloqueada_por_sessao(con: Console) -> str | None:
     return "menu"
 
 
-def _executar_configure(con: Console, estado: EstadoLocal) -> str:
-    renderizar_cabecalho(con, estado, subtela=M.ACOES["configure"][0])
-    bloqueio = _troca_bloqueada_por_sessao(con)
-    if bloqueio:
-        return bloqueio
-
-    while True:
-        renderizar_perfis(con, estado)
-        con.print()
-        try:
-            selecionado = _escolher_perfil(con, estado)
-        except KeyboardInterrupt:
-            return "menu"
-        destino = _fluxo_detalhe_perfil(con, selecionado, estado)
-        if destino != "lista":
-            return destino
-        # "Voltar para a lista" volta para ESTA lista, não para o menu principal.
-        estado = ler_estado_local()
-        renderizar_cabecalho(con, estado, subtela=M.ACOES["configure"][0])
-
-
 def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView) -> None:
     """Mostra o par que será gravado, incluindo o mapeamento do catálogo para o config.toml."""
     sim = obter_simbolos(con)
@@ -1829,9 +1828,11 @@ def _renderizar_par_gpu_modelo(con: Console, gpu: catalog.Gpu, item: PerfilView)
     if item.visao_gib:
         memoria += f" + visão {M.formatar_gib(item.visao_gib)}"
     memoria += f" + motor {M.formatar_gib(item.runtime_gib)}"
+    if item.overhead_gib:
+        memoria += f" + pipeline {M.formatar_gib(item.overhead_gib)}"
     if item.drafter_gib:
         memoria += f" + drafter {M.formatar_gib(item.drafter_gib)}"
-    if item.profile.runtime != "image":
+    if catalog.has_kv_cache(item.profile.runtime):
         memoria += f" + cache KV {M.formatar_gib(item.kv_gib)} ({item.kv_dtype})"
 
     corpo = Text()
@@ -1877,9 +1878,9 @@ def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) ->
         if not escolhas:
             _renderizar_erro(
                 con,
-                f"Nenhum modelo compatível com {gpu.id} tem perfil pronto.",
+                f"Nenhum modelo compatível com {gpu.id} tem receita de execução.",
                 "As variantes que cabem nesta GPU não têm perfil em config.available_profiles().",
-                "Escolha outra GPU ou selecione um perfil de modelo.",
+                "Escolha outra GPU.",
             )
             con.print()
             escolha_vazio = questionary.select(
@@ -1931,15 +1932,17 @@ def _escolher_modelo_para_gpu(con: Console, estado: EstadoLocal, gpu_id: str) ->
         if escolha_par == "modelo":
             continue
 
-        ok, _ = _aplicar_perfil_interativo(con, item, pedir_confirmacao=True, gpu_id=gpu.id)
+        ok, _ = _aplicar_perfil_interativo(
+            con,
+            item,
+            pedir_confirmacao=True,
+            gpu_id=gpu.id,
+            max_model_len=item.contexto_servido,
+        )
         if not ok:
             _aguardar_enter(con)
             continue
-        return _perguntar_proximo_passo(
-            "configure",
-            ler_estado_local(),
-            extras=[("acao:harness", M.ACOES["harness"][0])],
-        )
+        return _perguntar_proximo_passo("configure", ler_estado_local())
 
 
 def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
@@ -1969,31 +1972,6 @@ def _executar_gpu_modelo(con: Console, estado: EstadoLocal) -> str:
             # "Voltar para a lista" no detalhe do perfil recua para a lista de GPUs.
             continue
         return destino
-
-
-def _executar_selecionar_gpu(con: Console, estado: EstadoLocal) -> str:
-    """Submenu de GPU: reusa o fluxo de perfil pronto ou o par GPU + modelo."""
-    import questionary
-
-    renderizar_cabecalho(con, estado, subtela=M.ACOES["selecionar_gpu"][0])
-    _mostrar_pre_acao(con, "selecionar_gpu")
-    con.print()
-    escolha = questionary.select(
-        M.SELECAO_SUBMENU_GPU,
-        choices=[
-            questionary.Choice(title=M.SUBMENU_PERFIL, value="perfil"),
-            questionary.Choice(title=M.SUBMENU_GPU_MODELOS, value="gpu"),
-            questionary.Choice(title="Voltar ao menu principal", value="menu"),
-        ],
-        use_jk_keys=False,
-        style=_estilo_select(),
-        instruction=M.TECLAS_LISTA,
-    ).ask()
-    if escolha is None or escolha == "menu":
-        return "menu"
-    if escolha == "perfil":
-        return _executar_configure(con, ler_estado_local())
-    return _executar_gpu_modelo(con, ler_estado_local())
 
 
 def renderizar_instrucoes_harness(
@@ -2374,7 +2352,9 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
                 "status",
                 titulo_ok="Nenhuma sessão ativa no momento",
                 linhas_detalhe=[
-                    f"Perfil configurado: {estado.perfil_nome or 'nenhum'} (GPU {estado.gpu_id})",
+                    f"Modelo configurado: {estado.perfil_nome or 'nenhum'} "
+                    f"(GPU {estado.gpu_id}, contexto "
+                    f"{M.formatar_contexto(cfg.max_model_len, cfg.runtime)})",
                 ],
                 duracao_s=exec_etapas.duracao_total(),
                 detalhes_tecnicos="\n".join(detalhes_tecnicos),
@@ -2389,6 +2369,9 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
     if state.endpoint:
         tabela.add_row("Endpoint remoto", state.endpoint)
     tabela.add_row("Sessão no Colab", colab_status_txt)
+    tabela.add_row("Modelo ativo", f"{cfg.served_model_name} ({cfg.runtime})")
+    tabela.add_row("API Byom", f"http://127.0.0.1:{cfg.proxy_port}/v1")
+    tabela.add_row("Open WebUI", f"http://127.0.0.1:{cli.webui.DEFAULT_PORT} (`byom web`)")
     if payload is None:
         tabela.add_row("Worker local", "indisponível (daemon não está respondendo)")
     else:
@@ -2423,6 +2406,21 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
         detalhes_tecnicos="\n".join(detalhes_tecnicos),
     )
     return _perguntar_proximo_passo("status", ler_estado_local())
+
+
+def _partes_falha_up(exc: Exception) -> tuple[str, str]:
+    """Causa e ação da falha de alocação, por tipo de erro do Colab.
+
+    Sem classificação, a causa era o traceback inteiro e a ação mandava
+    conferir a cota, mesmo quando o Colab devolvia 503 com saldo disponível.
+    """
+    if isinstance(exc, colab.ColabBackendUnavailable):
+        return M.FALHAS_UP["colab_indisponivel"]
+    if isinstance(exc, colab.ColabAllocationRefused):
+        return M.FALHAS_UP["alocacao_recusada"]
+    if isinstance(exc, colab.ColabAcceleratorRejected):
+        return M.FALHAS_UP["acelerador_rejeitado"]
+    return str(exc), M.FALHA_UP_GENERICA
 
 
 def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
@@ -2574,9 +2572,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                 config.clear_state()
             raise _ErroEtapa(
                 "Não foi possível iniciar a sessão no Colab.",
-                str(exc),
-                "Confira os detalhes técnicos abaixo, verifique suas unidades de computação "
-                "e tente novamente.",
+                *_partes_falha_up(exc),
                 detalhes_tecnicos=buf.getvalue() + f"\n{exc}",
             ) from exc
         except typer.Exit as exc:
@@ -2615,6 +2611,10 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
     ]
     if cfg.runtime == "image":
         detalhes.append(f"API de imagens: {endpoint_api}/images/generations")
+    elif cfg.runtime == "tts":
+        detalhes.append(f"API de fala: {endpoint_api}/audio/speech")
+    else:
+        detalhes.append(f"Open WebUI: http://127.0.0.1:{cli.webui.DEFAULT_PORT} (`byom web`)")
     _mostrar_resultado(
         con,
         "up",
@@ -2624,11 +2624,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
         kwargs_cli={"force": force} if force else {},
         detalhes_tecnicos=buf.getvalue(),
     )
-    return _perguntar_proximo_passo(
-        "up",
-        ler_estado_local(),
-        extras=[("acao:harness", M.ACOES["harness"][0])],
-    )
+    return _perguntar_proximo_passo("up", ler_estado_local())
 
 
 def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
@@ -2682,6 +2678,9 @@ def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
         return "menu"
 
     con.print()
+    con.print(
+        f"  {sim.bullet} Chat aberto: Ctrl+D encerra a conversa; Ctrl+C cancela sem erro."
+    )
     inicio = time.monotonic()
     try:
         resultado_chat = llm_chat.run_chat(no_history=escolha == "sem")
@@ -2715,6 +2714,298 @@ def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
             detalhes_tecnicos=resultado_chat.stderr,
         )
     return _perguntar_proximo_passo("chat", ler_estado_local())
+
+
+def _media_output_dir(name: str) -> Path:
+    target = config.byom_home() / name
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _media_filename(prefix: str, suffix: str) -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+    return f"{prefix}-{stamp}{suffix}"
+
+
+def _erro_da_resposta(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text[:500]
+    if isinstance(payload, dict):
+        erro = payload.get("error")
+        if isinstance(erro, dict) and erro.get("message"):
+            return str(erro["message"])
+    return str(payload)[:500]
+
+
+def _padroes_de_imagem(cfg: config.Config) -> tuple[int, float]:
+    """Sem defaults no catálogo, mantém os 25 passos/1,0 que a tela já mostrava."""
+    model_id, _variant_id = config.active_catalog_ref(cfg)
+    defaults = catalog.model_by_id(model_id).generation_defaults
+    return int(defaults.get("steps", 25)), float(defaults.get("guidance", 1.0))
+
+
+def _executar_imagem(con: Console, cli: Any, estado: EstadoLocal) -> str:
+    import questionary
+
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["imagem"][0])
+    if not estado.sessao_ativa:
+        _painel(
+            con,
+            "Nenhuma sessão ativa",
+            "A geração de imagem usa a API do modelo no Colab, que só existe "
+            "com a sessão iniciada.",
+            estilo="yellow",
+        )
+        if _confirmar(
+            "up", pergunta="Deseja ir para 'Iniciar sessão no Colab' agora?", default=False
+        ):
+            return "acao:up"
+        return "menu"
+
+    try:
+        cfg = _carregar_config(con)
+    except _ErroEtapa as exc:
+        _renderizar_erro(
+            con, exc.falha, exc.causa, exc.acao, detalhes_tecnicos=exc.detalhes_tecnicos
+        )
+        return "menu"
+    if cfg.runtime != "image":
+        _renderizar_erro(
+            con,
+            "O runtime atual não é de imagem.",
+            f"Runtime atual: {cfg.runtime}. A tela de imagem exige um perfil Qwen-Image.",
+            "Use 'Selecionar GPU' e escolha um modelo Qwen-Image.",
+        )
+        if _confirmar(
+            "configure", pergunta="Ir para 'Selecionar GPU' agora?", default=True
+        ):
+            return "acao:selecionar_gpu"
+        return "menu"
+
+    prompt = questionary.text(M.PROMPT_IMAGEM).ask()
+    if prompt is None or not prompt.strip():
+        return "menu"
+    tamanho = questionary.select(
+        M.SELECAO_TAMANHO_IMAGEM,
+        choices=[
+            questionary.Choice(title=rotulo, value=valor)
+            for valor, rotulo in M.TAMANHOS_IMAGEM
+        ],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_DETALHE,
+    ).ask()
+    if tamanho is None:
+        return "menu"
+    passos_padrao, guidance_padrao = _padroes_de_imagem(cfg)
+    passos_raw = questionary.text(M.PASSOS_IMAGEM, default=str(passos_padrao)).ask()
+    guidance_raw = questionary.text(M.GUIDANCE_IMAGEM, default=str(guidance_padrao)).ask()
+    try:
+        passos = max(1, int(passos_raw or str(passos_padrao)))
+    except ValueError:
+        passos = passos_padrao
+    try:
+        guidance = float(guidance_raw or str(guidance_padrao))
+    except ValueError:
+        guidance = guidance_padrao
+
+    url = f"http://127.0.0.1:{cfg.proxy_port}/v1/images/generations"
+    body = {
+        "prompt": prompt.strip(),
+        "size": tamanho,
+        "steps": passos,
+        "guidance": guidance,
+        "response_format": "b64_json",
+    }
+    try:
+        with con.status(M.GERANDO_IMAGEM, spinner="dots"):
+            resposta = httpx.post(
+                url,
+                json=body,
+                timeout=httpx.Timeout(connect=5.0, read=600.0, write=30.0, pool=5.0),
+            )
+    except httpx.HTTPError as exc:
+        _renderizar_erro(
+            con,
+            "Não foi possível falar com o proxy local.",
+            str(exc),
+            "Confira `byom status` e se a sessão continua ativa.",
+            detalhes_tecnicos=str(exc),
+        )
+        return "menu"
+    if resposta.status_code != 200:
+        _renderizar_erro(
+            con,
+            f"A geração falhou (HTTP {resposta.status_code}).",
+            _erro_da_resposta(resposta),
+            "Confira o log do runtime e tente novamente.",
+        )
+        return "menu"
+    try:
+        payload = resposta.json()
+        raw = base64.b64decode(payload["data"][0]["b64_json"])
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        _renderizar_erro(
+            con,
+            "A resposta não trouxe uma imagem em b64_json.",
+            str(exc),
+            "Verifique o endpoint /v1/images/generations no worker.",
+        )
+        return "menu"
+    try:
+        destino = _media_output_dir("images") / _media_filename("imagem", ".png")
+        destino.write_bytes(raw)
+    except (OSError, config.ConfigError) as exc:
+        _renderizar_erro(
+            con,
+            "Não foi possível salvar a imagem.",
+            str(exc),
+            "Confira as permissões do diretório do byom.",
+        )
+        return "menu"
+
+    sim = obter_simbolos(con)
+    _painel(
+        con,
+        "Imagem gerada",
+        f"{sim.ok} Arquivo: {M.encurtar_caminho(destino)}\n"
+        f"Prompt: {prompt.strip()}\n"
+        f"Tamanho: {tamanho}  |  passos: {passos}  |  guidance: {guidance:g}\n"
+        f"Bytes: {len(raw)}",
+        estilo="green",
+    )
+    return _perguntar_proximo_passo("imagem", ler_estado_local())
+
+
+def _executar_audio(con: Console, cli: Any, estado: EstadoLocal) -> str:
+    import questionary
+
+    renderizar_cabecalho(con, estado, subtela=M.ACOES["audio"][0])
+    if not estado.sessao_ativa:
+        _painel(
+            con,
+            "Nenhuma sessão ativa",
+            "A geração de áudio usa a API do modelo no Colab, que só existe "
+            "com a sessão iniciada.",
+            estilo="yellow",
+        )
+        if _confirmar(
+            "up", pergunta="Deseja ir para 'Iniciar sessão no Colab' agora?", default=False
+        ):
+            return "acao:up"
+        return "menu"
+
+    try:
+        cfg = _carregar_config(con)
+    except _ErroEtapa as exc:
+        _renderizar_erro(
+            con, exc.falha, exc.causa, exc.acao, detalhes_tecnicos=exc.detalhes_tecnicos
+        )
+        return "menu"
+    if cfg.runtime != "tts":
+        _renderizar_erro(
+            con,
+            "O runtime atual não é de áudio.",
+            f"Runtime atual: {cfg.runtime}. A tela de áudio exige um perfil Qwen3-TTS.",
+            "Use 'Selecionar GPU' e escolha um modelo Qwen3-TTS.",
+        )
+        if _confirmar(
+            "configure", pergunta="Ir para 'Selecionar GPU' agora?", default=True
+        ):
+            return "acao:selecionar_gpu"
+        return "menu"
+
+    texto = questionary.text(M.PROMPT_AUDIO).ask()
+    if texto is None or not texto.strip():
+        return "menu"
+    voz = questionary.select(
+        M.SELECAO_VOZ_AUDIO,
+        choices=[questionary.Choice(title=voz, value=voz) for voz in M.VOZES_AUDIO],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_DETALHE,
+    ).ask()
+    if voz is None:
+        return "menu"
+    idioma = questionary.select(
+        M.SELECAO_IDIOMA_AUDIO,
+        choices=[
+            questionary.Choice(title=idioma, value=idioma) for idioma in M.IDIOMAS_AUDIO
+        ],
+        use_jk_keys=False,
+        style=_estilo_select(),
+        instruction=M.TECLAS_DETALHE,
+    ).ask()
+    if idioma is None:
+        return "menu"
+
+    url = f"http://127.0.0.1:{cfg.proxy_port}/v1/audio/speech"
+    body = {"input": texto.strip(), "voice": voz, "language": idioma}
+    try:
+        with con.status(M.GERANDO_AUDIO, spinner="dots"):
+            resposta = httpx.post(
+                url,
+                json=body,
+                timeout=httpx.Timeout(connect=5.0, read=600.0, write=30.0, pool=5.0),
+            )
+    except httpx.HTTPError as exc:
+        _renderizar_erro(
+            con,
+            "Não foi possível falar com o proxy local.",
+            str(exc),
+            "Confira `byom status` e se a sessão continua ativa.",
+            detalhes_tecnicos=str(exc),
+        )
+        return "menu"
+    content_type = resposta.headers.get("content-type", "")
+    if resposta.status_code != 200 or "application/json" in content_type:
+        _renderizar_erro(
+            con,
+            f"A geração falhou (HTTP {resposta.status_code}).",
+            _erro_da_resposta(resposta),
+            "Confira o log do runtime e tente novamente.",
+        )
+        return "menu"
+    if not resposta.content:
+        _renderizar_erro(
+            con,
+            "A resposta veio vazia.",
+            "O endpoint não devolveu áudio.",
+            "Confira o endpoint /v1/audio/speech no worker.",
+        )
+        return "menu"
+    suffix = (
+        ".wav"
+        if "wav" in content_type
+        else ".mp3"
+        if "mpeg" in content_type or "mp3" in content_type
+        else ".bin"
+    )
+    try:
+        destino = _media_output_dir("audio") / _media_filename("audio", suffix)
+        destino.write_bytes(resposta.content)
+    except (OSError, config.ConfigError) as exc:
+        _renderizar_erro(
+            con,
+            "Não foi possível salvar o áudio.",
+            str(exc),
+            "Confira as permissões do diretório do byom.",
+        )
+        return "menu"
+
+    sim = obter_simbolos(con)
+    _painel(
+        con,
+        "Áudio gerado",
+        f"{sim.ok} Arquivo: {M.encurtar_caminho(destino)}\n"
+        f"Texto: {texto.strip()}\n"
+        f"Voz: {voz}  |  idioma: {idioma}\n"
+        f"Bytes: {len(resposta.content)}",
+        estilo="green",
+    )
+    return _perguntar_proximo_passo("audio", ler_estado_local())
 
 
 def _executar_down(con: Console, cli: Any, estado: EstadoLocal) -> str:
@@ -2855,8 +3146,12 @@ def _rotulo_item_menu(
         aviso = " [requer encerrar sessão]"
     elif acao_id == "up" and not estado.ambiente_configurado:
         aviso = " [requer preparar ambiente]"
-    elif acao_id in ("down", "chat") and not estado.sessao_ativa:
+    elif acao_id in ("down", "chat", "imagem", "audio") and not estado.sessao_ativa:
         aviso = " [sem sessão ativa]"
+    elif acao_id == "imagem" and estado.runtime != "image":
+        aviso = " [requer runtime de imagem]"
+    elif acao_id == "audio" and estado.runtime != "tts":
+        aviso = " [requer runtime TTS]"
 
     return f"{prefixo}{aviso}"
 
@@ -2902,9 +3197,13 @@ def _despachar_acao(con: Console, cli: Any, acao_id: str) -> str:
     if acao_id == "init":
         return _executar_init(con, cli, estado)
     if acao_id == "selecionar_gpu":
-        return _executar_selecionar_gpu(con, estado)
+        return _executar_gpu_modelo(con, estado)
     if acao_id == "configure":
-        return _executar_configure(con, estado)
+        return _executar_gpu_modelo(con, estado)
+    if acao_id == "imagem":
+        return _executar_imagem(con, cli, estado)
+    if acao_id == "audio":
+        return _executar_audio(con, cli, estado)
     if acao_id == "harness":
         return _executar_harness(con, cli, estado)
     if acao_id == "up":
@@ -2920,6 +3219,9 @@ def _despachar_acao(con: Console, cli: Any, acao_id: str) -> str:
 
 def mostrar_menu(cli: Any) -> None:
     """Abre o menu principal. Chamado apenas pelo callback da CLI."""
+    global console
+    if bool(os.environ.get("NO_COLOR")) != bool(console.no_color):
+        console = criar_console()
     try:
         import questionary
     except ImportError:
@@ -2967,7 +3269,11 @@ def mostrar_menu(cli: Any) -> None:
                 exc.acao,
                 detalhes_tecnicos=exc.detalhes_tecnicos,
             )
-            _aguardar_enter(console)
+            try:
+                _aguardar_enter(console)
+            except KeyboardInterrupt:
+                console.print(_erro("cancelado"), style="yellow")
+                break
             proxima_acao = None
         except Exception as exc:  # noqa: BLE001 - nunca falhar em silêncio
             erros_consecutivos += 1
@@ -2987,6 +3293,10 @@ def mostrar_menu(cli: Any) -> None:
                     style="red",
                 )
                 break
-            _aguardar_enter(console)
+            try:
+                _aguardar_enter(console)
+            except KeyboardInterrupt:
+                console.print(_erro("cancelado"), style="yellow")
+                break
         finally:
             console.show_cursor()

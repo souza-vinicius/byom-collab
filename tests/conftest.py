@@ -14,6 +14,7 @@ WORKER = ROOT / "worker"
 def isolated_config_dir(tmp_path, monkeypatch):
     """No test touches ~/.config/byom."""
     monkeypatch.delenv("BYOM_HOME", raising=False)
+    monkeypatch.delenv("BYOM_COLAB_BIN", raising=False)
     monkeypatch.setenv("BYOM_CONFIG_DIR", str(tmp_path / "byom"))
     return tmp_path / "byom"
 
@@ -46,3 +47,11 @@ def stub_ssh_key_validation(monkeypatch):
     from byom import remote
 
     monkeypatch.setattr(remote, "validate_ssh_key", lambda path: None)
+
+
+@pytest.fixture(autouse=True)
+def stub_local_port_check(monkeypatch):
+    """Isola testes unitários de portas 4000/4001 ocupadas no host."""
+    from byom import cli
+
+    monkeypatch.setattr(cli, "_port_free", lambda port: True)

@@ -8,6 +8,7 @@ onde o byom baixa os pesos — nunca hardcoded por perfil.
 from __future__ import annotations
 
 import dataclasses
+import re
 
 import pytest
 from typer.testing import CliRunner
@@ -20,15 +21,18 @@ runner = CliRunner()
 #: Conferido em https://huggingface.co/<repo do desenvolvedor> em 2026-11-24.
 PROVIDER_ESPERADO = {
     "inkling-2-mini": "Thinking Machines Lab",
+    "inkling-2-mini-strata": "Thinking Machines Lab",
     "qwen3.8-27b-awq": "Qwen (Alibaba Cloud)",
     "qwen3.8-27b-gguf": "Qwen (Alibaba Cloud)",
     "gemma-4": "Google DeepMind",
     "muse-glimmer-30b": "Meta Superintelligence Lab",
     "qwen-image-2.1": "Qwen (Alibaba Cloud)",
+    "qwen-image-2.1-turbo-uncensored": "Qwen (Alibaba Cloud)",
     "minimax-m3.1-flash": "MiniMax",
     "glm-5.3-flash": "Z.ai",
     "deepseek-v4.1-flash": "DeepSeek",
     "ternary-bonsai-2.5-27b": "Prism ML",
+    "qwen3-tts": "Qwen (Alibaba Cloud)",
 }
 
 
@@ -52,7 +56,9 @@ def test_todo_modelo_declara_fornecedor_com_fonte():
         assert model.provider == PROVIDER_ESPERADO[model.id], model.id
         fonte = catalog.PROVIDER_SOURCES[model.id]
         assert "huggingface.co" in fonte
-        assert "2026-11-24" in fonte
+        # Toda fonte é datada; a data varia por modelo (o pack do Strata foi
+        # conferido em 2026-11-27, o resto em 2026-11-24).
+        assert re.search(r"20\d\d-\d\d-\d\d", fonte), model.id
 
 
 def test_package_owner_traduz_a_org_do_repo():

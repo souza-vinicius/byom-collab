@@ -11,7 +11,7 @@ fica ociosa para evitar desperdício de unidades de computação.
 
 ## Requisitos
 
-* macOS ou Linux com `ssh` e [`uv`](https://docs.astral.sh/uv/).
+* Linux, macOS ou Windows com `ssh` disponível e [`uv`](https://docs.astral.sh/uv/).
 * A [Colab CLI](https://github.com/googlecolab/google-colab-cli), instalada e
   autenticada (o `byom` não possui fluxo próprio de login):
 
@@ -37,6 +37,8 @@ uv run byom configure --profile qwen3.8-27b-32k    # seleciona um perfil de mode
 uv run byom up                                     # aloca a GPU e inicia o endpoint local
 uv run byom setup                                  # configura o chat isolado (`llm`) apontando para o endpoint local
 uv run byom chat                                   # conversa no terminal com o modelo remoto (histórico isolado em logs.db)
+uv run byom chat -m meu-modelo --no-history         # usa outro ID do llm e não salva o histórico
+uv run byom web                                    # abre o frontend web (Open WebUI) em 127.0.0.1:8080
 uv run byom status                                 # mostra sessão, worker, túnel e uso da conta
 uv run byom down                                   # encerra a sessão
 uv run byom uninstall                              # remove apenas o diretório exclusivo do byom
@@ -49,18 +51,33 @@ uv run byom uninstall                              # remove apenas o diretório 
   opcionalmente, aplicar a conexão automaticamente (sem alterar arquivos de
   harness durante o `Iniciar sessão no Colab`). A opção **Conversar com o
   modelo (llm chat)** (atalho `c`) abre o chat no terminal com a sessão ativa.
-* Na TUI, a opção **Selecionar GPU** (atalho `2`) concentra a escolha de modelo
-  e oferece dois caminhos: **Selecionar perfil de modelo**, que reusa a lista de
-  perfis prontos e a tela de detalhe, e **Selecionar uma GPU para ver os modelos
-  compatíveis**, que mostra a GPU escolhida, a tabela de modelos que cabem nela e
-  um painel de confirmação com o contexto servido e os valores resultantes de
-  `gpu`/`gpu_high_mem`. **Nada é gravado em `config.toml` antes da confirmação**:
-  voltar para a lista, trocar de GPU ou sair pelo menu não deixa resíduo, e um
-  par GPU + modelo que não cabe é recusado sem escrever nada.
-* `byom profiles` lista todos os perfis; `byom gpus` exibe o catálogo estático
-  de GPUs. Encerre a sessão antes de trocar de perfil.
-* `byom models --gpu L4` lista apenas as variantes do catálogo cujo contexto
-  servido cabe nessa GPU, sem solicitar entrada. Sem `--gpu`, `byom models`
+  **Gerar imagem** (atalho `i`) e **Gerar áudio** (atalho `a`) abrem as telas de
+  mídia descritas abaixo.
+* Na TUI, a opção **Selecionar GPU** (atalho `2`) tem um caminho único:
+  **GPU -> modelo**. A tela mostra a GPU, a VRAM e quantos modelos têm receita
+  de execução nela; ao escolher a GPU, a tabela lista os modelos que cabem com a
+  **maior janela de contexto que a VRAM permite**, até o máximo documentado do
+  modelo. GPU menor recebe um contexto menor; GPU maior recebe o contexto
+  máximo. Um painel de confirmação mostra a janela otimizada, a memória estimada
+  e os valores de `gpu`/`gpu_high_mem`. **Nada é gravado em `config.toml` antes da
+  confirmação**: voltar, trocar de GPU ou sair pelo menu não deixa resíduo, e um
+  par GPU + modelo que não cabe é recusado sem escrever nada. Os perfis TOML
+  continuam existindo como receitas internas de runtime, mas não são escolhidos
+  na TUI. Depois de gravar o par, o menu seguinte oferece apenas **Iniciar
+  sessão no Colab** ou **Voltar ao menu principal**; o harness saiu desse fluxo.
+* **Gerar imagem** (atalho `i`) pede prompt, tamanho, passos e guidance, chama
+  `POST /v1/images/generations` pelo proxy e salva o PNG em
+  `byom_home()/images`. Exige uma sessão com runtime `image`.
+* **Gerar áudio** (atalho `a`) pede texto, voz e idioma, chama
+  `POST /v1/audio/speech` e salva o áudio em `byom_home()/audio`. Exige uma
+  sessão com runtime `tts`.
+* Depois de um `up` bem-sucedido, o menu de próximo passo inclui **Gerar
+  imagem** no runtime de imagem e **Gerar áudio** no runtime TTS. Runtimes de
+  chat continuam oferecendo o **Conversar com o modelo**.
+* `byom profiles` lista as receitas internas de runtime; `byom gpus` exibe o
+  catálogo estático de GPUs. Encerre a sessão antes de trocar de modelo.
+* `byom models --gpu L4` lista as variantes que cabem nessa GPU com o contexto
+  otimizado, sem solicitar entrada. Sem `--gpu`, `byom models`
   imprime a lista numerada de GPUs, solicita um número ou ID (sem diferenciar
   maiúsculas/minúsculas) e exibe somente as variantes compatíveis. Uma entrada
   inválida interrompe com os IDs aceitos; nenhuma GPU é escolhida
@@ -91,10 +108,11 @@ configuração global do `llm` no seu sistema:
   preferências (`llm-chat.json`) e o arquivo `extra-openai-models.yaml` (com
   permissão `0600`). Quando a URL mudar em uma nova sessão ou túnel do Colab,
   execute novamente apenas alterando `--url` (as demais preferências são
-  preservadas):
+  preservadas). `--model-id` define o ID local no `llm` (padrão `byom`) e
+  `--api-key` guarda a chave do endpoint em `keys.json` com permissão `0600`.
 
   ```bash
-  uv run byom setup --url http://127.0.0.1:4000/v1 --model qwen3.8-27b
+  uv run byom setup --url http://127.0.0.1:4000/v1 --model qwen3.8-27b --model-id meu-modelo
   # Em uma nova sessão/túnel com URL diferente:
   uv run byom setup --url https://novo-tunel.trycloudflare.com/v1
   ```
@@ -107,11 +125,53 @@ configuração global do `llm` no seu sistema:
   * `--no-history` / `--no-log` / `-n`: desliga a gravação em `logs.db` durante a
     sessão (controlado via arquivo temporário `logs-off` no diretório do `byom`).
   * `--continue` / `-c`: continua a conversa anterior salva em `logs.db`.
+  * `--model` / `-m`: escolhe o ID configurado no `llm` (padrão: o salvo pelo `setup`).
+
+Pressione **Ctrl+D** para encerrar a conversa. **Ctrl+C** cancela sem traceback e
+sem registrar erro. Defina `NO_COLOR=1` para desativar cores tanto no Rich quanto
+no menu questionary.
 * **Remover dados locais (`byom uninstall`)**: lista o conteúdo do diretório do
   `byom`, pede confirmação (use `--yes` para pular), valida o arquivo-marcador
   `.byom-managed` (recusando remover `HOME`, `/`, caminhos vazios ou symlinks),
   remove apenas o diretório do `byom` sem tocar no `llm` global e imprime o
   comando para desinstalar o pacote (`pip uninstall byom`).
+
+### Frontend web (`byom web`)
+
+O `byom web` sobe uma instância isolada do [Open WebUI](https://openwebui.com)
+em `http://127.0.0.1:8080`, conectada ao proxy local em
+`http://127.0.0.1:4000/v1`. A interface cobre conversas com histórico, system
+prompt por conversa, upload de arquivos e parâmetros do modelo, sem alterar
+nenhuma configuração global do Open WebUI.
+
+* **Isolamento**: dados em `$BYOM_HOME/webui` (SQLite, uploads e cache) e segredo
+  de sessão em `$BYOM_HOME/webui-secret` com permissão `0600`. O comando cria o
+  marcador `.byom-managed`, então `byom uninstall` remove tudo.
+* **Sem login**: `WEBUI_AUTH=false`, porque a interface escuta apenas em
+  loopback. Para multiusuário, use outro diretório de dados.
+* **Autoconfiguração**: a URL do proxy e a chave são fornecidas como padrões no
+  ambiente (variáveis já exportadas vencem), e `DEFAULT_MODELS` pré-seleciona o
+  modelo ativo (`config.served_model_name`, o mesmo id de `/v1/models`).
+  Variáveis já definidas no ambiente são **preservadas** — por exemplo,
+  `OPENAI_API_BASE_URLS` e `OPENAI_API_KEYS` (ou as versões singulares
+  `OPENAI_API_BASE_URL` e `OPENAI_API_KEY`, propagadas automaticamente quando
+  as plurais não estão exportadas) apontam para outro provedor se você as
+  exportar antes de `byom web`. O comando confirma o vínculo automático
+  (`Vínculo:`), mostra o modelo padrão e a lista de variáveis preservadas. Com
+  `ENABLE_PERSISTENT_CONFIG=false`, um URL salvo antes no `webui.db` não volta
+  a valer na reinicialização — mudanças feitas no painel admin duram apenas até
+  o próximo `byom web`.
+* **Primeira execução**: baixa o Open WebUI 0.13.5 e o Python 3.12 pelo `uv`
+  (o pacote exige `<3.13`). As execuções seguintes reutilizam o cache.
+* **Opções**: `--port` / `-p` muda a porta (padrão 8080); `--no-browser` não abre
+  o navegador. `Ctrl+C` encerra o frontend de forma limpa (código 130) e falhas
+  exibem código de saída e ação corretiva.
+* **Limite de runtime**: o byom serve um perfil por sessão. A lista de modelos
+  do Open WebUI reflete o runtime ativo. Modelos de imagem recusam chat; a
+  geração de imagem do Open WebUI exige um modelo de chat e uma conexão de
+  imagem ao mesmo tempo, combinação que uma sessão única do byom não oferece.
+
+Detalhes em [Open WebUI Frontend](docs/webui.md).
 
 ## Catálogos de GPUs e modelos
 
@@ -141,11 +201,10 @@ comparison chart", consultado em 2026-11-23):
 | A100 80 GB | 80 GiB | sim | `A100`, `gpu_high_mem=true` |
 | H100 80 GB | 80 GiB | sim | `H100` |
 
-Primeiro lote (documentação consultada em 2026-11-23). "Contexto doc" abaixo é o
-máximo na página oficial; o contexto servido é menor na maioria dos perfis para
-caber na GPU declarada em `config.toml` (`byom models` exibe ambos).
-`byom models --gpu <ID>` usa o mesmo orçamento de contexto servido de `byom up`
-para filtrar a listagem; ele não altera a GPU declarada:
+Contexto doc é o máximo na página oficial; o contexto servido exibido por
+`byom models` é a maior janela que cabe na GPU, até esse máximo (a TUI mostra o
+mesmo número ao escolher GPU + modelo). `byom models --gpu <ID>` usa o mesmo
+orçamento de `byom up` para filtrar a listagem; ele não altera a GPU declarada:
 
 | Modelo | Fornecedor | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
 | :--- | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
@@ -157,6 +216,9 @@ para filtrar a listagem; ele não altera a GPU declarada:
 | Gemma 4 | Google DeepMind | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
 | Muse Glimmer 30B | Meta Superintelligence Lab | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
 | Qwen-Image-2.1 | Qwen (Alibaba Cloud) | image | INT8-ConvRot (12,07 GiB) / GGUF Q4_K (9,22 GiB) | 12,1 / 9,2 GiB | n/a | n/a | L4 / **T4** |
+| Qwen-Image-2.1 Turbo Uncensored | Qwen (Alibaba Cloud) | image | AD-Q4_K / Q8_0 (encoder abliterado + denoiser Turbo, AtomicChat) | 9,47 / 15,81 GiB | n/a | n/a | **T4** / L4 |
+| Inkling 2 Mini | Thinking Machines Lab | Strata (engine nativo) | packs SQ-10 / SQ-15 / SQv2-20 | 9,75 / 13,36 / 18,04 GiB | 1.000.000 | 32.768 | T4 / L4 / L4 |
+| Qwen3-TTS | Qwen (Alibaba Cloud) | tts | 0.6B CustomVoice (2,32 GiB) / 1.7B CustomVoice (4,21 GiB) | 2,3 / 4,2 GiB + pipeline | n/a | n/a (fala) | **T4** / **L4** |
 
 **Fornecedor** é quem desenvolve o modelo; é dado do catálogo (`ModelEntry.provider`),
 com a fonte registrada em `catalog.PROVIDER_SOURCES` (URL + data) e conferida em
@@ -167,21 +229,31 @@ Mini aparece com pesos Unsloth e com pesos AtomicChat: muda o publicador e a
 receita de quantização, não o modelo. `byom profiles` imprime as duas linhas
 (`Fornecedor:` e, quando divergem, `Pacote:`), `byom models --gpu <ID>` traz as
 duas colunas, e a TUI mostra o fornecedor na própria linha do perfil. Detalhes em
-[Model Provider and Weight Package](docs/provider.md).
+[Model Provider and Weight Package](docs/provider.md). No
+**Qwen-Image-2.1 Turbo Uncensored**, o pacote é a AtomicChat nos dois perfis (o
+denoiser Turbo e o encoder abliterado vêm dos repositórios dela), embora o modelo
+continue sendo da Qwen (Alibaba Cloud).
 
-Os três perfis AD da AtomicChat usam o **mesmo** binário `b12611` dos perfis
+Os perfis AD da AtomicChat usam o **mesmo** binário `b12611` dos perfis
 Unsloth: esses arquivos já estão no layout merged do PR #32694. Ficaram de fora
 `Inkling-2-Mini-Q4_K_M.gguf` (17,38 GB) e `Q5_K_M` (19,81 GB), que continuam no
-layout antigo do PR #32695 e **não carregam** em b12600+; o drafter DSpark
-(`dspark-Inkling-2-Mini-Q8_0.gguf`) exige um build do PR #32218 e também não tem
-perfil. O `AD-IQ2_XXS` serve **32K** na T4 porque o KV do Inkling é contado pela
+layout antigo do PR #32695 e **não carregam** em b12600+. O drafter DSpark
+(`dspark-Inkling-2-Mini-Q8_0.gguf`, 503.857.696 B no repositório da AtomicChat)
+ganhou perfil em `inkling-2-mini-ad-q6k-dspark`, pinado no build **b12800**
+(`v1.1.0-dev`), o primeiro release oficial com `--spec-type draft-dspark` — o
+PR #32218 foi mergeado em 2026-11-24 e entrou na **v1.1.0**, então o fork do PR
+e o workflow de build do byom não são mais necessários. O `AD-IQ2_XXS` serve
+**32K** na T4 porque o KV do Inkling é contado pela
 arquitetura (0,58 GiB em 32K, e não os 2 GiB do heurístico) — o motivo está em
 `Variant.context_reason`.
 
 Memória e GPU são conta, não estimativa de página: cada número vem dos bytes
-publicados no Hugging Face (conferidos em 2026-11-24) e o perfil declara a GPU
+publicados no Hugging Face (conferidos em 2026-11-24, e em 2026-11-28 para o
+Turbo Uncensored) e o perfil declara a GPU
 onde `required + folga` cabe de verdade. A tabela com `required`, folga e margem
-de cada perfil está em [docs/log.md](docs/log.md#2026-11-24).
+de cada perfil está em [docs/log.md](docs/log.md#2026-11-24). A conta do Turbo
+Uncensored, com os quatro papéis e a agenda de 8 passos, está em
+[Qwen-Image-2.1 Turbo Uncensored](docs/qwen-image-turbo-uncensored.md).
 
 A redução é dado estruturado, não texto solto: `src/byom/catalog.py` mantém
 `Variant.context_doc`, `Variant.context` e `PROFILE_CONTEXTS`, uma entrada por
@@ -232,12 +304,15 @@ o arquivo e geram lixo sem avisar; `PTQ1_0` e o `PTQ1_0-MTP` exigem o binário d
 fork **PrismML**, fixado em `prism-b12128-d7b2896` (asset CUDA 12.8 x64 de
 228.535.760 B, sha256 conferido). O irmão `prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit`
 é **MLX** (Apple Silicon) e ficou fora do catálogo: o byom roda no Colab (CUDA) e
-não tem runtime MLX, então nenhum perfil seria executável. DSpark continua
-desativado nos TOMLs: o suporte mainline é
-um pull request aberto (PR #32218), então o drafter não tem perfil — mas o custo
-dele (0,47 GiB) já entra no orçamento de qualquer perfil que ligue
-`[worker] dspark = true`, e `available_profiles` recusa o campo sem
-`drafter_pattern`. Muse Glimmer usa o
+não tem runtime MLX, então nenhum perfil seria executável. DSpark está ligado em
+**um** perfil, `inkling-2-mini-ad-q6k-dspark`: o suporte entrou no upstream
+(PR #32218, mergeado em 2026-11-24, presente na **v1.1.0**) e o perfil fixa o
+build oficial **b12800** (`llama-b12800-bin-ubuntu-cuda-12.8-x64.tar.gz`,
+221.624.554 B, sha256 `088bc70b…587892d` conferido contra o asset baixado). A
+conta é 22,15 + 0,65 visão + 2 runtime + 2,08 de KV em 128K + 0,47 do drafter =
+27,35, mais 2,0 de folga = 29,35 <= 40 GiB da A100-40; o custo do drafter entra
+no orçamento em qualquer perfil que ligue `[worker] dspark = true`, e
+`available_profiles` recusa o campo sem `drafter_pattern`. Muse Glimmer usa o
 release fixado `b12649` do upstream.
 Qwen3.8 mantém o perfil AWQ existente para vLLM e adiciona opções GGUF. Os
 perfis do Gemma 4 carregam uma chave explícita `thinking_policy` vinda do
@@ -277,14 +352,21 @@ deles cabe em uma única GPU do Colab.
   modelo de chat: `POST /v1/chat/completions` retorna HTTP 501 neste runtime. As
   requisições recebem `prompt` e opções de imagem, não `messages`; as respostas
   contêm dados de imagem (`data[].b64_json`), não tokens ou motivos de parada.
-  A página da Unsloth documenta padrões de **25 steps e guidance 1** (conferido
-  em 2026-11-23); ambos vivem apenas em `ModelEntry.generation_defaults`. O
-  sd-server **não** aceita um campo `guidance` no nível raiz: o gateway mapeia o
-  par para a extensão nativa documentada dentro de `prompt` —
+  A página da Unsloth documenta padrões de **25 steps e guidance 1** para o
+  Qwen-Image-2.1 (conferido em 2026-11-23); o **Turbo Uncensored** usa a agenda
+  própria do checkpoint: **8 passos, CFG 1, euler e 9 sigmas**. Os dois vivem em
+  `ModelEntry.generation_defaults`; o Turbo acrescenta `sample_method` e
+  `custom_sigmas`. O sd-server **não** aceita um campo `guidance` no nível raiz: o
+  gateway mapeia o par para a extensão nativa documentada dentro de `prompt` —
   `<sd_cpp_extra_args>{"sample_params":{"sample_steps":25,"guidance":{"txt_cfg":1.0}}}</sd_cpp_extra_args>`
-  (`examples/server/api.md`, conferido em 2026-11-23). O cliente pode
-  sobrescrever `steps`/`guidance` no corpo da requisição ou enviar seu próprio
-  bloco `sd_cpp_extra_args`. Divergência registrada: a mesma página da Unsloth
+  no Qwen-Image-2.1 e, no Turbo, o mesmo bloco com `"sample_method":"euler"` e
+  `"custom_sigmas":[1.0,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568,0.0]`
+  (`examples/server/api.md`, conferido em 2026-11-23 e 2026-11-28). A lista de
+  sigmas exige o fix `c150a6b` do sd.cpp (2026-10-06); o build fixado é de
+  2026-11-15. O cliente pode sobrescrever `steps`/`guidance` no corpo da
+  requisição ou enviar seu próprio bloco `sd_cpp_extra_args`; quando a lista de
+  sigmas está presente, o servidor usa a contagem de sigmas menos um como número
+  de passos. Divergência registrada: a mesma página da Unsloth
   sugere `--steps 20 --cfg-scale 6.0` para o fluxo via sd-cli; este projeto
   adota os padrões documentados da API (25/1) conforme o briefing, não um valor
   inventado para o sd.cpp. `POST /v1/images/edits` usa multipart e mantém os
@@ -292,14 +374,24 @@ deles cabe em uma única GPU do Colab.
   em 25 passos numa Colab T4 de 15 GB; o perfil GGUF Q4_K usa **T4** (9,22 GiB
   de pesos + 1,08 do projetor de visão + 2 de runtime + 1 de folga = 13,30, que
   cabe nos 15 GiB utilizáveis) e o perfil INT8-ConvRot fica em L4 (12,07 + 1,08
-  + 2 + 1 = 16,15 > 15). A T4 não possui bf16, portanto o treino é recusado
-  pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior. O nome do
-  asset Linux fixado não declara seu backend; verifique o uso de GPU na primeira
-  execução real. Se for um build de CPU, compile a partir da tag fixada com
-  `-DSD_CUDA=ON` e coloque o binário em `/content/byom/sdcpp/sd-server`: o
-  `runtime_manifest.json` aponta para o symlink `/content/byom/sd-server`, que
-  o `prepare_runtime` cria a partir do diretório `binary_dir` do perfil. Não há
-  variável de ambiente para o caminho do binário — o manifest é a única fonte.
+  + 2 + 1 = 16,15 > 15). No Turbo Uncensored, o par AD-Q4_K fica em **T4**
+  (9,47 + 1,08 + 2 + 1,0 = 13,55) e o Q8_0 em L4 (15,81 + 1,08 + 2 + 1,2 =
+  20,09). A T4 não possui bf16, portanto o treino é recusado
+  pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior.
+  O binário fixado é o build **Unsloth `cuda13`** do
+  `stable-diffusion.cpp` `master-982-0518b34-u27b9ddc`, asset
+  `sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip`,
+  `sha256 5129f05af93cac94f6e6182007ff9b18284fbea71f930f4b93360bc5a35d50a1`.
+  O build é Ubuntu 22.04 com CUDA 13 e traz SASS para sm_75, sm_80, sm_86,
+  sm_89, sm_90, sm_100 e sm_120; o guia da Unsloth mede a T4 em cerca de 120 s
+  por imagem 1024x1024 em 25 passos. O asset upstream anterior (Ubuntu 26.04,
+  CPU) exigia glibc 2.43 e morria no loader do Colab (glibc 2.39), por isso foi
+  substituído. O workflow manual `.github/workflows/build-sd-server.yml` compila
+  o mesmo commit para um asset próprio, com CUDA 13 e as mesmas arquiteturas,
+  para o caso de o build da Unsloth deixar de ser publicado. O `prepare_runtime`
+  extrai o zip em `sdcpp`, encontra o `sd-server` e cria o symlink
+  `/content/byom/sd-server`; o `runtime_manifest.json` aponta para esse symlink,
+  que é a única fonte do caminho.
 * Repositórios no Hugging Face e a CLI do Colab são **verificados apenas na
   primeira execução real**: este repositório não os aciona durante os testes
   locais. Confira os arquivos de modelo resolvidos pelos padrões fixados e a GPU
@@ -314,6 +406,13 @@ GPU do Google Cloud e FAQ do Colab, `unsloth/Inkling-2-Mini-GGUF` no Hugging
 Face (`Mainline_Support/README.md`, `HOW_TO_RUN.md` e discussão #8), listas de
 assets de release de `ggml-org/llama.cpp` `b12611` e `b12649`, PRs #32694 e
 #32704 do llama.cpp e `leejet/stable-diffusion.cpp` `master-1106-532d2c1`.
+
+Fontes consultadas em 2026-11-28 para o **Turbo Uncensored**: os cards
+`Qwen/Qwen-Image-2.1-Turbo`, `AtomicChat/Qwen-Image-2.1-Turbo-GGUF` e
+`AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF` no Hugging Face, e
+`examples/server/api.md` e `docs/qwen_image_2.1.md` de
+`leejet/stable-diffusion.cpp` no commit `0518b34` (preset
+`qwen-image-2.1-turbo`, `custom_sigmas` e `sample_method`).
 
 ## Uso com agentes de codificação
 
@@ -395,7 +494,7 @@ perfis definem os campos ligados ao modelo):
 | Chave | Padrão | Descrição |
 | :--- | :--- | :--- |
 | `profile` | vazio | Perfil ativo |
-| `runtime` | `vllm` | Runtime selecionado pelo perfil: `vllm`, `llama-cpp` ou `image` |
+| `runtime` | `vllm` | Runtime selecionado pelo perfil: `vllm`, `llama-cpp`, `image` ou `strata` |
 | `model` | `philbert440/Qwen3.8-27B-W4A16-AWQ` | Checkpoint servido pelo vLLM |
 | `served_model_name` | `qwen3.8-27b` | ID do modelo exposto pela API |
 | `max_model_len` | `16384` | Tamanho máximo de contexto |
@@ -421,8 +520,26 @@ worker: não é uma credencial do usuário, mas não deve ser compartilhado). As
 sessões do `byom` usam um arquivo isolado
 (`~/.config/byom/colab-sessions.json`), separado das suas outras sessões do
 Colab. `session.json` também carrega `thinking_policy` (chave explícita do
-Gemma 4 vinda do catálogo) e `generation_defaults` (`steps`/`guidance` para o
-Qwen-Image), ambos validados pelo gateway na inicialização.
+Gemma 4 vinda do catálogo) e `generation_defaults` (`steps`/`guidance` e, nos
+modelos que exigem, `sample_method`/`custom_sigmas`), ambos validados pelo
+gateway na inicialização.
+
+### Erros comuns e o que fazer
+
+`byom up` anuncia cinco etapas (`[1/5]` a `[5/5]`), exibe `What to do:` com a
+ação recomendada em falhas de alocação, túnel, SSH ou timeout e, em `Ctrl+C`,
+informa o encerramento da sessão alocada.
+
+| Mensagem | Causa provável | Ação |
+| :--- | :--- | :--- |
+| `Colab CLI could not list sessions` | CLI do Colab não autenticada, rede indisponível ou erro próprio da CLI | Leia `Last CLI output`; para login, rode `colab sessions`; para outros erros, corrija a CLI e rode `byom init` |
+| `colab new` falha com `Service Unavailable` em `/tun/m/assign` | Indisponibilidade temporária do serviço de alocação do Colab ou falta de capacidade da GPU; a CLI já repete 502/503/504 por cerca de três minutos | Não é falta de unidades de computação. Tente novamente em alguns minutos ou escolha outra GPU |
+| `Allocation refused (precondition failed)` | Limite de sessões ativas ou limite temporário de uso no Colab (HTTP 412) | Encerre outras sessões no Colab ou aguarde alguns minutos antes de rodar `byom up` |
+| `Backend rejected accelerator` | Conta sem cota ou elegibilidade para a GPU solicitada (HTTP 400) | Escolha outra GPU em `config.toml` ou pela TUI (`Selecionar GPU`) e tente novamente |
+| `a porta 4000 do proxy já está em uso` / `a porta 4001 do túnel já está em uso` | Outro processo ocupa uma porta local necessária | Encerre esse processo ou rode `byom down` antes de alocar a GPU |
+| `Worker did not become ready within ... (last state: ...)` | Modelo não carregou, túnel caiu ou cota acabou | Use o último estado como pista, rode `byom status` e leia os logs da VM (ver `docs/troubleshooting.md`) |
+| `Harness config restored` | Uma falha de `up`/`down` devolveu o modelo padrão ao OpenCode/dsh | Nenhuma ação: o cliente volta a apontar para o modelo anterior |
+| `Unknown: could not confirm deallocation` | O Colab não confirmou o fim da VM | Confira no painel do Colab e rode `byom down` novamente; o estado local foi mantido |
 
 ## Problemas conhecidos
 
@@ -448,13 +565,15 @@ onde `<endpoint>` é o segundo campo na saída de `colab sessions`.
 Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
 
 * **Valores documentados são dados do catálogo.** `reasoning_effort`,
-  `thinking_policy` do Gemma 4, `generation_defaults` do Qwen-Image e ambos os
+  `thinking_policy` do Gemma 4, `generation_defaults` do Qwen-Image e do Turbo
+  (`steps`, `guidance` e, quando o checkpoint exige, `sample_method` e
+  `custom_sigmas`) e ambos os
   números de contexto ficam em `src/byom/catalog.py`; os perfis os herdam e o
   gateway os recebe em `session.json`. Fontes e datas de cada valor estão
   registradas no catálogo e nas tabelas acima. Nenhum perfil repete `medium`,
-  `25` ou um máximo de contexto documentado.
+  `25`, `8` ou um máximo de contexto documentado.
 * **O contexto não é reduzido silenciosamente.** `PROFILE_CONTEXTS` lista todos
-  os 21 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
+  os 29 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
   imprime ambos; `check_fit` continua usando o valor servido de `config.toml`.
   Elevar um perfil ao máximo documentado sem uma GPU maior está explicitamente
   fora de escopo.
@@ -463,10 +582,17 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   O token do próprio cliente, histórico já limpo ou `enable_thinking: false`
   prevalecem.
 * **Padrões de imagem usam os nomes do servidor.** A Unsloth fala em
-  "steps/guidance"; o sd-server documenta `sample_params.sample_steps` e
-  `sample_params.guidance.txt_cfg` via `sd_cpp_extra_args`. A equivalência está
+  "steps/guidance"; o sd-server documenta `sample_params.sample_steps`,
+  `sample_params.guidance.txt_cfg`, `sample_params.sample_method` e
+  `sample_params.custom_sigmas` via `sd_cpp_extra_args`. A equivalência está
   registrada em `ModelEntry.generation_source`; nenhum `guidance` no nível raiz
   é enviado.
+* **O Turbo é uma entrada própria, não uma variante de quantização.** O
+  Qwen-Image-2.1 Turbo é um checkpoint destilado de 8 passos com agenda fixa;
+  tratá-lo como variante do modelo de 25 passos faria o padrão do catálogo
+  servir a agenda errada. `qwen-image-2.1-turbo-uncensored` tem
+  `generation_defaults` próprios, e cada variante é o par encoder + denoiser
+  (AD-Q4_K na T4, Q8_0 na L4).
 * **`state.json` corrompido bloqueia `up`.** Arquivo ausente significa "sem
   sessão"; arquivo ilegível ou inválido é erro. `up` também verifica
   `orphan_assignments()` tanto no caminho normal quanto com `--force` e
@@ -546,12 +672,13 @@ computação. Use `--enforce-eager` se faltar memória.
 
 ```text
 src/byom/
-  cli.py                  init, profiles, gpus, models, configure, up, status, down, setup, chat, uninstall
+  cli.py                  init, profiles, gpus, models, configure, up, status, down, setup, chat, web, uninstall
   llm_chat.py             setup idempotente, execução isolada de `llm chat` e uninstall seguro
+  webui.py                frontend Open WebUI isolado (`byom web`)
   tui.py                  interface interativa (TUI) com Rich e questionary
   mensagens.py            textos, traduções, glossário e formatadores PT-BR da TUI
   catalog.py              catálogo validado de GPUs/modelos e checagem de compatibilidade
-  profiles/               perfis de runtime (vLLM, GGUF, imagem) e aliases do OpenCode
+  profiles/               perfis de runtime (vLLM, GGUF, imagem, TTS) e aliases do OpenCode
   opencode.py             mescla a configuração do OpenCode
   dsh.py                  mescla a configuração do dsh (DeepSeek harness)
   colab.py                chamadas da Colab CLI e células de kernel
