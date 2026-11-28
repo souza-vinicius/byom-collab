@@ -465,6 +465,11 @@ def test_snapshot_cli_status_e_down(monkeypatch):
         "Session: byom-1234abcd  (created at 2026-11-23T19:00:00+00:00)" in res_status_active.output
     )
     assert "Colab session: active (requested hardware: L4)" in res_status_active.output
+    assert "Fluxo: Colab → GPU → Byom → Chat/Open WebUI → encerramento" in res_status_active.output
+    assert "  Modelo:   qwen3.8-27b" in res_status_active.output
+    assert "  Byom API: http://127.0.0.1:4000/v1" in res_status_active.output
+    assert "  WebUI:    http://127.0.0.1:8080" in res_status_active.output
+    assert "`byom down` encerra sessão, túnel e processos locais" in res_status_active.output
     assert "Worker: ready" in res_status_active.output
     assert "Tunnel: connected (reconnects: 0, latency: 42 ms)" in res_status_active.output
 

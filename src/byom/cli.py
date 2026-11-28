@@ -39,9 +39,12 @@ from . import (
 
 app = typer.Typer(
     add_completion=False,
+    rich_markup_mode="rich",
     help=(
-        "Run a coding model on a Colab GPU and expose it at 127.0.0.1:4000/v1. "
-        "Workflow: init → configure → up → status → chat → down."
+        "[bold]byom[/] roda um modelo numa GPU do Colab e expõe "
+        "[cyan]http://127.0.0.1:4000/v1[/].\n\n"
+        "Fluxo: [bold]init → configure → up → status → chat → down[/]. "
+        "Frontend: [bold]byom web[/]. Ex.: `byom up && byom web`."
     ),
     pretty_exceptions_show_locals=False,
     pretty_exceptions_short=True,
@@ -275,7 +278,10 @@ def models(
         str | None,
         typer.Option(
             "--gpu",
-            help="Catalog GPU ID; filters the listing without changing configuration.",
+            help=(
+                "ID da GPU do catálogo; filtra a lista sem mudar config. "
+                "Ex.: `byom models --gpu L4`."
+            ),
         ),
     ] = None,
 ) -> None:
@@ -304,7 +310,9 @@ def models(
 
 @app.command()
 def configure(
-    profile_id: str = typer.Option(..., "--profile", help="ID of the profile to apply."),
+    profile_id: str = typer.Option(
+        ..., "--profile", help="ID do perfil. Ex.: `byom configure --profile qwen3.8-27b-32k`."
+    ),
 ) -> None:
     """Apply a profile without changing local ports or options."""
     try:
@@ -901,22 +909,28 @@ def up(
         bool,
         typer.Option(
             "--force",
-            help="Stop the current BYOM session and create a new one if shutdown is confirmed.",
+            help=(
+                "Encerra a sessão atual e cria outra se a confirmação passar. "
+                "Ex.: `byom up --force`."
+            ),
         ),
     ] = False,
     opencode_config: Annotated[
         Path | None,
         typer.Option(
             "--opencode-config",
-            help="Global OpenCode config file (default: XDG_CONFIG_HOME/opencode).",
+            help=(
+                "Arquivo global do OpenCode (padrão: XDG_CONFIG_HOME/opencode). "
+                "Ex.: `--opencode-config ~/.config/opencode/opencode.json`."
+            ),
         ),
     ] = None,
     dsh_config: Annotated[
         Path | None,
         typer.Option(
             "--dsh-config",
-            help="dsh profile patch (default: ~/.dsh/profiles/desktop/cordis.patch.yml, "
-            "only touched if it exists).",
+            help="Patch do perfil dsh (padrão: ~/.dsh/profiles/desktop/cordis.patch.yml, "
+            "só é tocado se existir). Ex.: `--dsh-config ./meu.patch.yml`.",
         ),
     ] = None,
 ) -> None:
@@ -973,6 +987,16 @@ def status() -> None:
     _say(f"Session: {state.session}  (created at {state.created_at})")
     if state.endpoint:
         _say(f"Backend endpoint: {state.endpoint}")
+    # Mapa do fluxo inteiro, do Colab ao encerramento. Texto simples: o mesmo
+    # conteúdo continua legível com NO_COLOR e em pipe.
+    _say("Fluxo: Colab → GPU → Byom → Chat/Open WebUI → encerramento")
+    _say(f"  Modelo:   {cfg.served_model_name}")
+    _say(f"  Byom API: http://127.0.0.1:{cfg.proxy_port}/v1")
+    _say(
+        f"  WebUI:    http://127.0.0.1:{webui.DEFAULT_PORT} "
+        "(padrão de `byom web`; `--port` pode mudar)"
+    )
+    _say("  Fim:      `byom down` encerra sessão, túnel e processos locais")
 
     # Only `colab status`/`sessions` can confirm that a session has stopped;
     # an HTTP failure does not prove that the VM was deallocated.
@@ -1291,7 +1315,10 @@ def setup(
         str | None,
         typer.Option(
             "--model-id",
-            help="Identificador local do modelo no llm (padrão: byom).",
+            help=(
+                "ID local do modelo no llm (padrão: byom). "
+                "Ex.: `byom setup --model-id meu-modelo`."
+            ),
         ),
     ] = None,
     api_key: Annotated[
@@ -1352,7 +1379,7 @@ def chat(
         typer.Option(
             "--model",
             "-m",
-            help="ID do modelo configurado no llm (padrão: modelo salvo pelo setup).",
+            help="ID do modelo no llm (padrão: salvo no setup). Ex.: `byom chat -m meu-modelo`.",
         ),
     ] = None,
 ) -> None:
@@ -1376,7 +1403,9 @@ def chat(
 def web(
     port: Annotated[
         int,
-        typer.Option("--port", "-p", help="Porta local do frontend Open WebUI."),
+        typer.Option(
+            "--port", "-p", help="Porta local do Open WebUI. Ex.: `byom web --port 8099`."
+        ),
     ] = webui.DEFAULT_PORT,
     no_browser: Annotated[
         bool,
