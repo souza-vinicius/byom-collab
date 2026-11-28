@@ -56,7 +56,7 @@ class ChatResult:
     def aborted(self) -> bool:
         # click prints "Aborted!" to stderr and exits 1 on Ctrl+C/Ctrl+D; that
         # string is the signal of a normal user cancellation, not a chat failure.
-        return self.returncode == 1 and "Aborted!" in self.stderr
+        return self.returncode == 130 or (self.returncode == 1 and "Aborted!" in self.stderr)
 
 
 def validate_safe_byom_dir(path: Path) -> Path:
@@ -289,6 +289,8 @@ def run_chat(
             encoding="utf-8",
             errors="replace",
         )
+    except KeyboardInterrupt:
+        return ChatResult(130, "Chat interrompido pelo usuário (Ctrl+C).\n")
     finally:
         if no_history and not had_logs_off:
             with contextlib.suppress(OSError):

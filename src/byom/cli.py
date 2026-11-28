@@ -39,7 +39,10 @@ from . import (
 
 app = typer.Typer(
     add_completion=False,
-    help="Run a coding model on a Colab GPU and expose it at 127.0.0.1:4000/v1.",
+    help=(
+        "Run a coding model on a Colab GPU and expose it at 127.0.0.1:4000/v1. "
+        "Workflow: init → configure → up → status → chat → down."
+    ),
     pretty_exceptions_show_locals=False,
     pretty_exceptions_short=True,
 )
@@ -1353,7 +1356,7 @@ def chat(
         ),
     ] = None,
 ) -> None:
-    """Start an interactive `llm chat` session isolated inside BYOM_HOME."""
+    """Start an isolated `llm chat` session. Ctrl+D ends the conversation."""
     try:
         result = llm_chat.run_chat(
             system=system,

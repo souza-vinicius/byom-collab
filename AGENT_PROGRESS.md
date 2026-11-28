@@ -27,21 +27,21 @@ Regras de ouro: zero regressões; escopo controlado (ideias novas só no BACKLOG
 
 - [x] F2.1 Ciclo de vida transparente. `up` agora anuncia 5 etapas numeradas (checagem, preparação, alocação, worker/modelo, espera); mensagem final de prontidão inalterada.
 - [x] F2.2 Erros acionáveis (CLI). `init` mostra a saída real da CLI e orienta conforme o erro; timeout do worker inclui o último estado/motivo; `up` verifica também a porta do túnel e devolve o harness se falhar após sincronizá-lo; `down` devolve o harness mesmo sem confirmação; comparação de GPU ignora caixa e rejeita valor vazio. Ctrl+C/SIGINT no chat fica para o próximo ciclo.
-- [ ] F2.3 Ergonomia do chat: comandos slash existentes, entrada multilinha se aplicável, histórico, confirmação antes de encerrar sessão cara/ativa.
+- [x] F2.3 Ergonomia do chat. Ctrl+C no `llm chat` virou cancelamento limpo (código 130); EOF no prompt de voltar encerra o menu sem traceback; dica de Ctrl+D antes do chat; texto de cancelamento atualizado. Comandos slash, multilinha, histórico e confirmações existentes preservados.
 
 ## Fase 3 — Redesenho da Interface de Terminal e Clareza de Informações
 
-- [ ] F3.1 Hierarquia visual consistente: cores, símbolos compatíveis, separação entre prompt, resposta e logs.
-- [ ] F3.2 Feedback em tempo real: spinners/status no boot do Colab e carregamento do modelo; streaming limpo de Markdown/código.
-- [ ] F3.3 Textos de `--help`, banner, status da sessão e avisos diretos e sem ruído.
-- [ ] F3.4 Compatibilidade: terminais estreitos, `NO_COLOR`, modo não-interativo.
+- [x] F3.1 Hierarquia visual consistente. Painéis, símbolos ASCII/Unicode e separação prompt/resposta/log da TUI preservados; linha de abertura do chat usa o mesmo bullet e estilo das demais etapas.
+- [x] F3.2 Feedback em tempo real. `up` emite 5 etapas numeradas e o último motivo em caso de timeout; spinner existente da TUI e streaming herdado do `llm chat` mantidos (nenhum renderizador novo criado — iria além do escopo).
+- [x] F3.3 Textos diretos. `--help` traz a sequência `init → configure → up → status → chat → down`; ajuda do `chat` cita Ctrl+D; etapas do `up` e erros do `init`/timeout ganharam orientação concreta.
+- [x] F3.4 Compatibilidade. `NO_COLOR` agora vale também para o questionary e o console é recriado se a variável mudar após a importação; EOF em modo não-interativo encerra sem traceback; layout 60/80/100/120 colunas segue coberto pelos testes existentes.
 
 ## Fase 4 — Revisão e Fortalecimento de Testes Unitários
 
-- [ ] F4.1 Testes de parsing de argumentos/flags e comandos internos do chat.
-- [ ] F4.2 Testes com mocks dos estados da sessão Colab: sucesso, timeout, desconexão, erro de cota.
-- [ ] F4.3 Testes de formatação/renderização de saída e encerramento (SIGINT/EOF).
-- [ ] F4.4 Suíte 100% verde, rápida, determinística, sem sessão Colab real.
+- [x] F4.1 Testes de flags e comandos. Novos casos para `setup --model-id`, `chat -m`, `up --force/--opencode-config/--dsh-config` e comparação de hardware.
+- [x] F4.2 Estados Colab com mocks. `_wait_ready` coberto nos estados ready, daemon morto, silêncio do daemon, desconexão e erro de cota; nenhum teste usa sessão real.
+- [x] F4.3 Formatação e encerramento. Cobertos Ctrl+C no chat, EOF no prompt, mensagem de cancelamento, `NO_COLOR`, `_orphan_line` e restauração de harness.
+- [x] F4.4 Suíte verde e determinística: 606 testes em ~19 s com `BYOM_COLAB_BIN` removido; ruff limpo.
 
 ## Fase 5 — Documentação e Backlog Estratégico
 
@@ -62,6 +62,8 @@ Regras de ouro: zero regressões; escopo controlado (ideias novas só no BACKLOG
 | 0 | F1.1–F1.4 | Baseline medido | 583 testes, ruff/probe/OKF verdes |
 | 1 | F1.5 | Auditorias consolidadas; plano priorizado | leitura de 3 relatórios, nenhuma edição |
 | 2 | F2.1, F2.2 (CLI), F4 (parcial) | `cli.py` + 10 testes novos | ruff limpo; 593 testes passam |
+| 3 | F2.3, F3.1–F3.4 | `llm_chat.py`, `tui.py`, `mensagens.py`, `cli.py`, 6 testes novos | ruff limpo; 599 testes passam |
+| 4 | F4.1–F4.4 | 7 testes novos de flags/estados/formatação | ruff limpo; 606 testes passam |
 
 ## Resumo Executivo
 
