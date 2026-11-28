@@ -4,7 +4,7 @@ title: Open WebUI Frontend
 description: How `byom web` runs an isolated Open WebUI instance on 127.0.0.1:8080 against the local OpenAI-compatible proxy, where chats and uploads live, and why image generation still needs two runtimes.
 tags: [frontend, open-webui, webui, chat, ui, uploads]
 status: draft
-generated: { by: opencode/deepseek-v4.1-flash, at: 2026-11-27T21:00:00Z }
+generated: { by: hermes/hy4-flash-free, at: 2026-11-28T12:30:00Z }
 sources:
   - id: webui-module
     resource: /src/byom/webui.py
@@ -24,6 +24,9 @@ sources:
   - id: openwebui-images
     resource: https://docs.openwebui.com/features/chat-conversations/image-generation-and-editing/usage
     title: Image generation requires a chat model selected plus an image connection
+  - id: openwebui-env
+    resource: https://docs.openwebui.com/reference/env-configuration/
+    title: OpenAI connection variables, DEFAULT_MODELS and ENABLE_PERSISTENT_CONFIG (consulted 2026-11-28)
 ---
 
 # Open WebUI Frontend
@@ -70,14 +73,44 @@ multi-user setup needs a fresh `byom_home()`/`webui` directory.
 
 ## How it reaches the model
 
-`byom web` exports:
+`byom web` fornece estes **padrões** no ambiente (valores já exportados vencem,
+exceto nas chaves de isolamento — detalhes abaixo):
 
 * `OPENAI_API_BASE_URL` and `OPENAI_API_BASE_URLS` as
   `http://127.0.0.1:<proxy_port>/v1`, with `proxy_port` from `config.toml`
   (default 4000).
 * `OPENAI_API_KEY` and `OPENAI_API_KEYS` as `byom`. The proxy strips the
   `Authorization` header and does not authenticate local clients.
+* `DEFAULT_MODELS` as `config.served_model_name` — the same id the gateway
+  publishes in `GET /v1/models` (the runtime alias, or the synthetic id on the
+  `tts` runtime). Open WebUI pre-selects it on a new chat.[^env]
 * `ENABLE_OLLAMA_API=false` and `ENABLE_VERSION_UPDATE_CHECK=false`.
+* `ENABLE_PERSISTENT_CONFIG=false`, so a URL previously saved in `webui.db`
+  through the Admin UI cannot override the environment on the next start. The
+  trade-off is documented by Open WebUI: admin-panel changes still apply to the
+  running session but are lost on restart; byom's environment becomes the
+  source of truth.[^persist]
+
+`build_env` **fills only what is missing** for connection and behaviour
+variables: any value already exported by the user wins. `DATA_DIR`,
+`WEBUI_SECRET_KEY` and `WEBUI_URL` are byom-owned and are **always set** — an
+exported value there would move the SQLite database or the session secret
+outside `byom_home()`. `WebUIPlan.overrides` records the user-supplied names
+(excluding those three), and `byom web` prints them as `Ambiente: ...`.
+Export `OPENAI_API_BASE_URLS` and `OPENAI_API_KEYS` before `byom web` to point
+the frontend at another provider, without editing any file.
+
+[^env]: `DEFAULT_MODELS` accepts comma-separated model ids that are
+pre-selected in a new chat; if a stored model no longer exists it is replaced
+by these defaults. It is a `ConfigVar`: without `ENABLE_PERSISTENT_CONFIG=false`
+the value stored in `webui.db` wins after the first start. Even with the
+environment authoritative, a model chosen in the UI still applies to that
+conversation — Open WebUI environment reference and issue #29819, 2026-11-28.
+
+[^persist]: `ENABLE_PERSISTENT_CONFIG` defaults to `true`, which makes values
+stored in `webui.db` take precedence over environment variables. With `false`,
+environment variables always win and UI changes are not kept across restarts —
+Open WebUI environment reference and connection troubleshooting, 2026-11-28.
 
 Open WebUI makes these calls from its backend, not from the browser. That
 matters because the proxy only accepts `Host` equal to `127.0.0.1` or
@@ -133,7 +166,8 @@ the frontend data. To update Open WebUI, bump `OPEN_WEBUI_VERSION` in
 
 ## Verification
 
-The command, environment, port validation, occupied-port refusal, browser open,
-`Ctrl+C` handling and CLI output are covered by `tests/test_webui.py`. The first
-real run still needs a machine with `uv` and network access to download the
-pinned package.
+The command, environment, `DEFAULT_MODELS`, preserved user overrides, port
+validation, occupied-port refusal, browser open, `Ctrl+C` handling and CLI
+output are covered by 13 mock-based cases in `tests/test_webui.py`. None of them
+starts Colab, a worker or an Open WebUI instance. The first real run still
+needs a machine with `uv` and network access to download the pinned package.

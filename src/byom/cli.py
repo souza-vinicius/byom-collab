@@ -39,7 +39,13 @@ from . import (
 
 app = typer.Typer(
     add_completion=False,
-    help="Run a coding model on a Colab GPU and expose it at 127.0.0.1:4000/v1.",
+    rich_markup_mode="rich",
+    help=(
+        "[bold]byom[/] roda um modelo numa GPU do Colab e expõe "
+        "[cyan]http://127.0.0.1:4000/v1[/].\n\n"
+        "Fluxo: [bold]init → configure → up → status → chat → down[/]. "
+        "Frontend: [bold]byom web[/]. Ex.: `byom up && byom web`."
+    ),
     pretty_exceptions_show_locals=False,
     pretty_exceptions_short=True,
 )
@@ -109,7 +115,10 @@ def _new_session_name() -> str:
 
 def _hardware_matches(requested: str, hardware: str) -> bool:
     aliases = {"G4": ("G4", "RTX PRO 6000")}
-    expected = aliases.get(requested.strip().upper(), (requested.strip(),))
+    normalized = requested.strip().upper()
+    if not normalized:
+        return False
+    expected = aliases.get(normalized, (normalized,))
     actual = hardware.upper()
     return any(name in actual for name in expected)
 
@@ -149,9 +158,21 @@ def init() -> None:
 
     proc = colab.run(["sessions"], check=False)
     if proc.returncode != 0:
+        saida = proc.stderr or proc.stdout or b""
+        if isinstance(saida, bytes):
+            saida = saida.decode(errors="replace")
+        detalhe = colab.tail(str(saida).strip())
+        if "auth" in detalhe.lower() or "login" in detalhe.lower():
+            acao = "Run `colab sessions` and complete the login flow before using byom."
+        else:
+            acao = (
+                "Run `colab sessions` in a terminal to read the CLI error, fix it, "
+                "then run `byom init` again."
+            )
         _die(
-            "Colab CLI is not authenticated. Run `colab sessions` and complete "
-            "the login flow before using byom."
+            "Colab CLI could not list sessions.\n"
+            f"  Last CLI output: {detalhe or 'none'}\n"
+            f"  What to do: {acao}"
         )
 
     cfg = _load_config_or_die()
@@ -257,7 +278,10 @@ def models(
         str | None,
         typer.Option(
             "--gpu",
-            help="Catalog GPU ID; filters the listing without changing configuration.",
+            help=(
+                "ID da GPU do catálogo; filtra a lista sem mudar config. "
+                "Ex.: `byom models --gpu L4`."
+            ),
         ),
     ] = None,
 ) -> None:
@@ -286,7 +310,9 @@ def models(
 
 @app.command()
 def configure(
-    profile_id: str = typer.Option(..., "--profile", help="ID of the profile to apply."),
+    profile_id: str = typer.Option(
+        ..., "--profile", help="ID do perfil. Ex.: `byom configure --profile qwen3.8-27b-32k`."
+    ),
 ) -> None:
     """Apply a profile without changing local ports or options."""
     try:
@@ -492,7 +518,10 @@ def _wait_ready(
                 _say("  Waiting for the local daemon to respond")
                 last = "daemon"
         time.sleep(READY_POLL_S)
-    raise TimeoutError(f"Worker did not become ready within {int(timeout_s)}s")
+    raise TimeoutError(
+        f"Worker did not become ready within {int(timeout_s)}s "
+        f"(last state: {last or 'no status from the daemon'})"
+    )
 
 
 
@@ -542,12 +571,16 @@ def _check_proxy_port(cfg: config.Config) -> None:
     Sem esta checagem o daemon morria no `uvicorn` (porta em uso) e o `up`
     esperava o modelo por até `bootstrap_timeout_min` com o daemon morto.
     """
-    if _port_free(cfg.proxy_port):
-        return
-    _die(
-        f"a porta {cfg.proxy_port} do proxy já está em uso por outro processo. "
-        "Encerre o processo que a ocupa (ou rode `byom down`) antes de alocar a GPU."
-    )
+    if not _port_free(cfg.proxy_port):
+        _die(
+            f"a porta {cfg.proxy_port} do proxy já está em uso por outro processo. "
+            "Encerre o processo que a ocupa (ou rode `byom down`) antes de alocar a GPU."
+        )
+    if not _port_free(cfg.tunnel_port):
+        _die(
+            f"a porta {cfg.tunnel_port} do túnel já está em uso por outro processo. "
+            "Encerre o processo que a ocupa (ou rode `byom down`) antes de alocar a GPU."
+        )
 
 
 def _prepare_session(
@@ -769,6 +802,8 @@ def _run_up_transaction(
     opencode_config: Path | None,
     dsh_config: Path | None,
 ) -> None:
+    synced = False
+    _say("[1/5] Checking local configuration and GPU/model compatibility")
     try:
         existing = config.load_state()
     except config.StateFileError as exc:
@@ -793,9 +828,12 @@ def _run_up_transaction(
             "Move or delete it and run `byom init` to create a new one."
         )
 
+    _say("[2/5] Preparing the session and harness configuration")
     _prepare_session(cfg, existing, force)
+    synced = True
     _sync_external_configs(cfg, opencode_config, dsh_config)
 
+    _say("[3/5] Allocating a Colab runtime")
     name = _new_session_name()
     # The master connection is stopped at the end; the daemon keeps its own
     # connection alive to avoid competing for Colab's single `colab ssh` slot.
@@ -807,13 +845,14 @@ def _run_up_transaction(
         allocated = True
         state = _record_allocation(name)
 
+        _say("[4/5] Uploading the worker and starting the model")
         client.start()
         _bootstrap_worker(cfg, state, client)
 
         client.stop()
         _register_daemon(cfg, state)
 
-        _say("Waiting for the model to become ready")
+        _say("[5/5] Waiting for the model to become ready")
         _wait_ready(
             cfg,
             cfg.bootstrap_timeout_min * 60,
@@ -824,24 +863,30 @@ def _run_up_transaction(
         # Ctrl+C (or a nested command aborting) after the VM exists still has
         # to release it; the interruption is propagated after the cleanup.
         if allocated:
-            _stop_allocation(name)
+            stopped = _stop_allocation(name)
             # O daemon local pode ter subido antes da falha: sem isto ele fica
             # segurando a porta do proxy e o próximo `up` espera em vão.
             if state is not None:
                 _terminate_local(state)
         else:
             config.clear_state()
+            stopped = False
+        if synced and not stopped:
+            _restore_harness(_say)
         raise
     except UP_FAILURE_TYPES as exc:
         _say(f"Failed: {exc}")
         if allocated:
             # The session name is the only reliable handle here: `state.json`
             # may be unreadable by the time the failure unwinds.
-            _stop_allocation(name)
+            stopped = _stop_allocation(name)
             if state is not None:
                 _terminate_local(state)
         else:
             config.clear_state()
+            stopped = False
+        if synced and not stopped:
+            _restore_harness(_say)
         raise typer.Exit(1) from exc
     finally:
         client.stop()
@@ -864,22 +909,28 @@ def up(
         bool,
         typer.Option(
             "--force",
-            help="Stop the current BYOM session and create a new one if shutdown is confirmed.",
+            help=(
+                "Encerra a sessão atual e cria outra se a confirmação passar. "
+                "Ex.: `byom up --force`."
+            ),
         ),
     ] = False,
     opencode_config: Annotated[
         Path | None,
         typer.Option(
             "--opencode-config",
-            help="Global OpenCode config file (default: XDG_CONFIG_HOME/opencode).",
+            help=(
+                "Arquivo global do OpenCode (padrão: XDG_CONFIG_HOME/opencode). "
+                "Ex.: `--opencode-config ~/.config/opencode/opencode.json`."
+            ),
         ),
     ] = None,
     dsh_config: Annotated[
         Path | None,
         typer.Option(
             "--dsh-config",
-            help="dsh profile patch (default: ~/.dsh/profiles/desktop/cordis.patch.yml, "
-            "only touched if it exists).",
+            help="Patch do perfil dsh (padrão: ~/.dsh/profiles/desktop/cordis.patch.yml, "
+            "só é tocado se existir). Ex.: `--dsh-config ./meu.patch.yml`.",
         ),
     ] = None,
 ) -> None:
@@ -936,6 +987,16 @@ def status() -> None:
     _say(f"Session: {state.session}  (created at {state.created_at})")
     if state.endpoint:
         _say(f"Backend endpoint: {state.endpoint}")
+    # Mapa do fluxo inteiro, do Colab ao encerramento. Texto simples: o mesmo
+    # conteúdo continua legível com NO_COLOR e em pipe.
+    _say("Fluxo: Colab → GPU → Byom → Chat/Open WebUI → encerramento")
+    _say(f"  Modelo:   {cfg.served_model_name}")
+    _say(f"  Byom API: http://127.0.0.1:{cfg.proxy_port}/v1")
+    _say(
+        f"  WebUI:    http://127.0.0.1:{webui.DEFAULT_PORT} "
+        "(padrão de `byom web`; `--port` pode mudar)"
+    )
+    _say("  Fim:      `byom down` encerra sessão, túnel e processos locais")
 
     # Only `colab status`/`sessions` can confirm that a session has stopped;
     # an HTTP failure does not prove that the VM was deallocated.
@@ -1207,6 +1268,9 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
         _restore_harness(say)
         say("Stopped (confirmed by Colab)")
     else:
+        # A VM pode ter sumido sem confirmação: devolver o harness evita deixar
+        # OpenCode/dsh apontando para um endpoint que não responde mais.
+        _restore_harness(say)
         say("Unknown: could not confirm deallocation")
         say("  The VM may still be consuming compute units; check Colab and stop it manually")
         say("  Local state was retained so you can check again")
@@ -1251,7 +1315,10 @@ def setup(
         str | None,
         typer.Option(
             "--model-id",
-            help="Identificador local do modelo no llm (padrão: byom).",
+            help=(
+                "ID local do modelo no llm (padrão: byom). "
+                "Ex.: `byom setup --model-id meu-modelo`."
+            ),
         ),
     ] = None,
     api_key: Annotated[
@@ -1312,11 +1379,11 @@ def chat(
         typer.Option(
             "--model",
             "-m",
-            help="ID do modelo configurado no llm (padrão: modelo salvo pelo setup).",
+            help="ID do modelo no llm (padrão: salvo no setup). Ex.: `byom chat -m meu-modelo`.",
         ),
     ] = None,
 ) -> None:
-    """Start an interactive `llm chat` session isolated inside BYOM_HOME."""
+    """Start an isolated `llm chat` session. Ctrl+D ends the conversation."""
     try:
         result = llm_chat.run_chat(
             system=system,
@@ -1336,7 +1403,9 @@ def chat(
 def web(
     port: Annotated[
         int,
-        typer.Option("--port", "-p", help="Porta local do frontend Open WebUI."),
+        typer.Option(
+            "--port", "-p", help="Porta local do Open WebUI. Ex.: `byom web --port 8099`."
+        ),
     ] = webui.DEFAULT_PORT,
     no_browser: Annotated[
         bool,
@@ -1352,12 +1421,21 @@ def web(
 
     _say(f"Frontend: {plan.url}")
     _say(f"Modelo:   {plan.proxy_url}")
+    modelo_padrao = plan.env.get("DEFAULT_MODELS")
+    if modelo_padrao:
+        _say(f"Padrão:   {modelo_padrao}")
+    if plan.overrides:
+        _say("Ambiente: " + ", ".join(plan.overrides) + " (valores preservados)")
     _say(f"Dados:    {plan.data_dir}")
     _say(
         f"Open WebUI {webui.OPEN_WEBUI_VERSION} via uv; a primeira execução baixa o pacote "
         "e o Python 3.12."
     )
     _say("Suba a sessão com `byom up` e mantenha este processo aberto. Ctrl+C encerra.")
+    _say(
+        "Para usar outro provedor, defina OPENAI_API_BASE_URLS e OPENAI_API_KEYS "
+        "antes de `byom web`."
+    )
     try:
         code = webui.run(plan, open_browser=not no_browser)
     except webui.WebUIError as exc:

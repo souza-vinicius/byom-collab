@@ -4,7 +4,7 @@ title: Troubleshooting the Worker Session
 description: Symptom to cause to action for the failures seen while bringing a session up: silent runtime exit, missing CUDA libraries, unsupported PTX, a worker stuck initializing and a tunnel that drops right after up.
 tags: [troubleshooting, runbook, bootstrap, cuda, gateway, tunnel]
 status: stable
-generated: { by: hermes/deepseek-v4.1-flash, at: 2026-11-24T23:32:00Z }
+generated: { by: hermes/hy4-flash-free, at: 2026-11-28T03:50:00Z }
 sources:
   - id: bootstrap
     resource: /worker/bootstrap.sh
@@ -53,6 +53,9 @@ and check `gateway.log` in the same directory.
 | `byom up` stuck at `Worker initializing` for minutes | The gateway cannot reach the runtime on `vllm_port` | With current code the gateway derives the URL from `session.json`; if it repeats, compare the runtime log line `listening on http://127.0.0.1:<port>` with `vllm_port` in `session.json` and look for `readiness poll failed` in `gateway.log`. |
 | `Tunnel unavailable` or `SSH connection dropped` right after `Worker ready` | A previous master was stopped while the tunnel was using it | Current code gives the tunnel its own socket, so `byom status` should show `connected` with `reconnects: 0`. A persistent `failed` needs `byom down` and a new `byom up`. |
 | `Worker unavailable` and `Gateway is inaccessible through the tunnel` during `up` | Normal transient while the daemon opens the tunnel | Wait; `up` keeps polling. If it lasts, check the tunnel state in `byom status`. |
+| `Colab CLI could not list sessions` with `Last CLI output` | Authentication failure, network error, or a CLI error unrelated to login | For login text, run `colab sessions`; otherwise fix the reported CLI error and run `byom init` again |
+| `a porta 4000 do proxy já está em uso` or `a porta 4001 do túnel já está em uso` | A local process holds a port needed by the daemon | Stop that process or run `byom down` before allocating a GPU; `up` now checks both ports before allocation |
+| `Worker did not become ready within ... (last state: ...)` | Model load failed, tunnel dropped, or the GPU quota ran out | Use the reported last state as the lead, run `byom status`, then read the VM logs with the command above |
 
 ## Known limitation: a crash after the bootstrap window
 
@@ -72,9 +75,10 @@ Workarounds:
 
 ## Recovering a session
 
-`byom down` stops the VM and restores the harness config. It is idempotent: a
-session recorded in `state.json` but already stopped is reported as such, and
-the state is cleared. If the daemon is not responding, `byom status` reports
+`byom down` stops the VM and restores the harness config, including when the
+deallocation cannot be confirmed. It is idempotent: a session recorded in
+`state.json` but already stopped is reported as such, and the state is cleared
+only after confirmation. If the daemon is not responding, `byom status` reports
 `Worker: unavailable (local daemon is not responding)` and `byom down` still
 stops the allocation by the session name recorded in `state.json`.
 

@@ -270,7 +270,7 @@ ERROS_COMUNS = {
     ),
     "cancelado": (
         "Operação cancelada pelo usuário.",
-        "Você pressionou Ctrl+C, Esc ou recusou a confirmação.",
+        "Você pressionou Ctrl+C, Ctrl+D/EOF, Esc ou recusou a confirmação.",
         "Nenhuma nova ação foi iniciada. Verifique o estado da sessão se já havia uma ativa.",
     ),
     "inesperado": (

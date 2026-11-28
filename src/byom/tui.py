@@ -453,9 +453,11 @@ def _comando_equivalente(acao_id: str, kwargs: dict[str, Any] | None = None) -> 
 
 
 def _estilo_select() -> Any:
-    """Evita fundo invertido (`reverse`) aplicado pelo prompt_toolkit ao item default."""
+    """Evita fundo invertido (`reverse`) e respeita NO_COLOR no questionary."""
     import questionary
 
+    if os.environ.get("NO_COLOR"):
+        return questionary.Style([])
     return questionary.Style([("selected", "noreverse")])
 
 
@@ -548,7 +550,10 @@ def _aguardar_enter(con: Console) -> None:
     if not is_interactive():
         return
     con.print()
-    con.input(f"[dim]{M.ENTER_VOLTAR}[/dim]")
+    try:
+        con.input(f"[dim]{M.ENTER_VOLTAR}[/dim]")
+    except (EOFError, KeyboardInterrupt):
+        raise KeyboardInterrupt from None
 
 
 def _perguntar_proximo_passo(
@@ -2655,6 +2660,9 @@ def _executar_chat(con: Console, cli: Any, estado: EstadoLocal) -> str:
         return "menu"
 
     con.print()
+    con.print(
+        f"  {sim.bullet} Chat aberto: Ctrl+D encerra a conversa; Ctrl+C cancela sem erro."
+    )
     inicio = time.monotonic()
     try:
         resultado_chat = llm_chat.run_chat(no_history=escolha == "sem")
@@ -3185,6 +3193,9 @@ def _despachar_acao(con: Console, cli: Any, acao_id: str) -> str:
 
 def mostrar_menu(cli: Any) -> None:
     """Abre o menu principal. Chamado apenas pelo callback da CLI."""
+    global console
+    if bool(os.environ.get("NO_COLOR")) != bool(console.no_color):
+        console = criar_console()
     try:
         import questionary
     except ImportError:
@@ -3232,7 +3243,11 @@ def mostrar_menu(cli: Any) -> None:
                 exc.acao,
                 detalhes_tecnicos=exc.detalhes_tecnicos,
             )
-            _aguardar_enter(console)
+            try:
+                _aguardar_enter(console)
+            except KeyboardInterrupt:
+                console.print(_erro("cancelado"), style="yellow")
+                break
             proxima_acao = None
         except Exception as exc:  # noqa: BLE001 - nunca falhar em silêncio
             erros_consecutivos += 1
@@ -3252,6 +3267,10 @@ def mostrar_menu(cli: Any) -> None:
                     style="red",
                 )
                 break
-            _aguardar_enter(console)
+            try:
+                _aguardar_enter(console)
+            except KeyboardInterrupt:
+                console.print(_erro("cancelado"), style="yellow")
+                break
         finally:
             console.show_cursor()

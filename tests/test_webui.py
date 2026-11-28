@@ -8,7 +8,7 @@ import stat
 import pytest
 from typer.testing import CliRunner
 
-from byom import cli, llm_chat, webui
+from byom import cli, config, llm_chat, webui
 
 runner = CliRunner()
 
@@ -68,6 +68,7 @@ def test_plan_monta_comando_env_e_dados(byom_home):
     assert env["OPENAI_API_KEYS"] == "byom"
     assert env["WEBUI_AUTH"] == "false"
     assert env["ENABLE_OLLAMA_API"] == "false"
+    assert env["ENABLE_PERSISTENT_CONFIG"] == "false"
     assert env["WEBUI_URL"] == "http://127.0.0.1:8099"
     assert env["WEBUI_SECRET_KEY"]
 
@@ -108,6 +109,64 @@ def test_plan_remove_variaveis_do_venv_do_byom(byom_home, monkeypatch):
     assert "PYTHONPATH" not in plan.env
 
 
+def test_plan_injeta_modelo_padrao_do_perfil_ativo(byom_home, monkeypatch):
+    monkeypatch.delenv("DEFAULT_MODELS", raising=False)
+    config.save_config(config.Config(served_model_name="modelo-de-teste"))
+
+    plan = webui.plan(port=8099, proxy_port=4000)
+
+    assert plan.env["DEFAULT_MODELS"] == "modelo-de-teste"
+
+
+def test_plan_preserva_overrides_do_usuario(byom_home, monkeypatch):
+    valores = {
+        "OPENAI_API_BASE_URLS": "http://outro-provedor:8000/v1",
+        "OPENAI_API_KEYS": "chave-do-usuario",
+        "WEBUI_AUTH": "true",
+        "DEFAULT_MODELS": "outro-modelo",
+        "ENABLE_PERSISTENT_CONFIG": "true",
+        # Estes três pertencem ao isolamento e NÃO são overrideáveis.
+        "DATA_DIR": "/tmp/fora-do-byom",
+        "WEBUI_SECRET_KEY": "chave-externa",
+        "WEBUI_URL": "http://example.com",
+    }
+    for nome, valor in valores.items():
+        monkeypatch.setenv(nome, valor)
+
+    plan = webui.plan(port=8099, proxy_port=4000)
+
+    for nome, valor in valores.items():
+        if nome in webui.ISOLATION_KEYS:
+            continue
+        assert plan.env[nome] == valor
+    assert set(valores) - webui.ISOLATION_KEYS <= set(plan.overrides)
+    assert not set(plan.overrides) & webui.ISOLATION_KEYS
+    # O que é do byom continua presente quando o usuário não escolheu outro valor.
+    assert plan.env["DATA_DIR"] == str(byom_home / webui.DATA_DIRNAME)
+    assert plan.env["WEBUI_SECRET_KEY"] != "chave-externa"
+    assert plan.env["WEBUI_URL"] == "http://127.0.0.1:8099"
+    assert plan.env["OPENAI_API_BASE_URL"] == "http://127.0.0.1:4000/v1"
+
+
+def test_cli_web_mostra_modelo_padrao_e_overrides(byom_home, monkeypatch):
+    monkeypatch.delenv("DEFAULT_MODELS", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEYS", "chave-do-usuario")
+    planos: list[webui.WebUIPlan] = []
+
+    def falso_run(plan, *, open_browser=True):
+        planos.append(plan)
+        return 0
+
+    monkeypatch.setattr(webui, "run", falso_run)
+    res = runner.invoke(cli.app, ["web", "--port", "8099", "--no-browser"])
+
+    assert res.exit_code == 0
+    assert "Padrão:   " in res.output
+    assert "Ambiente: OPENAI_API_KEYS (valores preservados)" in res.output
+    assert "OPENAI_API_BASE_URLS" in res.output
+    assert planos[0].env["OPENAI_API_KEYS"] == "chave-do-usuario"
+
+
 def test_run_recusa_porta_ocupada(byom_home):
     holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     holder.bind(("127.0.0.1", 0))
@@ -125,14 +184,21 @@ def test_run_abre_navegador_quando_health_responde(byom_home, monkeypatch):
     plan = webui.plan(port=8099, proxy_port=4000)
     proc = FakeProcess()
     opened: list[str] = []
+    ambientes: list[dict[str, str]] = []
 
-    monkeypatch.setattr(webui.subprocess, "Popen", lambda argv, env: proc)
+    def falso_popen(argv, env):
+        ambientes.append(env)
+        return proc
+
+    monkeypatch.setattr(webui.subprocess, "Popen", falso_popen)
     monkeypatch.setattr(webui, "port_available", lambda port: True)
     monkeypatch.setattr(webui, "_wait_for_health", lambda url, process, timeout: True)
     monkeypatch.setattr(webui.webbrowser, "open", opened.append)
 
     assert webui.run(plan, open_browser=True) == 0
     assert opened == ["http://127.0.0.1:8099"]
+    assert ambientes[0]["DEFAULT_MODELS"] == plan.env["DEFAULT_MODELS"]
+    assert ambientes[0]["ENABLE_PERSISTENT_CONFIG"] == "false"
 
 
 def test_run_sem_navegador_nao_abre_e_encerra_no_ctrl_c(byom_home, monkeypatch):
