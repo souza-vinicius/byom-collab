@@ -20,8 +20,11 @@ tool_call_parser = ""
 reasoning_parser = ""
 
 [worker]
-binary_url = "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1106-532d2c1/sd-master-532d2c1-bin-Linux-Ubuntu-26.04-x86_64.zip"
-binary_sha256 = "0a02f7f51feb0691128f60cf6ff1c686ec23089561cfe7c3b72645f446646e13"
+# Build Unsloth cuda13 (Ubuntu 22.04, sm_75/80/86/89/90/100/120) com o
+# sha256 do manifesto do release. O asset upstream 26.04/CPU exigia glibc
+# 2.43 e morria no loader do Colab (glibc 2.39).
+binary_url = "https://github.com/unslothai/stable-diffusion.cpp/releases/download/master-982-0518b34-u27b9ddc/sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip"
+binary_sha256 = "5129f05af93cac94f6e6182007ff9b18284fbea71f930f4b93360bc5a35d50a1"
 binary_dir = "sdcpp"
 model_patterns = ["Comfy-Org/Qwen-Image-2.1::diffusion_models/qwen_image_2.1_int8_convrot.safetensors", "Comfy-Org/Qwen-Image-2.1::vae/qwen_image_2.1_vae_bf16.safetensors", "Qwen/Qwen3-VL-8B-Instruct-GGUF::Qwen3VL-8B-Instruct-Q4_K_M.gguf", "Qwen/Qwen3-VL-8B-Instruct-GGUF::mmproj-Qwen3VL-8B-Instruct-F16.gguf"]
 

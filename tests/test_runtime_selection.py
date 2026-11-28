@@ -59,6 +59,38 @@ def test_binarios_fixados_com_checksum_e_sem_latest():
         assert len(worker["binary_sha256"]) == 64
 
 
+@pytest.mark.parametrize(
+    "profile_id", ["qwen-image-2.1-q4km", "qwen3-tts-0.6b-customvoice"]
+)
+def test_up_de_runtime_de_midia_nao_sincroniza_harness(profile_id, monkeypatch):
+    cfg = config.Config()
+    config.apply_profile(cfg, profile_id)
+    chamadas: list[str] = []
+    monkeypatch.setattr(
+        cli.opencode, "sync_config", lambda *a, **k: chamadas.append("opencode")
+    )
+    monkeypatch.setattr(cli.dsh, "sync_config", lambda *a, **k: chamadas.append("dsh"))
+
+    cli._sync_external_configs(cfg, None, None)
+
+    assert chamadas == []
+
+
+def test_perfis_de_imagem_pinam_o_build_unsloth_cuda13():
+    url = (
+        "https://github.com/unslothai/stable-diffusion.cpp/releases/download/"
+        "master-982-0518b34-u27b9ddc/"
+        "sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip"
+    )
+    sha = "5129f05af93cac94f6e6182007ff9b18284fbea71f930f4b93360bc5a35d50a1"
+
+    for profile_id in ("qwen-image-2.1-q4km", "qwen-image-2.1-fp8"):
+        profile = config.load_profile(profile_id)
+        assert profile.worker["binary_url"] == url
+        assert profile.worker["binary_sha256"] == sha
+        assert profile.worker["binary_dir"] == "sdcpp"
+
+
 def test_payload_carrega_runtime_e_worker_settings(tmp_path: Path):
     cfg = config.Config()
     config.apply_profile(cfg, "inkling-2-mini-q4-gguf")

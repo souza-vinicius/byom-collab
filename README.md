@@ -328,13 +328,21 @@ deles cabe em uma única GPU do Colab.
   de pesos + 1,08 do projetor de visão + 2 de runtime + 1 de folga = 13,30, que
   cabe nos 15 GiB utilizáveis) e o perfil INT8-ConvRot fica em L4 (12,07 + 1,08
   + 2 + 1 = 16,15 > 15). A T4 não possui bf16, portanto o treino é recusado
-  pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior. O nome do
-  asset Linux fixado não declara seu backend; verifique o uso de GPU na primeira
-  execução real. Se for um build de CPU, compile a partir da tag fixada com
-  `-DSD_CUDA=ON` e coloque o binário em `/content/byom/sdcpp/sd-server`: o
-  `runtime_manifest.json` aponta para o symlink `/content/byom/sd-server`, que
-  o `prepare_runtime` cria a partir do diretório `binary_dir` do perfil. Não há
-  variável de ambiente para o caminho do binário — o manifest é a única fonte.
+  pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior.
+  O binário fixado é o build **Unsloth `cuda13`** do
+  `stable-diffusion.cpp` `master-982-0518b34-u27b9ddc`, asset
+  `sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip`,
+  `sha256 5129f05af93cac94f6e6182007ff9b18284fbea71f930f4b93360bc5a35d50a1`.
+  O build é Ubuntu 22.04 com CUDA 13 e traz SASS para sm_75, sm_80, sm_86,
+  sm_89, sm_90, sm_100 e sm_120; o guia da Unsloth mede a T4 em cerca de 120 s
+  por imagem 1024x1024 em 25 passos. O asset upstream anterior (Ubuntu 26.04,
+  CPU) exigia glibc 2.43 e morria no loader do Colab (glibc 2.39), por isso foi
+  substituído. O workflow manual `.github/workflows/build-sd-server.yml` compila
+  o mesmo commit para um asset próprio, com CUDA 13 e as mesmas arquiteturas,
+  para o caso de o build da Unsloth deixar de ser publicado. O `prepare_runtime`
+  extrai o zip em `sdcpp`, encontra o `sd-server` e cria o symlink
+  `/content/byom/sd-server`; o `runtime_manifest.json` aponta para esse symlink,
+  que é a única fonte do caminho.
 * Repositórios no Hugging Face e a CLI do Colab são **verificados apenas na
   primeira execução real**: este repositório não os aciona durante os testes
   locais. Confira os arquivos de modelo resolvidos pelos padrões fixados e a GPU

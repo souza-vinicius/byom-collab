@@ -573,8 +573,15 @@ def _sync_external_configs(
     """Merge agent configs before allocating the GPU.
 
     Antes de sobrescrever, guarda em `harness_state.json` o modelo padrão que
-    cada harness tinha: é o que o `down` devolve depois.
+    cada harness tinha: é o que o `down` devolve depois. Runtimes de mídia
+    (imagem/TTS) não têm alias de chat e não devem tocar no harness.
     """
+    if cfg.runtime in catalog.NON_CHAT_RUNTIMES:
+        _say(
+            f"OpenCode/dsh: runtime {cfg.runtime} não é de chat; "
+            "configuração de harness ignorada"
+        )
+        return
     anteriores = harness_state.capture(opencode_config, dsh_config)
     if anteriores:
         harness_state.save(anteriores)
