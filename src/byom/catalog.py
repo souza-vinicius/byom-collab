@@ -19,7 +19,16 @@ import contextlib
 import math
 from dataclasses import dataclass, field
 
-RUNTIMES = ("vllm", "llama-cpp", "image", "strata")
+RUNTIMES = ("vllm", "llama-cpp", "image", "strata", "tts")
+
+#: Runtimes sem KV cache autoregressivo: difusão de imagem e TTS. O contexto
+#: deles é uma sentinela (1), não uma janela de chat.
+NON_CHAT_RUNTIMES = frozenset({"image", "tts"})
+
+
+def has_kv_cache(runtime: str) -> bool:
+    """Difusão e TTS não têm KV por token; os demais runtimes têm."""
+    return runtime not in NON_CHAT_RUNTIMES
 
 GIB = 2**30
 
@@ -207,6 +216,9 @@ class Variant:
     #: Custo do projetor de visão em GiB; > 0 apenas quando o perfil declara
     #: `mmproj_pattern` (o catálogo sozinho não carrega o projetor).
     vision_gib: float = 0.0
+    #: Reserva fixa extra do runtime, em GiB, além de RUNTIME_RESERVE_GIB.
+    #: Usada pelos pipelines multi-stage do TTS (talker + code2wav).
+    overhead_gib: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -331,6 +343,10 @@ QWEN38_SOURCE = "https://unsloth.ai/docs/models/qwen3.8.md"
 GEMMA4_SOURCE = "https://unsloth.ai/docs/models/gemma-4.md"
 MUSE_SOURCE = "https://unsloth.ai/docs/models/muse-glimmer.md"
 IMAGE_SOURCE = "https://unsloth.ai/docs/models/qwen-image-2.1.md"
+TTS_SOURCE = (
+    "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice "
+    "(card e árvore de arquivos consultados em 2026-11-27)"
+)
 SDCPP_SOURCE = (
     "https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md"
 )
@@ -417,6 +433,11 @@ PROVIDER_SOURCES: dict[str, str] = {
     "qwen-image-2.1": (
         "https://huggingface.co/Qwen/Qwen-Image-2.1 (2026-11-24) é o repo oficial da "
         "família Qwen, 'built by Alibaba Cloud' (card da org, mesma data)"
+    ),
+    "qwen3-tts": (
+        "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (2026-11-27) é "
+        "o repo oficial da família Qwen3-TTS; o card atribui o modelo ao time Qwen "
+        "(Alibaba Cloud)"
     ),
     "minimax-m3.1-flash": (
         "https://huggingface.co/MiniMaxAI/MiniMax-M3.1-Flash (2026-11-24): repo oficial "
@@ -864,6 +885,47 @@ MODELS: tuple[ModelEntry, ...] = (
         generation_source=GENERATION_SOURCE_IMAGE,
     ),
     ModelEntry(
+        "qwen3-tts", "Qwen3-TTS", "tts",
+        (
+            Variant(
+                "0.6b-customvoice", "0.6B CustomVoice", 2.32, 1, "T4",
+                notes=(
+                    "Pesos somados pela API do HF (2026-01-29): model.safetensors "
+                    "1.811.626.576 B + speech_tokenizer/model.safetensors "
+                    "682.293.092 B = 2.493.919.668 B = 2,32 GiB.",
+                    "Pipeline vLLM-Omni (talker + code2wav); reserva de 6 GiB além "
+                    "dos 2 GiB de runtime.",
+                    "Não medido no Colab. A deploy config de 0.3 por stage foi "
+                    "validada pela receita em uma RTX 4090 de 24 GiB.",
+                ),
+                overhead_gib=6.0,
+            ),
+            Variant(
+                "1.7b-customvoice", "1.7B CustomVoice", 4.21, 1, "L4",
+                notes=(
+                    "Pesos somados pela API do HF (2026-01-29): model.safetensors "
+                    "3.833.402.552 B + speech_tokenizer/model.safetensors "
+                    "682.293.092 B = 4.515.695.644 B = 4,21 GiB.",
+                    "Pipeline vLLM-Omni (talker + code2wav); reserva de 9 GiB além "
+                    "dos 2 GiB de runtime. A receita só publica medição em MI300X; "
+                    "a L4 é o mínimo conservador.",
+                    "Não medido no Colab.",
+                ),
+                overhead_gib=9.0,
+            ),
+        ),
+        TTS_SOURCE,
+        provider="Qwen (Alibaba Cloud)",
+        notes=(
+            "TTS, não chat: POST /v1/audio/speech e GET /v1/audio/voices.",
+            "Servido por vLLM-Omni (`vllm serve <model> --omni --deploy-config ...`); "
+            "um checkpoint por vez e sem /v1/chat/completions.",
+            "CustomVoice traz 9 timbres embutidos. VoiceDesign e Base (clonagem) "
+            "usam o mesmo runtime e ficam para variantes futuras.",
+            "A receita oficial pede vLLM/vLLM-Omni >= 0.20; o perfil pina 0.34.0.",
+        ),
+    ),
+    ModelEntry(
         "minimax-m3.1-flash", "MiniMax-M3.1-Flash", "llama-cpp",
         (
             Variant("q4", "UD-Q4_K_XL (4 bit)", 256.0, 16_384, "H100-80",
@@ -986,6 +1048,14 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela. "
                          "12,07 GiB de pesos + 2 de runtime + 1,0 de folga = 15,07 > 15 GiB "
                          "da T4; a L4 (24 GiB) comporta."),
+    ProfileContext("qwen3-tts-0.6b-customvoice", "qwen3-tts", "0.6b-customvoice", 0, 1,
+                   "T4", "TTS não tem janela de chat; 1 é sentinela. 2,32 GiB de pesos + "
+                         "2 de runtime + 6 de pipeline = 10,32, mais 1,0 de folga = 11,32 "
+                         "<= 15 GiB da T4."),
+    ProfileContext("qwen3-tts-1.7b-customvoice", "qwen3-tts", "1.7b-customvoice", 0, 1,
+                   "L4", "TTS não tem janela de chat; 1 é sentinela. 4,21 GiB de pesos + "
+                         "2 de runtime + 9 de pipeline = 15,21, mais 1,2 de folga = 16,41 "
+                         "<= 24 GiB da L4."),
     ProfileContext("ternary-bonsai-25-27b-q2", "ternary-bonsai-2.5-27b", "q2", 262_144,
                    32_768, "T4",
                    "7,15 GiB de pesos + 0,59 de visão + 2 de runtime + 2,00 de KV em 32K "
@@ -1077,8 +1147,8 @@ def format_models() -> str:
             status = "disponivel" if variant.available else "NAO CABE EM GPU UNICA DO COLAB"
             doc = str(variant.context_doc) if variant.context_doc else "n/a"
             served = ", ".join(str(value) for value in served_contexts_for(model.id, variant.id))
-            if model.runtime == "image":
-                served = "n/a (imagem)"
+            if model.runtime in NON_CHAT_RUNTIMES:
+                served = "n/a (imagem)" if model.runtime == "image" else "n/a (fala)"
             lines.append(
                 f"{model.id} | {model.provider} | {model.runtime} | "
                 f"{variant.id} ({variant.label}) | {variant.memory_gib:g} | {doc} | "
@@ -1253,13 +1323,19 @@ def required_vram_gib(
     """
     kv = (
         0.0
-        if runtime == "image"
+        if not has_kv_cache(runtime)
         else kv_cache_gib(
             max_model_len, model, kv_cache_dtype=kv_cache_dtype, runtime=runtime
         )
     )
     return round(
-        variant.memory_gib + variant.vision_gib + RUNTIME_RESERVE_GIB + kv + drafter_gib, 2
+        variant.memory_gib
+        + variant.vision_gib
+        + RUNTIME_RESERVE_GIB
+        + variant.overhead_gib
+        + kv
+        + drafter_gib,
+        2,
     )
 
 
@@ -1284,6 +1360,53 @@ def _fits(
     # `<` e não `<=`: com igualdade a folga é zero, que é justamente o caso que
     # a folga existe para reprovar.
     return variant.available and required + vram_headroom_gib(gpu.vram_gib) < gpu.vram_gib
+
+
+def max_fitting_context(
+    model_id: str,
+    variant_id: str,
+    gpu_id: str,
+    *,
+    kv_cache_dtype: str | None = None,
+    drafter_gib: float = 0.0,
+    step: int = 1024,
+) -> int:
+    """Maior contexto múltiplo de `step` que cabe na GPU, até o limite documentado.
+
+    O KV cresce com o contexto e `_fits` é monotônico nele, então a busca é
+    binária. `context_limit` é o teto: pedir mais continua sendo recusado por
+    `validate_context_limit`. Devolve 0 quando nem o menor contexto cabe.
+    """
+    variant = variant_by_id(model_id, variant_id)
+    entry = model_by_id(model_id)
+    gpu = gpu_by_id(gpu_id)
+    if not variant.available:
+        return 0
+    if not has_kv_cache(entry.runtime):
+        # Difusão e TTS não têm janela autoregressiva: 1 é a sentinela.
+        return 1 if _fits(
+            variant, entry.runtime, gpu, 1, kv_cache_dtype, entry, drafter_gib
+        ) else 0
+    limite = context_limit(model_id, variant_id)
+    if limite <= 0:
+        return 0
+    if limite <= step:
+        return limite if _fits(
+            variant, entry.runtime, gpu, limite, kv_cache_dtype, entry, drafter_gib
+        ) else 0
+    low, high = 1, limite // step
+    best = 0
+    while low <= high:
+        middle = (low + high) // 2
+        context = middle * step
+        if _fits(
+            variant, entry.runtime, gpu, context, kv_cache_dtype, entry, drafter_gib
+        ):
+            best = context
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
 
 
 def min_gpu_for(
@@ -1346,7 +1469,7 @@ def check_fit(
     elif not fits:
         kv = (
             0.0
-            if runtime == "image"
+            if not has_kv_cache(runtime)
             else kv_cache_gib(
                 max_model_len,
                 entry,
@@ -1355,7 +1478,11 @@ def check_fit(
             )
         )
         dtype = effective_kv_dtype(runtime, kv_cache_dtype)
-        cache = f"KV ~{kv:.2f} GiB em {dtype}" if dtype else f"KV ~{kv:.2f} GiB"
+        cache = (
+            "sem KV autoregressivo"
+            if not has_kv_cache(runtime)
+            else f"KV ~{kv:.2f} GiB em {dtype}" if dtype else f"KV ~{kv:.2f} GiB"
+        )
         if entry.kv_shape is not None:
             shape = entry.kv_shape
             janela = (
@@ -1368,11 +1495,14 @@ def check_fit(
                 f"de atenção completa, {janela})"
             )
         visao = f" + visão {variant.vision_gib:g}" if variant.vision_gib else ""
+        overhead = (
+            f" + pipeline {variant.overhead_gib:g}" if variant.overhead_gib else ""
+        )
         drafter = f" + drafter {drafter_gib:g}" if drafter_gib else ""
         reason = (
             f"{variant.label} precisa de ~{required:.2f} GiB "
             f"(pesos {variant.memory_gib:g}{visao} + runtime {RUNTIME_RESERVE_GIB:g} + "
-            f"{cache}{drafter}) mais {headroom:.1f} GiB de margem, "
+            f"{cache}{overhead}{drafter}) mais {headroom:.1f} GiB de margem, "
             f"mas {gpu.label} tem {gpu.vram_gib} GiB utilizáveis."
         )
     return CompatibilityResult(
@@ -1444,56 +1574,73 @@ class CompatibleSelection:
 
 
 def compatible_variants(
-    gpu_id: str, drafters: dict[str, float] | None = None
+    gpu_id: str,
+    drafters: dict[str, float] | None = None,
+    kv_dtypes: dict[str, str | None] | None = None,
 ) -> CompatibleSelection:
-    """Filtre variantes disponíveis com `check_fit` em cada contexto servido.
+    """Filtre variantes disponíveis pela maior janela que cabe na GPU.
 
-    Uma variante passa se pelo menos um contexto servido couber na GPU. O
-    perfil exibido é o daquele contexto, preferindo o registrado para a própria
-    GPU quando houver mais de um. Variantes indisponíveis são ignoradas.
+    Para cada perfil de uma variante, `max_fitting_context` calcula o maior
+    contexto que o orçamento permite, até o máximo documentado. A variante
+    entra com o maior contexto entre os perfis; empate prefere o perfil que já
+    serve aquele contexto e depois o registrado para a própria GPU. O contexto
+    exibido é o otimizado, não o `max_model_len` fixo do perfil.
 
-    `drafters` mapeia profile_id -> GiB do drafter DSpark. O catálogo não lê
-    `[worker]` (a tabela vive no perfil, e `config` importa este módulo), então
-    quem chama passa o custo — do mesmo jeito que `packages`.
+    `drafters` mapeia profile_id -> GiB do drafter DSpark e `kv_dtypes` mapeia
+    profile_id -> `kv_cache_dtype` declarado. O catálogo não lê `[worker]`
+    (a tabela vive no perfil, e `config` importa este módulo), então quem chama
+    passa os dois mapas.
     """
     gpu = gpu_by_id(gpu_id)
     custo_drafter = drafters or {}
+    dtypes = kv_dtypes or {}
     rows: list[CompatibleVariant] = []
     dropped = 0
     for model in MODELS:
         for variant in model.variants:
             if not variant.available:
                 continue
-            candidates: list[tuple[int, int, str, int, CompatibilityResult]] = []
-            for context in served_contexts_for(model.id, variant.id):
-                refs = [
-                    item
-                    for item in PROFILE_CONTEXTS
-                    if item.model_id == model.id
-                    and item.variant_id == variant.id
-                    and item.context_served == context
-                ]
-                if not refs:
-                    # Sem perfil registrado, served_contexts_for já devolveu
-                    # Variant.context como contexto de referência.
+            candidates: list[tuple[int, int, int, str, int, CompatibilityResult]] = []
+            refs = [
+                item
+                for item in PROFILE_CONTEXTS
+                if item.model_id == model.id and item.variant_id == variant.id
+            ]
+            if not refs:
+                context = max_fitting_context(model.id, variant.id, gpu.id)
+                if context:
                     fit = check_fit(model.id, variant.id, gpu.id, context)
-                    if fit.fits:
-                        candidates.append((1, -context, "", context, fit))
-                    continue
+                    candidates.append((0, 1, 1, "", context, fit))
+            else:
+                vistos: set[str] = set()
                 for ref in refs:
+                    if ref.profile_id in vistos:
+                        continue
+                    vistos.add(ref.profile_id)
+                    drafter = custo_drafter.get(ref.profile_id, 0.0)
+                    dtype = dtypes.get(ref.profile_id)
+                    context = max_fitting_context(
+                        model.id,
+                        variant.id,
+                        gpu.id,
+                        kv_cache_dtype=dtype,
+                        drafter_gib=drafter,
+                    )
+                    if not context:
+                        continue
                     fit = check_fit(
                         model.id,
                         variant.id,
                         gpu.id,
                         context,
-                        drafter_gib=custo_drafter.get(ref.profile_id, 0.0),
+                        kv_cache_dtype=dtype,
+                        drafter_gib=drafter,
                     )
-                    if not fit.fits:
-                        continue
                     candidates.append(
                         (
-                            0 if ref.gpu_id == gpu.id else 1,
                             -context,
+                            0 if ref.context_served >= context else 1,
+                            0 if ref.gpu_id == gpu.id else 1,
                             ref.profile_id,
                             context,
                             fit,
@@ -1502,7 +1649,7 @@ def compatible_variants(
             if not candidates:
                 dropped += 1
                 continue
-            _exact_gpu, _negative_context, profile_id, context, fit = min(
+            _negative_context, _serves, _exact_gpu, profile_id, context, fit = min(
                 candidates, key=lambda item: item[:4]
             )
             rows.append(
@@ -1525,6 +1672,7 @@ def format_compatible_models(
     gpu_id: str,
     packages: dict[str, str] | None = None,
     drafters: dict[str, float] | None = None,
+    kv_dtypes: dict[str, str | None] | None = None,
 ) -> str:
     """Tabela de compatíveis no mesmo estilo de colunas de `format_models`.
 
@@ -1532,9 +1680,10 @@ def format_compatible_models(
     de onde o byom baixa). A coluna "Pacote" só aparece quando algum perfil desta
     GPU publica os pesos em nome de outra org — repetir a coluna com o mesmo
     valor do fornecedor seria ruído. `drafters` leva o custo do drafter DSpark
-    por perfil para o orçamento (ver `compatible_variants`).
+    por perfil e `kv_dtypes` o dtype de KV declarado, ambos para o orçamento
+    (ver `compatible_variants`).
     """
-    selection = compatible_variants(gpu_id, drafters)
+    selection = compatible_variants(gpu_id, drafters, kv_dtypes)
     gpu = gpu_by_id(gpu_id)
     pacotes = packages or {}
     linha_pacote = {
@@ -1560,7 +1709,11 @@ def format_compatible_models(
     ]
     for row in selection.rows:
         doc = str(row.context_doc) if row.context_doc else "n/a"
-        served = "n/a (imagem)" if row.runtime == "image" else str(row.context_served)
+        served = (
+            "n/a (imagem)"
+            if row.runtime == "image"
+            else "n/a (fala)" if row.runtime == "tts" else str(row.context_served)
+        )
         profile = row.profile_id or "n/a (sem perfil)"
         celulas = [row.model_id, model_by_id(row.model_id).provider]
         if mostrar_pacote:

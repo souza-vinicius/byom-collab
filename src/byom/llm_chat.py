@@ -90,6 +90,25 @@ def _resolve_safe_home() -> Path:
     return validate_safe_byom_dir(home)
 
 
+def ensure_marker(home: Path) -> Path:
+    """Write the `.byom-managed` marker that gates `byom uninstall`."""
+    marker_path = home / MARKER_FILENAME
+    payload = json.dumps({"managed_by": "byom", "version": 1}, indent=2) + "\n"
+    config.atomic_write_text(marker_path, payload, mode=0o600)
+    return marker_path
+
+
+def ensure_managed_home() -> Path:
+    """Create `byom_home()`, tighten permissions and ensure the marker."""
+    home = _resolve_safe_home()
+    home.mkdir(parents=True, exist_ok=True)
+    if os.name == "posix":
+        with contextlib.suppress(OSError):
+            home.chmod(0o700)
+    ensure_marker(home)
+    return home
+
+
 def format_extra_openai_models_yaml(
     *,
     model_id: str,
@@ -154,7 +173,7 @@ def run_setup(
     api_key: str | None = None,
 ) -> SetupResult:
     """Idempotently create `byom_home()`, marker, preferences, and `llm` OpenAI YAML."""
-    home = _resolve_safe_home()
+    home = ensure_managed_home()
     prefs_path = home / PREFS_FILENAME
     prev = _load_prefs(prefs_path)
 
@@ -175,11 +194,6 @@ def run_setup(
     if not effective_model_id:
         raise LlmChatError("O ID local do modelo no llm não pode ser vazio.")
 
-    home.mkdir(parents=True, exist_ok=True)
-    if os.name == "posix":
-        with contextlib.suppress(OSError):
-            home.chmod(0o700)
-
     keys_path = home / KEYS_FILENAME
     api_key_name: str | None = None
     if api_key is not None:
@@ -195,7 +209,6 @@ def run_setup(
     extra_models_path = home / EXTRA_MODELS_FILENAME
     default_model_path = home / DEFAULT_MODEL_FILENAME
 
-    marker_payload = json.dumps({"managed_by": "byom", "version": 1}, indent=2) + "\n"
     prefs_payload = (
         json.dumps(
             {
@@ -216,7 +229,6 @@ def run_setup(
         api_key_name=api_key_name,
     )
 
-    config.atomic_write_text(marker_path, marker_payload, mode=0o600)
     config.atomic_write_text(prefs_path, prefs_payload, mode=0o600)
     config.atomic_write_text(extra_models_path, yaml_payload, mode=0o600)
     config.atomic_write_text(default_model_path, f"{effective_model_id}\n", mode=0o600)

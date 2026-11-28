@@ -1,0 +1,23 @@
+name = "Qwen3-TTS 12Hz 1.7B CustomVoice"
+description = "TTS de maior fidelidade via vLLM-Omni; exige L4 ou melhor; /v1/audio/speech."
+opencode_output_limit = 8192
+runtime = "tts"
+catalog_model = "qwen3-tts"
+catalog_variant = "1.7b-customvoice"
+
+[config]
+model = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+served_model_name = "qwen3-tts-1.7b"
+max_model_len = 1
+gpu = "L4"
+gpu_high_mem = false
+vllm_spec = "vllm==0.34.0"
+vllm_enforce_eager = false
+vllm_language_model_only = false
+gpu_memory_utilization = 0.3
+enable_auto_tool_choice = false
+
+[worker]
+deploy_config = "qwen3_tts.yaml"
+trust_remote_code = true
+vllm_omni_spec = "vllm-omni==0.34.0"

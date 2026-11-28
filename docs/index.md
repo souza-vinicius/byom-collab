@@ -10,4 +10,6 @@ Open Knowledge Format (OKF v0.2) knowledge base for `byom-collab`.
 - [Troubleshooting the Worker Session](./troubleshooting.md) - Symptom to cause to action: silent runtime exit, missing CUDA libraries, unsupported PTX, worker stuck initializing, tunnel drops, and how to read the VM logs without taking the SSH slot
 - [Interactive TUI Architecture](./tui.md) - Single-screen Rich + questionary TUI with the `Selecionar GPU` submenu, GPU + model pinning, and responsive layout
 - [Isolated llm chat Integration](./llm-chat.md) - Centralized `byom_home()` path resolution and `setup`, `chat`, and `uninstall` commands wrapping `llm chat`
+- [Open WebUI Frontend](./webui.md) - `byom web` starts an isolated Open WebUI on 127.0.0.1:8080 against the local proxy, with its own data directory, and the one-runtime limit that still blocks image generation
+- [Qwen3-TTS Runtime](./qwen3-tts.md) - Qwen3-TTS CustomVoice through vLLM-Omni, the two-stage VRAM budget, the `/v1/audio/speech` and `/v1/audio/voices` routes, and what is still unmeasured
 - [Update Log](./log.md) - Chronological history of knowledge base updates

@@ -8,6 +8,7 @@ sd-server e o control do Strata escutam apenas em loopback na porta
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shlex
@@ -321,6 +322,43 @@ def build_image_args(cfg: dict) -> list[str]:
     return args
 
 
+def _tts_deploy_config(name: str) -> Path:
+    """Caminho da deploy config dentro do pacote `vllm_omni` instalado."""
+    spec = importlib.util.find_spec("vllm_omni")
+    if spec is None or not spec.origin:
+        raise RuntimeError(
+            "vllm_omni não está instalado; o perfil tts exige "
+            "vllm_spec = vllm-omni==<versão>"
+        )
+    path = Path(spec.origin).parent / "deploy" / name
+    if not path.is_file():
+        raise RuntimeError(f"deploy config do vLLM-Omni não encontrado: {path}")
+    return path
+
+
+def build_tts_args(cfg: dict) -> list[str]:
+    """`vllm serve <modelo> --omni` para o pipeline de TTS do vLLM-Omni."""
+    worker = cfg.get("worker") or {}
+    deploy = str(worker.get("deploy_config") or "qwen3_tts.yaml")
+    args = [
+        "/content/byom/venv/bin/vllm",
+        "serve",
+        cfg["model"],
+        "--omni",
+        "--deploy-config",
+        str(_tts_deploy_config(deploy)),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(cfg["vllm_port"]),
+        "--served-model-name",
+        cfg["served_model_name"],
+    ]
+    if worker.get("trust_remote_code", True):
+        args.append("--trust-remote-code")
+    return args
+
+
 def build_command(cfg: dict) -> list[str]:
     runtime = cfg.get("runtime", "vllm")
     if runtime == "vllm":
@@ -331,6 +369,8 @@ def build_command(cfg: dict) -> list[str]:
         return build_image_args(cfg)
     if runtime == "strata":
         return build_strata_args(cfg)
+    if runtime == "tts":
+        return build_tts_args(cfg)
     raise ValueError(f"Unsupported runtime: {runtime!r}")
 
 

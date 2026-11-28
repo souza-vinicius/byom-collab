@@ -403,7 +403,9 @@ def _prepare_strata(worker: dict) -> dict:
 def prepare(session_file: Path) -> dict:
     cfg = json.loads(session_file.read_text(encoding="utf-8"))
     runtime = cfg.get("runtime", "vllm")
-    if runtime == "vllm":
+    if runtime in ("vllm", "tts"):
+        # Os dois deixam o download dos pesos para o `vllm serve`; o bootstrap
+        # instala `vllm_spec` (vLLM) e, no TTS, também `[worker].vllm_omni_spec`.
         return {"runtime": runtime, "downloaded": []}
     if runtime == "strata":
         return _prepare_strata(cfg.get("worker") or {})

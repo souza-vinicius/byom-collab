@@ -211,6 +211,21 @@ def test_snapshot_cli_profiles():
         " pesos + 2 de runtime + 1,0 de folga = 12,22 <= 15 GiB utilizáveis da T4, ent"
         "ão a GPU barata serve.\n"
         "  Geração de imagens em T4 (15 GiB); POST /v1/images/generations, não chat.\n"
+        "qwen3-tts-0.6b-customvoice — Qwen3-TTS 12Hz 0.6B CustomVoice (1 tokens servid"
+        "os; reasoning not documented)\n"
+        "  Fornecedor: Qwen (Alibaba Cloud)\n"
+        "  qwen3-tts:0.6b-customvoice — contexto doc 0 / servido 1\n"
+        "  TTS não tem janela de chat; 1 é sentinela. 2,32 GiB de pesos + 2 de runtime"
+        " + 6 de pipeline = 10,32, mais 1,0 de folga = 11,32 <= 15 GiB da T4.\n"
+        "  TTS via vLLM-Omni; 9 timbres embutidos; endpoint /v1/audio/speech.\n"
+        "qwen3-tts-1.7b-customvoice — Qwen3-TTS 12Hz 1.7B CustomVoice (1 tokens servid"
+        "os; reasoning not documented)\n"
+        "  Fornecedor: Qwen (Alibaba Cloud)\n"
+        "  qwen3-tts:1.7b-customvoice — contexto doc 0 / servido 1\n"
+        "  TTS não tem janela de chat; 1 é sentinela. 4,21 GiB de pesos + 2 de runtime"
+        " + 9 de pipeline = 15,21, mais 1,2 de folga = 16,41 <= 24 GiB da L4.\n"
+        "  TTS de maior fidelidade via vLLM-Omni; exige L4 ou melhor; /v1/audio/speech"
+        ".\n"
         "qwen3.8-27b-256k — Qwen3.8 27B (256k) (262,144 tokens servidos; reasoning xhi"
         "gh)\n"
         "  Fornecedor: Qwen (Alibaba Cloud)\n"
@@ -279,42 +294,45 @@ def test_snapshot_cli_gpus():
         "\n"
         "T4 (Tesla T4) | 15 | nao | sim | gemma-4-12b-q4-gguf, gemma-4-e4b-q4-gguf, in"
         "kling-2-mini-ad-iq2xxs, inkling-2-mini-iq2-gguf, inkling-2-mini-strata-sq10, "
-        "qwen-image-2.1-q4km, ternary-bonsai-25-27b-ptq1-mtp, ternary-bonsai-25-27b-pt"
-        "q1, ternary-bonsai-25-27b-q2\n"
+        "qwen-image-2.1-q4km, qwen3-tts-0.6b-customvoice, ternary-bonsai-25-27b-ptq1-m"
+        "tp, ternary-bonsai-25-27b-ptq1, ternary-bonsai-25-27b-q2\n"
         "L4 (L4) | 24 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-"
         "2-mini-ad-iq2xxs, inkling-2-mini-ad-q4k, inkling-2-mini-iq2-gguf, inkling-2-m"
         "ini-q4-gguf, inkling-2-mini-strata-sq10, inkling-2-mini-strata-sq15, inkling-"
         "2-mini-strata-sq20, muse-glimmer-30b-q2-gguf, qwen-image-2.1-fp8, qwen-image-"
-        "2.1-q4km, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf, ternary-"
-        "bonsai-25-27b-ptq1-mtp, ternary-bonsai-25-27b-ptq1, ternary-bonsai-25-27b-q2"
-        "\n"
+        "2.1-q4km, qwen3-tts-0.6b-customvoice, qwen3-tts-1.7b-customvoice, qwen3.8-27b"
+        "-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf, ternary-bonsai-25-27b-ptq1-mt"
+        "p, ternary-bonsai-25-27b-ptq1, ternary-bonsai-25-27b-q2\n"
         "A100-40 (A100 40 GB) | 40 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-"
         "q4-gguf, gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-ad-iq2xxs, "
         "inkling-2-mini-ad-q4k, inkling-2-mini-ad-q6k-dspark, inkling-2-mini-ad-q6k, i"
         "nkling-2-mini-iq2-gguf, inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, inkli"
         "ng-2-mini-strata-sq10, inkling-2-mini-strata-sq15, inkling-2-mini-strata-sq20"
         ", muse-glimmer-30b-q2-gguf, muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwe"
-        "n-image-2.1-q4km, qwen3.8-27b-256k, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwe"
-        "n3.8-27b-q4-gguf, ternary-bonsai-25-27b-ptq1-mtp, ternary-bonsai-25-27b-ptq1,"
-        " ternary-bonsai-25-27b-q2\n"
+        "n-image-2.1-q4km, qwen3-tts-0.6b-customvoice, qwen3-tts-1.7b-customvoice, qwe"
+        "n3.8-27b-256k, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf, ter"
+        "nary-bonsai-25-27b-ptq1-mtp, ternary-bonsai-25-27b-ptq1, ternary-bonsai-25-27"
+        "b-q2\n"
         "A100-80 (A100 80 GB) | 80 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-"
         "q4-gguf, gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-ad-iq2xxs, "
         "inkling-2-mini-ad-q4k, inkling-2-mini-ad-q6k-dspark, inkling-2-mini-ad-q6k, i"
         "nkling-2-mini-iq2-gguf, inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, inkli"
         "ng-2-mini-strata-sq10, inkling-2-mini-strata-sq15, inkling-2-mini-strata-sq20"
         ", muse-glimmer-30b-q2-gguf, muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwe"
-        "n-image-2.1-q4km, qwen3.8-27b-256k, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwe"
-        "n3.8-27b-q4-gguf, ternary-bonsai-25-27b-ptq1-mtp, ternary-bonsai-25-27b-ptq1,"
-        " ternary-bonsai-25-27b-q2\n"
+        "n-image-2.1-q4km, qwen3-tts-0.6b-customvoice, qwen3-tts-1.7b-customvoice, qwe"
+        "n3.8-27b-256k, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf, ter"
+        "nary-bonsai-25-27b-ptq1-mtp, ternary-bonsai-25-27b-ptq1, ternary-bonsai-25-27"
+        "b-q2\n"
         "H100-80 (H100 80 GB) | 80 | sim | sim | gemma-4-12b-q4-gguf, gemma-4-26b-a4b-"
         "q4-gguf, gemma-4-31b-q4-gguf, gemma-4-e4b-q4-gguf, inkling-2-mini-ad-iq2xxs, "
         "inkling-2-mini-ad-q4k, inkling-2-mini-ad-q6k-dspark, inkling-2-mini-ad-q6k, i"
         "nkling-2-mini-iq2-gguf, inkling-2-mini-q4-gguf, inkling-2-mini-q8-gguf, inkli"
         "ng-2-mini-strata-sq10, inkling-2-mini-strata-sq15, inkling-2-mini-strata-sq20"
         ", muse-glimmer-30b-q2-gguf, muse-glimmer-30b-q4-gguf, qwen-image-2.1-fp8, qwe"
-        "n-image-2.1-q4km, qwen3.8-27b-256k, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwe"
-        "n3.8-27b-q4-gguf, ternary-bonsai-25-27b-ptq1-mtp, ternary-bonsai-25-27b-ptq1,"
-        " ternary-bonsai-25-27b-q2\n"
+        "n-image-2.1-q4km, qwen3-tts-0.6b-customvoice, qwen3-tts-1.7b-customvoice, qwe"
+        "n3.8-27b-256k, qwen3.8-27b-32k, qwen3.8-27b-q3-gguf, qwen3.8-27b-q4-gguf, ter"
+        "nary-bonsai-25-27b-ptq1-mtp, ternary-bonsai-25-27b-ptq1, ternary-bonsai-25-27"
+        "b-q2\n"
         "\n"
         "Fonte VRAM: Google Cloud, Compute Engine > GPU machine types > General compar"
         "ison chart (docs.cloud.google.com/compute/docs/gpus), consultado em 2026-11-2"
@@ -333,10 +351,9 @@ def test_snapshot_cli_models_all_gpus_e_prompt():
         assert "Summary:" in res.output
 
     res_l4 = runner.invoke(cli.app, ["models", "--gpu", "L4"])
-    # O q4 do Inkling passou a caber na L4 com o KV medido pela arquitetura; as
-    # três variantes do Bonsai 2.5 também cabem (a T4 é a GPU que elas exigem) e
-    # as três variantes `strata` cabem nos 24 GiB (20,33 GiB na maior).
-    assert "Summary: 19 compatible variant(s); 6 discarded for insufficient VRAM." in (
+    # A janela é otimizada por GPU e o catálogo ganhou as duas variantes TTS:
+    # 22 variantes acham um contexto que cabe nos 24 GiB.
+    assert "Summary: 22 compatible variant(s); 5 discarded for insufficient VRAM." in (
         res_l4.output
     )
 
@@ -365,15 +382,13 @@ def test_snapshot_cli_configure():
     assert res_img.output == (
         "Applied profile: qwen-image-2.1-q4km — Qwen-Image-2.1 (GGUF Q4_K) (runtime im"
         "age)\n"
-        "Contexto servido: 1 tokens; GPU: T4 (standard memory)\n"
-        "Contexto documentado: 0 tokens (modelo qwen-image-2.1:q4km); Modelo de difusã"
-        "o não tem janela autoregressiva; 1 é sentinela. 9,22 GiB de pesos + 2 de runt"
-        "ime + 1,0 de folga = 12,22 <= 15 GiB utilizáveis da T4, então a GPU barata se"
-        "rve.\n"
+        "Contexto: não se aplica (modelo de geração de imagens); GPU: T4 (standard mem"
+        "ory)\n"
+        "Contexto documentado: n/a (runtime image); Modelo de difusão não tem janela a"
+        "utoregressiva; 1 é sentinela. 9,22 GiB de pesos + 2 de runtime + 1,0 de folga"
+        " = 12,22 <= 15 GiB utilizáveis da T4, então a GPU barata serve.\n"
         "Reasoning padrão do modelo: not documented\n"
-        f"Configuration saved to {cfg_file}\n"
-        "In OpenCode, select `byom/qwen-image-2.1-q4km` to use the matching context li"
-        "mit\n"    )
+        f"Configuration saved to {cfg_file}\n"    )
 
 
 def test_snapshot_cli_init(monkeypatch):

@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from byom import catalog, cli, config
 
-RUNTIMES = {"vllm", "llama-cpp", "image", "strata"}
+RUNTIMES = {"vllm", "llama-cpp", "image", "strata", "tts"}
 
 
 def test_perfis_declaram_runtime_e_referencia_do_catalogo():
@@ -51,6 +51,9 @@ def test_binarios_fixados_com_checksum_e_sem_latest():
                 assert "/releases/download/v0.2.23/" in worker[f"{prefixo}_url"], profile.id
                 assert len(worker[f"{prefixo}_sha256"]) == 64, profile.id
             assert worker["engine_url"].endswith("cuda-cuda12.tar.gz"), profile.id
+            continue
+        if profile.runtime in ("vllm", "tts"):
+            # vLLM e vLLM-Omni baixam os pesos no `serve`; não há binário fixado.
             continue
         assert worker["binary_url"].startswith("https://")
         assert len(worker["binary_sha256"]) == 64

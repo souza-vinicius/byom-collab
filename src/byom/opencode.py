@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import config
+from . import catalog, config
 
 PLUGIN_NAME = "opencode-models-discovery"
 # Pinned on 23/11/2026: `latest` made `up` non-reproducible. npm lists 2.2.1
@@ -224,6 +224,7 @@ def profile_aliases_from_config() -> dict[str, dict[str, Any]]:
                 "tool_call": profile.settings["enable_auto_tool_choice"],
             }
             for profile in profiles
+            if profile.runtime not in catalog.NON_CHAT_RUNTIMES
         }
     except (KeyError, OSError, ValueError) as exc:
         raise OpenCodeConfigError("Could not generate OpenCode aliases from profiles") from exc

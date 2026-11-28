@@ -300,6 +300,9 @@ WORKER_FIELDS = frozenset(
         "pack_pattern",
         "sums_pattern",
         "run_config_extra",
+        "deploy_config",
+        "trust_remote_code",
+        "vllm_omni_spec",
     }
 )
 
@@ -485,7 +488,9 @@ def _validate_kv_cache_dtype(name: str, runtime: str, declared: object) -> None:
             )
         return
     detalhe = (
-        "has no KV cache at all" if runtime == "image" else "always uses the f16 KV cache"
+        "has no KV cache at all"
+        if runtime in ("image", "tts")
+        else "always uses the f16 KV cache"
     )
     raise ValueError(
         f"{name} declares kv_cache_dtype, but runtime {runtime!r} {detalhe}; "
@@ -582,6 +587,35 @@ def available_profiles(directory: Path | None = None) -> list[Profile]:
             )
         if runtime == "strata":
             _validate_strata_worker(path.name, worker)
+        if runtime == "tts":
+            deploy = worker.get("deploy_config")
+            if deploy is not None and (
+                not isinstance(deploy, str) or Path(deploy).name != deploy or not deploy
+            ):
+                raise ValueError(
+                    f"profile {path.name}: [worker].deploy_config must be a file name "
+                    "(not a path), e.g. qwen3_tts.yaml"
+                )
+            if "trust_remote_code" in worker and not isinstance(
+                worker["trust_remote_code"], bool
+            ):
+                raise ValueError(
+                    f"profile {path.name}: [worker].trust_remote_code must be boolean"
+                )
+            omni_spec = worker.get("vllm_omni_spec")
+            if not isinstance(omni_spec, str) or not omni_spec.strip():
+                raise ValueError(
+                    f"profile {path.name}: runtime 'tts' requires "
+                    "[worker].vllm_omni_spec (e.g. vllm-omni==0.34.0); "
+                    "vllm_spec alone installs only vLLM"
+                )
+        else:
+            for key in ("deploy_config", "trust_remote_code", "vllm_omni_spec"):
+                if key in worker:
+                    raise ValueError(
+                        f"profile {path.name}: [worker] {key} is only valid for "
+                        "runtime 'tts'"
+                    )
         if worker.get("dspark"):
             # DSpark precisa dos DOIS lados: o drafter para baixar/emitir e o
             # runtime llama-cpp para receber `--model-draft`.
@@ -719,6 +753,14 @@ def drafter_gib_by_profile() -> dict[str, float]:
     """Custo do drafter DSpark por perfil (0,0 quando `[worker] dspark` não existe)."""
     return {
         profile.id: catalog.drafter_gib(profile.worker)
+        for profile in available_profiles()
+    }
+
+
+def kv_cache_dtype_by_profile() -> dict[str, str | None]:
+    """dtype de KV declarado por perfil (None = default do runtime)."""
+    return {
+        profile.id: profile.settings.get("kv_cache_dtype")
         for profile in available_profiles()
     }
 

@@ -37,6 +37,7 @@ uv run byom configure --profile qwen3.8-27b-32k    # seleciona um perfil de mode
 uv run byom up                                     # aloca a GPU e inicia o endpoint local
 uv run byom setup                                  # configura o chat isolado (`llm`) apontando para o endpoint local
 uv run byom chat                                   # conversa no terminal com o modelo remoto (histórico isolado em logs.db)
+uv run byom web                                    # abre o frontend web (Open WebUI) em 127.0.0.1:8080
 uv run byom status                                 # mostra sessão, worker, túnel e uso da conta
 uv run byom down                                   # encerra a sessão
 uv run byom uninstall                              # remove apenas o diretório exclusivo do byom
@@ -49,18 +50,21 @@ uv run byom uninstall                              # remove apenas o diretório 
   opcionalmente, aplicar a conexão automaticamente (sem alterar arquivos de
   harness durante o `Iniciar sessão no Colab`). A opção **Conversar com o
   modelo (llm chat)** (atalho `c`) abre o chat no terminal com a sessão ativa.
-* Na TUI, a opção **Selecionar GPU** (atalho `2`) concentra a escolha de modelo
-  e oferece dois caminhos: **Selecionar perfil de modelo**, que reusa a lista de
-  perfis prontos e a tela de detalhe, e **Selecionar uma GPU para ver os modelos
-  compatíveis**, que mostra a GPU escolhida, a tabela de modelos que cabem nela e
-  um painel de confirmação com o contexto servido e os valores resultantes de
-  `gpu`/`gpu_high_mem`. **Nada é gravado em `config.toml` antes da confirmação**:
-  voltar para a lista, trocar de GPU ou sair pelo menu não deixa resíduo, e um
-  par GPU + modelo que não cabe é recusado sem escrever nada.
-* `byom profiles` lista todos os perfis; `byom gpus` exibe o catálogo estático
-  de GPUs. Encerre a sessão antes de trocar de perfil.
-* `byom models --gpu L4` lista apenas as variantes do catálogo cujo contexto
-  servido cabe nessa GPU, sem solicitar entrada. Sem `--gpu`, `byom models`
+* Na TUI, a opção **Selecionar GPU** (atalho `2`) tem um caminho único:
+  **GPU -> modelo**. A tela mostra a GPU, a VRAM e quantos modelos têm receita
+  de execução nela; ao escolher a GPU, a tabela lista os modelos que cabem com a
+  **maior janela de contexto que a VRAM permite**, até o máximo documentado do
+  modelo. GPU menor recebe um contexto menor; GPU maior recebe o contexto
+  máximo. Um painel de confirmação mostra a janela otimizada, a memória estimada
+  e os valores de `gpu`/`gpu_high_mem`. **Nada é gravado em `config.toml` antes da
+  confirmação**: voltar, trocar de GPU ou sair pelo menu não deixa resíduo, e um
+  par GPU + modelo que não cabe é recusado sem escrever nada. Os perfis TOML
+  continuam existindo como receitas internas de runtime, mas não são escolhidos
+  na TUI.
+* `byom profiles` lista as receitas internas de runtime; `byom gpus` exibe o
+  catálogo estático de GPUs. Encerre a sessão antes de trocar de modelo.
+* `byom models --gpu L4` lista as variantes que cabem nessa GPU com o contexto
+  otimizado, sem solicitar entrada. Sem `--gpu`, `byom models`
   imprime a lista numerada de GPUs, solicita um número ou ID (sem diferenciar
   maiúsculas/minúsculas) e exibe somente as variantes compatíveis. Uma entrada
   inválida interrompe com os IDs aceitos; nenhuma GPU é escolhida
@@ -113,6 +117,30 @@ configuração global do `llm` no seu sistema:
   remove apenas o diretório do `byom` sem tocar no `llm` global e imprime o
   comando para desinstalar o pacote (`pip uninstall byom`).
 
+### Frontend web (`byom web`)
+
+O `byom web` sobe uma instância isolada do [Open WebUI](https://openwebui.com)
+em `http://127.0.0.1:8080`, conectada ao proxy local em
+`http://127.0.0.1:4000/v1`. A interface cobre conversas com histórico, system
+prompt por conversa, upload de arquivos e parâmetros do modelo, sem alterar
+nenhuma configuração global do Open WebUI.
+
+* **Isolamento**: dados em `$BYOM_HOME/webui` (SQLite, uploads e cache) e segredo
+  de sessão em `$BYOM_HOME/webui-secret` com permissão `0600`. O comando cria o
+  marcador `.byom-managed`, então `byom uninstall` remove tudo.
+* **Sem login**: `WEBUI_AUTH=false`, porque a interface escuta apenas em
+  loopback. Para multiusuário, use outro diretório de dados.
+* **Primeira execução**: baixa o Open WebUI 0.13.5 e o Python 3.12 pelo `uv`
+  (o pacote exige `<3.13`). As execuções seguintes reutilizam o cache.
+* **Opções**: `--port` / `-p` muda a porta (padrão 8080); `--no-browser` não abre
+  o navegador. `Ctrl+C` encerra o frontend.
+* **Limite de runtime**: o byom serve um perfil por sessão. A lista de modelos
+  do Open WebUI reflete o runtime ativo. Modelos de imagem recusam chat; a
+  geração de imagem do Open WebUI exige um modelo de chat e uma conexão de
+  imagem ao mesmo tempo, combinação que uma sessão única do byom não oferece.
+
+Detalhes em [Open WebUI Frontend](docs/webui.md).
+
 ## Catálogos de GPUs e modelos
 
 `src/byom/catalog.py` é a fonte única de números de GPU/VRAM e
@@ -141,11 +169,10 @@ comparison chart", consultado em 2026-11-23):
 | A100 80 GB | 80 GiB | sim | `A100`, `gpu_high_mem=true` |
 | H100 80 GB | 80 GiB | sim | `H100` |
 
-Primeiro lote (documentação consultada em 2026-11-23). "Contexto doc" abaixo é o
-máximo na página oficial; o contexto servido é menor na maioria dos perfis para
-caber na GPU declarada em `config.toml` (`byom models` exibe ambos).
-`byom models --gpu <ID>` usa o mesmo orçamento de contexto servido de `byom up`
-para filtrar a listagem; ele não altera a GPU declarada:
+Contexto doc é o máximo na página oficial; o contexto servido exibido por
+`byom models` é a maior janela que cabe na GPU, até esse máximo (a TUI mostra o
+mesmo número ao escolher GPU + modelo). `byom models --gpu <ID>` usa o mesmo
+orçamento de `byom up` para filtrar a listagem; ele não altera a GPU declarada:
 
 | Modelo | Fornecedor | Runtime | Variante | Memória | Contexto doc | Contexto servido | GPU mínima |
 | :--- | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
@@ -157,6 +184,7 @@ para filtrar a listagem; ele não altera a GPU declarada:
 | Gemma 4 | Google DeepMind | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
 | Muse Glimmer 30B | Meta Superintelligence Lab | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
 | Qwen-Image-2.1 | Qwen (Alibaba Cloud) | image | INT8-ConvRot (12,07 GiB) / GGUF Q4_K (9,22 GiB) | 12,1 / 9,2 GiB | n/a | n/a | L4 / **T4** |
+| Qwen3-TTS | Qwen (Alibaba Cloud) | tts | 0.6B CustomVoice (2,32 GiB) / 1.7B CustomVoice (4,21 GiB) | 2,3 / 4,2 GiB + pipeline | n/a | n/a (fala) | **T4** / **L4** |
 
 **Fornecedor** é quem desenvolve o modelo; é dado do catálogo (`ModelEntry.provider`),
 com a fonte registrada em `catalog.PROVIDER_SOURCES` (URL + data) e conferida em
@@ -460,11 +488,12 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   gateway os recebe em `session.json`. Fontes e datas de cada valor estão
   registradas no catálogo e nas tabelas acima. Nenhum perfil repete `medium`,
   `25` ou um máximo de contexto documentado.
-* **O contexto não é reduzido silenciosamente.** `PROFILE_CONTEXTS` lista todos
-  os 22 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
-  imprime ambos; `check_fit` continua usando o valor servido de `config.toml`.
-  Elevar um perfil ao máximo documentado sem uma GPU maior está explicitamente
-  fora de escopo.
+* **O contexto é otimizado por GPU, não reduzido em silêncio.**
+  `PROFILE_CONTEXTS` lista os 27 perfis com contexto doc, contexto de referência,
+  GPU e motivo. `byom models` e a TUI calculam a maior janela que cabe na GPU
+  até o máximo documentado (`catalog.max_fitting_context`), e a seleção grava
+  esse valor em `max_model_len`; `check_fit` valida o par antes de qualquer
+  alocação.
 * **Thinking é guiado por comportamento, não pelo nome do modelo.** Apenas um
   modelo com `ModelEntry.thinking` recebe a transformação de prompt do Gemma 4.
   O token do próprio cliente, histórico já limpo ou `enable_thinking: false`
@@ -553,12 +582,13 @@ computação. Use `--enforce-eager` se faltar memória.
 
 ```text
 src/byom/
-  cli.py                  init, profiles, gpus, models, configure, up, status, down, setup, chat, uninstall
+  cli.py                  init, profiles, gpus, models, configure, up, status, down, setup, chat, web, uninstall
   llm_chat.py             setup idempotente, execução isolada de `llm chat` e uninstall seguro
+  webui.py                frontend Open WebUI isolado (`byom web`)
   tui.py                  interface interativa (TUI) com Rich e questionary
   mensagens.py            textos, traduções, glossário e formatadores PT-BR da TUI
   catalog.py              catálogo validado de GPUs/modelos e checagem de compatibilidade
-  profiles/               perfis de runtime (vLLM, GGUF, imagem) e aliases do OpenCode
+  profiles/               perfis de runtime (vLLM, GGUF, imagem, TTS) e aliases do OpenCode
   opencode.py             mescla a configuração do OpenCode
   dsh.py                  mescla a configuração do dsh (DeepSeek harness)
   colab.py                chamadas da Colab CLI e células de kernel

@@ -46,9 +46,14 @@ fi
 
 # 3. dependencies ---------------------------------------------------------
 VLLM_SPEC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["vllm_spec"])' "$SESSION_FILE")"
+VLLM_OMNI_SPEC="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print((d.get("worker") or {}).get("vllm_omni_spec",""))' "$SESSION_FILE")"
 RUNTIME="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runtime","vllm"))' "$SESSION_FILE")"
 log "Runtime: $RUNTIME"
-if [ "$RUNTIME" = "vllm" ]; then
+if [ "$RUNTIME" = "tts" ]; then
+  [ -n "$VLLM_OMNI_SPEC" ] || die "runtime tts requires [worker].vllm_omni_spec"
+  log "Installing $VLLM_SPEC and $VLLM_OMNI_SPEC"
+  uv pip install --python "$VENV/bin/python" "$VLLM_SPEC" "$VLLM_OMNI_SPEC"
+elif [ "$RUNTIME" = "vllm" ]; then
   log "Installing $VLLM_SPEC and gateway dependencies"
   uv pip install --python "$VENV/bin/python" "$VLLM_SPEC"
 fi
@@ -75,9 +80,9 @@ if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   tmux kill-session -t "$TMUX_SESSION"
 fi
 
-if [ "$RUNTIME" = "vllm" ]; then
+if [ "$RUNTIME" = "vllm" ] || [ "$RUNTIME" = "tts" ]; then
   RUN_SERVER="$BYOM_DIR/run_vllm.sh"
-  LOG_NAME=vllm
+  LOG_NAME="$RUNTIME"
 else
   RUN_SERVER="$BYOM_DIR/run_runtime.sh"
   LOG_NAME="$RUNTIME"

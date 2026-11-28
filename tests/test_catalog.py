@@ -299,7 +299,7 @@ def test_contexto_documentado_servido_e_motivo():
     assert served["inkling-2-mini-strata-sq15"] == 32_768
     assert served["inkling-2-mini-strata-sq20"] == 32_768
     assert all(item.reason for item in catalog.PROFILE_CONTEXTS)
-    assert len(served) == 25
+    assert len(served) == 27
 
 
 def test_compatibilidade_continua_usando_contexto_servido():

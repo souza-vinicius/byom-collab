@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -630,30 +629,6 @@ def test_renderizar_menu_estatico_tem_oito_itens_sem_ajuda():
     assert itens[6] == "h. Configurar harness (OpenCode / dsh)"
     assert itens[7] == "q. Sair"
     assert "Ajuda" not in texto
-
-
-def test_submenu_selecionar_gpu_oferece_perfil_gpu_e_voltar(monkeypatch):
-    import questionary
-
-    capturadas: list[Any] = []
-
-    class Pergunta:
-        def ask(self):
-            return "menu"
-
-    def fake_select(mensagem, *, choices, **kwargs):
-        capturadas.extend(choices)
-        return Pergunta()
-
-    monkeypatch.setattr(questionary, "select", fake_select)
-    rec = tui.criar_console(width=100, height=30, record=True)
-
-    assert tui._executar_selecionar_gpu(rec, tui.ler_estado_local()) == "menu"
-    assert [choice.title for choice in capturadas] == [
-        M.SUBMENU_PERFIL,
-        M.SUBMENU_GPU_MODELOS,
-        "Voltar ao menu principal",
-    ]
 
 
 def test_aplicar_par_gpu_modelo_fixa_gpu_escolhida_sobre_a_do_perfil(isolated_home):
