@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 from byom import cli, colab, config, remote
 
 runner = CliRunner()
+_real_port_free = cli._port_free
 
 
 class _FakeRemote:
@@ -87,6 +88,7 @@ def _free_port() -> int:
 
 def test_porta_do_proxy_ocupada_aborta_antes_de_alocar():
     porta = _free_port()
+    porta_tunel = _free_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", porta))
@@ -97,8 +99,13 @@ def test_porta_do_proxy_ocupada_aborta_antes_de_alocar():
             alocou.append("sim")
 
         with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(cli, "_port_free", _real_port_free)
             patch.setattr(colab, "new", allocate)
-            patch.setattr(config, "load_config", lambda: config.Config(proxy_port=porta))
+            patch.setattr(
+                config,
+                "load_config",
+                lambda: config.Config(proxy_port=porta, tunnel_port=porta_tunel),
+            )
             resultado = runner.invoke(cli.app, ["up"])
 
     assert resultado.exit_code == 1
@@ -110,6 +117,7 @@ def test_falha_em_wait_ready_encerra_o_daemon_e_libera_a_porta(monkeypatch):
     porta = _free_port()
     filho = _children_on_port(porta)
     try:
+        monkeypatch.setattr(cli, "_port_free", _real_port_free)
         _wait_port_taken(porta)
         _install(monkeypatch, config.Config(proxy_port=porta))
         monkeypatch.setattr(cli, "TERMINATE_GRACE_S", 0.5)
@@ -141,7 +149,9 @@ def test_falha_em_wait_ready_encerra_o_daemon_e_libera_a_porta(monkeypatch):
 
 
 def test_daemon_que_morre_no_popen_aborta_citando_a_porta(monkeypatch):
-    cfg = _install(monkeypatch, config.Config(proxy_port=_free_port()))
+    cfg = _install(
+        monkeypatch, config.Config(proxy_port=_free_port(), tunnel_port=_free_port())
+    )
     monkeypatch.setattr(cli, "DAEMON_CONFIRM_TICKS", 3)
     monkeypatch.setattr(cli, "DAEMON_CONFIRM_INTERVAL_S", 0.01)
     # PID que não existe: o filho "morreu logo após iniciar".
@@ -236,7 +246,8 @@ def test_daemon_morto_durante_a_espera_falha_rapido(monkeypatch):
     assert "não existe mais" in str(excinfo.value)
 
 
-def test_port_free_detecta_porta_em_uso():
+def test_port_free_detecta_porta_em_uso(monkeypatch):
+    monkeypatch.setattr(cli, "_port_free", _real_port_free)
     porta = _free_port()
     assert cli._port_free(porta) is True
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

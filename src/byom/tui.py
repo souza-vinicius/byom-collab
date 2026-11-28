@@ -2369,6 +2369,9 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
     if state.endpoint:
         tabela.add_row("Endpoint remoto", state.endpoint)
     tabela.add_row("Sessão no Colab", colab_status_txt)
+    tabela.add_row("Modelo ativo", f"{cfg.served_model_name} ({cfg.runtime})")
+    tabela.add_row("API Byom", f"http://127.0.0.1:{cfg.proxy_port}/v1")
+    tabela.add_row("Open WebUI", f"http://127.0.0.1:{cli.webui.DEFAULT_PORT} (`byom web`)")
     if payload is None:
         tabela.add_row("Worker local", "indisponível (daemon não está respondendo)")
     else:
@@ -2610,6 +2613,8 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
         detalhes.append(f"API de imagens: {endpoint_api}/images/generations")
     elif cfg.runtime == "tts":
         detalhes.append(f"API de fala: {endpoint_api}/audio/speech")
+    else:
+        detalhes.append(f"Open WebUI: http://127.0.0.1:{cli.webui.DEFAULT_PORT} (`byom web`)")
     _mostrar_resultado(
         con,
         "up",

@@ -37,6 +37,10 @@ from . import (
     webui,
 )
 
+PANEL_CATALOG = "Configuração e Catálogo"
+PANEL_SESSION = "Sessão Colab e Ciclo de Vida"
+PANEL_CLIENTS = "Chat e Frontend Web"
+
 app = typer.Typer(
     add_completion=False,
     rich_markup_mode="rich",
@@ -142,9 +146,9 @@ def _load_config_or_die() -> config.Config:
 # ---------------------------------------------------------------------------
 # init
 # ---------------------------------------------------------------------------
-@app.command()
+@app.command(rich_help_panel=PANEL_CATALOG)
 def init() -> None:
-    """Check local dependencies and create the configuration."""
+    """Check local dependencies, create the SSH key, and save config.toml. Ex.: `byom init`."""
     if shutil.which("ssh") is None:
         _die("`ssh` client not found in PATH")
     try:
@@ -227,7 +231,13 @@ def _package_owners() -> dict[str, str]:
     }
 
 
-@app.command()
+@app.command(
+    rich_help_panel=PANEL_CATALOG,
+    help=(
+        "List available model profiles with inherited reasoning and both contexts. "
+        "Ex.: `byom profiles`."
+    ),
+)
 def profiles() -> None:
     """List available model profiles with inherited reasoning and both contexts."""
     pacotes = _package_owners()
@@ -256,9 +266,9 @@ def profiles() -> None:
             _say(f"  {profile.description}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_CATALOG)
 def gpus() -> None:
-    """List Colab GPUs, VRAM, bf16 and which catalog profiles fit each one."""
+    """List Colab GPUs, VRAM, bf16, and which catalog profiles fit each one. Ex.: `byom gpus`."""
     refs = tuple(
         (
             profile.id,
@@ -272,7 +282,13 @@ def gpus() -> None:
     _say(catalog.format_gpus(refs))
 
 
-@app.command()
+@app.command(
+    rich_help_panel=PANEL_CATALOG,
+    help=(
+        "List compatible models, optionally filtered by a catalog GPU ID. "
+        "Ex.: `byom models --gpu L4`."
+    ),
+)
 def models(
     gpu: Annotated[
         str | None,
@@ -308,7 +324,13 @@ def models(
     )
 
 
-@app.command()
+@app.command(
+    rich_help_panel=PANEL_CATALOG,
+    help=(
+        "Apply a profile without changing local ports or options. "
+        "Ex.: `byom configure --profile qwen3.8-27b-32k`."
+    ),
+)
 def configure(
     profile_id: str = typer.Option(
         ..., "--profile", help="ID do perfil. Ex.: `byom configure --profile qwen3.8-27b-32k`."
@@ -780,6 +802,35 @@ UP_FAILURE_TYPES = (
 )
 
 
+def _up_failure_action(exc: Exception) -> str:
+    """Return an actionable recovery hint for `byom up` failures."""
+    if isinstance(exc, colab.ColabBackendUnavailable):
+        return (
+            "Temporary Colab allocation service unavailability (HTTP 5xx), not a "
+            "compute-unit balance issue. Wait a few minutes and retry, or select another GPU."
+        )
+    if isinstance(exc, colab.ColabAllocationRefused):
+        return (
+            "Colab refused the allocation due to active session or usage limits (HTTP 412). "
+            "Stop other Colab sessions or wait a few minutes and retry."
+        )
+    if isinstance(exc, colab.ColabAcceleratorRejected):
+        return (
+            "Your account lacks quota or entitlement for the requested GPU (HTTP 400). "
+            "Choose another GPU in config.toml or check your Colab plan."
+        )
+    if isinstance(exc, TimeoutError):
+        return (
+            "Run `byom status` to inspect the worker and tunnel state, "
+            "or run `byom down` and retry `byom up`."
+        )
+    if isinstance(exc, remote.RemoteError):
+        return "Check your network connection and SSH key (`byom init`), then retry `byom up`."
+    return (
+        "Run `byom status` to inspect the session state, fix the cause above, and retry `byom up`."
+    )
+
+
 def _run_up(
     cfg: config.Config,
     force: bool,
@@ -859,9 +910,11 @@ def _run_up_transaction(
             expected_session=state.session,
             state=state,
         )
-    except (KeyboardInterrupt, SystemExit):
+    except (KeyboardInterrupt, SystemExit) as exc:
         # Ctrl+C (or a nested command aborting) after the VM exists still has
         # to release it; the interruption is propagated after the cleanup.
+        if isinstance(exc, KeyboardInterrupt):
+            _say("Interrupted (Ctrl+C): stopping session and cleaning up local processes...")
         if allocated:
             stopped = _stop_allocation(name)
             # O daemon local pode ter subido antes da falha: sem isto ele fica
@@ -876,6 +929,7 @@ def _run_up_transaction(
         raise
     except UP_FAILURE_TYPES as exc:
         _say(f"Failed: {exc}")
+        _say(f"  What to do: {_up_failure_action(exc)}")
         if allocated:
             # The session name is the only reliable handle here: `state.json`
             # may be unreadable by the time the failure unwinds.
@@ -900,10 +954,18 @@ def _run_up_transaction(
         _say(f"  Image API: http://127.0.0.1:{cfg.proxy_port}/v1/images/generations")
     elif cfg.runtime == "tts":
         _say(f"  Speech API: http://127.0.0.1:{cfg.proxy_port}/v1/audio/speech")
+    else:
+        _say(f"  WebUI:    http://127.0.0.1:{webui.DEFAULT_PORT} (`byom web`)")
     _say(f"  Session:  {name}")
 
 
-@app.command()
+@app.command(
+    rich_help_panel=PANEL_SESSION,
+    help=(
+        "Create the session, start the worker, and publish the local endpoint. "
+        "Ex.: `byom up` or `byom up --force`."
+    ),
+)
 def up(
     force: Annotated[
         bool,
@@ -952,9 +1014,9 @@ def _warn_orphans(orphans: list[colab.SessionLine]) -> None:
     _say("  `colab stop` cannot stop these sessions; stop them from Colab")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_SESSION)
 def status() -> None:
-    """Show session, worker, tunnel, and account usage status."""
+    """Show session, worker, tunnel, endpoints, and account usage status. Ex.: `byom status`."""
     cfg = _load_config_or_die()
     state_error: config.StateFileError | None = None
     try:
@@ -1277,9 +1339,9 @@ def _down(cfg: config.Config, *, quiet: bool = False) -> bool:
     return confirmed
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_SESSION)
 def down() -> None:
-    """Stop the session and verify the result with Colab."""
+    """Stop the session, local processes, and verify deallocation with Colab. Ex.: `byom down`."""
     cfg = _load_config_or_die()
     # Mesmo lock do `up`: um `down` lento não pode apagar o state de uma sessão
     # que outro processo acabou de criar.
@@ -1292,7 +1354,13 @@ def down() -> None:
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(
+    rich_help_panel=PANEL_CLIENTS,
+    help=(
+        "Create or update the isolated byom directory and llm chat preferences. "
+        "Ex.: `byom setup --model-id meu-modelo`."
+    ),
+)
 def setup(
     url: Annotated[
         str | None,
@@ -1347,7 +1415,7 @@ def setup(
     _say("Setup concluído. Execute `byom chat` para conversar com o modelo.")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_CLIENTS)
 def chat(
     system: Annotated[
         str | None,
@@ -1383,7 +1451,7 @@ def chat(
         ),
     ] = None,
 ) -> None:
-    """Start an isolated `llm chat` session. Ctrl+D ends the conversation."""
+    """Start an isolated `llm chat` session. Ctrl+D ends; Ctrl+C cancels. Ex.: `byom chat`."""
     try:
         result = llm_chat.run_chat(
             system=system,
@@ -1399,7 +1467,13 @@ def chat(
         raise typer.Exit(result.returncode)
 
 
-@app.command()
+@app.command(
+    rich_help_panel=PANEL_CLIENTS,
+    help=(
+        "Start the local Open WebUI frontend auto-connected to the byom proxy. "
+        "Ex.: `byom web --port 8080`."
+    ),
+)
 def web(
     port: Annotated[
         int,
@@ -1412,7 +1486,7 @@ def web(
         typer.Option("--no-browser", help="Não abre o navegador automaticamente."),
     ] = False,
 ) -> None:
-    """Start the local Open WebUI frontend connected to the byom proxy."""
+    """Start the local Open WebUI frontend auto-connected to the byom proxy."""
     cfg = _load_config_or_die()
     try:
         plan = webui.plan(port=port, proxy_port=cfg.proxy_port)
@@ -1421,6 +1495,7 @@ def web(
 
     _say(f"Frontend: {plan.url}")
     _say(f"Modelo:   {plan.proxy_url}")
+    _say("Vínculo:  conectado automaticamente à API local do byom")
     modelo_padrao = plan.env.get("DEFAULT_MODELS")
     if modelo_padrao:
         _say(f"Padrão:   {modelo_padrao}")
@@ -1440,11 +1515,19 @@ def web(
         code = webui.run(plan, open_browser=not no_browser)
     except webui.WebUIError as exc:
         _die(str(exc))
+    if code == 130:
+        _say("Open WebUI encerrado (Ctrl+C).")
+        raise typer.Exit(130)
     if code != 0:
-        raise typer.Exit(code)
+        _die(
+            f"Open WebUI encerrou com código {code}. "
+            f"Verifique se `uv` e Python {webui.OPEN_WEBUI_PYTHON} estão disponíveis "
+            "ou use `byom web --port <porta>`.",
+            code=code,
+        )
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_CLIENTS)
 def uninstall(
     yes: Annotated[
         bool,
@@ -1455,7 +1538,7 @@ def uninstall(
         ),
     ] = False,
 ) -> None:
-    """Remove only the isolated byom directory after safety checks."""
+    """Remove only the isolated byom directory after safety checks. Ex.: `byom uninstall --yes`."""
     try:
         target = llm_chat.inspect_uninstall_target()
     except llm_chat.LlmChatError as exc:

@@ -92,13 +92,19 @@ exceto nas chaves de isolamento — detalhes abaixo):
   source of truth.[^persist]
 
 `build_env` **fills only what is missing** for connection and behaviour
-variables: any value already exported by the user wins. `DATA_DIR`,
-`WEBUI_SECRET_KEY` and `WEBUI_URL` are byom-owned and are **always set** — an
-exported value there would move the SQLite database or the session secret
-outside `byom_home()`. `WebUIPlan.overrides` records the user-supplied names
-(excluding those three), and `byom web` prints them as `Ambiente: ...`.
-Export `OPENAI_API_BASE_URLS` and `OPENAI_API_KEYS` before `byom web` to point
-the frontend at another provider, without editing any file.
+variables: any value already exported by the user wins. When the user exports
+only the singular `OPENAI_API_BASE_URL` or `OPENAI_API_KEY` without the plural
+counterpart, `build_env` propagates that user value to `OPENAI_API_BASE_URLS` /
+`OPENAI_API_KEYS` so Open WebUI does not fall back to byom's local default.
+`DATA_DIR`, `WEBUI_SECRET_KEY` and `WEBUI_URL` are byom-owned and are **always
+set** — an exported value there would move the SQLite database or the session
+secret outside `byom_home()`. `WebUIPlan.overrides` records the user-supplied
+names (excluding those three), and `byom web` prints the automatic binding
+confirmation (`Vínculo:`) plus any preserved overrides as `Ambiente: ...`.
+Export `OPENAI_API_BASE_URLS` and `OPENAI_API_KEYS` (or the singular forms)
+before `byom web` to point the frontend at another provider, without editing any
+file. On `Ctrl+C`, `byom web` terminates the subprocess cleanly (exit code
+130), and non-zero exits print an actionable error message.
 
 [^env]: `DEFAULT_MODELS` accepts comma-separated model ids that are
 pre-selected in a new chat; if a stored model no longer exists it is replaced
@@ -166,8 +172,9 @@ the frontend data. To update Open WebUI, bump `OPEN_WEBUI_VERSION` in
 
 ## Verification
 
-The command, environment, `DEFAULT_MODELS`, preserved user overrides, port
-validation, occupied-port refusal, browser open, `Ctrl+C` handling and CLI
-output are covered by 13 mock-based cases in `tests/test_webui.py`. None of them
-starts Colab, a worker or an Open WebUI instance. The first real run still
-needs a machine with `uv` and network access to download the pinned package.
+The command, environment, `DEFAULT_MODELS`, preserved user overrides (including
+singular-to-plural propagation), port validation, occupied-port refusal, browser
+open, `Ctrl+C` handling, non-zero exit errors and CLI output are covered by 15
+mock-based cases in `tests/test_webui.py`. None of them starts Colab, a worker
+or an Open WebUI instance. The first real run still needs a machine with `uv`
+and network access to download the pinned package.

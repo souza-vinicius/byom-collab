@@ -8,7 +8,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from byom import cli, config, opencode
+from byom import cli, colab, config, opencode, remote, tui
 
 runner = CliRunner()
 
@@ -133,3 +133,195 @@ def test_init_com_erro_de_colo_diz_o_que_aconteceu_e_como_corrop_dir(monkeypatch
     assert result.exit_code == 1
     assert "GPU quota exceeded" in result.output
     assert "What to do:" in result.output
+
+
+@pytest.mark.parametrize(
+    ("exc_cls", "msg", "esperado_acao"),
+    [
+        (
+            colab.ColabBackendUnavailable,
+            "Service Unavailable",
+            "not a compute-unit balance issue",
+        ),
+        (
+            colab.ColabAllocationRefused,
+            "Allocation refused",
+            "active session or usage limits",
+        ),
+        (
+            colab.ColabAcceleratorRejected,
+            "Backend rejected accelerator",
+            "lacks quota or entitlement",
+        ),
+    ],
+)
+def test_up_cli_exibe_orientacao_acionavel_em_falhas_do_colab(
+    tmp_path, monkeypatch, exc_cls, msg, esperado_acao
+):
+    cfg = config.Config()
+    config.apply_profile(cfg, "qwen3.8-27b-256k")
+    config.save_config(cfg)
+    monkeypatch.setattr(cli.colab, "unregistered_sessions", lambda known=None: [])
+    monkeypatch.setattr(
+        cli.opencode,
+        "sync_config",
+        lambda cfg, explicit_path=None: opencode.SyncResult(
+            path=tmp_path / "opencode.json", model="byom/qwen", changed=True
+        ),
+    )
+    monkeypatch.setattr(
+        cli.colab,
+        "new",
+        lambda *args, **kwargs: (_ for _ in ()).throw(exc_cls(msg)),
+    )
+    restaurados: list[str] = []
+    monkeypatch.setattr(
+        cli.harness_state,
+        "restore",
+        lambda: (restaurados.append("OpenCode") or ["OpenCode"], None),
+    )
+
+    result = runner.invoke(cli.app, ["up"])
+
+    assert result.exit_code == 1
+    assert "Failed:" in result.output
+    assert "What to do:" in result.output
+    assert esperado_acao in result.output
+    assert restaurados == ["OpenCode"]
+
+
+def test_up_cli_interrompido_informa_limpeza_e_resumo_inclui_webui(monkeypatch):
+    cfg = config.Config()
+    config.save_config(cfg)
+
+    class FakeRemote:
+        def __init__(self, session, cfg):
+            self.session = session
+
+        def start(self, forwards=(), on_progress=None):
+            return None
+
+        def stop(self):
+            return None
+
+        def gpu_name(self):
+            return "NVIDIA L4"
+
+        def upload(self, *args, **kwargs):
+            return None
+
+        def run(self, *args, **kwargs):
+            return remote.RemoteResult(returncode=0, output="ok")
+
+    monkeypatch.setattr(cli, "_sync_external_configs", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_orphans", lambda: None)
+    monkeypatch.setattr(cli.remote, "Remote", FakeRemote)
+    monkeypatch.setattr(colab, "new", lambda *a, **k: None)
+    monkeypatch.setattr(
+        colab,
+        "status_line",
+        lambda name: colab.SessionLine(
+            name=name, endpoint="m-s-abc", hardware="L4", shape="STANDARD", variant="GPU"
+        ),
+    )
+    monkeypatch.setattr(cli, "_bootstrap_worker", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_register_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_wait_ready", lambda *a, **k: {"worker": {"state": "ready"}})
+
+    ok_res = runner.invoke(cli.app, ["up"])
+    assert ok_res.exit_code == 0
+    assert "Worker ready" in ok_res.output
+    assert "WebUI:    http://127.0.0.1:8080 (`byom web`)" in ok_res.output
+
+    config.clear_state()
+    paradas: list[str] = []
+    monkeypatch.setattr(colab, "stop", lambda name: paradas.append(name))
+    monkeypatch.setattr(colab, "is_allocated", lambda name, endpoint="": False)
+    monkeypatch.setattr(
+        cli,
+        "_bootstrap_worker",
+        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    int_res = runner.invoke(cli.app, ["up"])
+    assert int_res.exit_code != 0
+    assert "Interrupted (Ctrl+C): stopping session and cleaning up local processes..." in (
+        int_res.output
+    )
+    assert len(paradas) == 1
+
+
+def test_cli_help_organiza_paineis_e_exemplos_sem_vazar_markup():
+    root_res = runner.invoke(cli.app, ["--help"])
+    assert root_res.exit_code == 0
+    for painel in (
+        "Configuração e Catálogo",
+        "Sessão Colab e Ciclo de Vida",
+        "Chat e Frontend Web",
+    ):
+        assert painel in root_res.output
+    assert "[bold]" not in root_res.output
+    assert "[cyan]" not in root_res.output
+
+    for cmd in (
+        "init",
+        "profiles",
+        "gpus",
+        "models",
+        "configure",
+        "up",
+        "status",
+        "down",
+        "setup",
+        "chat",
+        "web",
+        "uninstall",
+    ):
+        cmd_res = runner.invoke(cli.app, [cmd, "--help"])
+        assert cmd_res.exit_code == 0
+        assert "Ex.:" in cmd_res.output
+        assert "[bold]" not in cmd_res.output
+
+
+def test_status_tui_exibe_modelo_api_byom_e_open_webui(monkeypatch):
+    cfg = config.Config()
+    config.save_config(cfg)
+    config.save_state(
+        config.State(
+            session="byom-tui1",
+            endpoint="m-s-tui",
+            nonce="n" * 32,
+            created_at="2026-11-28T10:00:00+00:00",
+        )
+    )
+    monkeypatch.setattr(cli.colab, "orphan_assignments", lambda: [])
+    monkeypatch.setattr(
+        cli.colab,
+        "status_line",
+        lambda name: colab.SessionLine(
+            name=name, endpoint="m-s-tui", hardware="L4", shape="STANDARD", variant="GPU"
+        ),
+    )
+    monkeypatch.setattr(cli.colab, "usage", lambda: "")
+    monkeypatch.setattr(
+        cli,
+        "_daemon_status",
+        lambda c, expected_session=None: {
+            "session": expected_session,
+            "worker": {"state": "ready"},
+            "tunnel": {"state": "connected", "reconnects": 0, "latency_ms": 15},
+        },
+    )
+    monkeypatch.setattr(tui, "_perguntar_proximo_passo", lambda *a, **k: "menu")
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    rec_estreito = tui.criar_console(width=60, height=24, record=True)
+    assert rec_estreito.no_color is True
+    assert tui._executar_status(rec_estreito, cli, tui.ler_estado_local()) == "menu"
+
+    saida = rec_estreito.export_text(clear=False)
+    assert "Modelo ativo" in saida
+    assert "API Byom" in saida
+    assert "http://127.0.0.1:4000/v1" in saida
+    assert "Open WebUI" in saida
+    assert "http://127.0.0.1:8080" in saida
