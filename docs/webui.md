@@ -73,7 +73,8 @@ multi-user setup needs a fresh `byom_home()`/`webui` directory.
 
 ## How it reaches the model
 
-`byom web` exports:
+`byom web` fornece estes **padrões** no ambiente (valores já exportados vencem,
+exceto nas chaves de isolamento — detalhes abaixo):
 
 * `OPENAI_API_BASE_URL` and `OPENAI_API_BASE_URLS` as
   `http://127.0.0.1:<proxy_port>/v1`, with `proxy_port` from `config.toml`

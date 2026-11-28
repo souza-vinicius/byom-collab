@@ -111,11 +111,11 @@ def test_plan_remove_variaveis_do_venv_do_byom(byom_home, monkeypatch):
 
 def test_plan_injeta_modelo_padrao_do_perfil_ativo(byom_home, monkeypatch):
     monkeypatch.delenv("DEFAULT_MODELS", raising=False)
-    cfg = config.load_config()
+    config.save_config(config.Config(served_model_name="modelo-de-teste"))
 
     plan = webui.plan(port=8099, proxy_port=4000)
 
-    assert plan.env["DEFAULT_MODELS"] == cfg.served_model_name
+    assert plan.env["DEFAULT_MODELS"] == "modelo-de-teste"
 
 
 def test_plan_preserva_overrides_do_usuario(byom_home, monkeypatch):
@@ -149,6 +149,7 @@ def test_plan_preserva_overrides_do_usuario(byom_home, monkeypatch):
 
 
 def test_cli_web_mostra_modelo_padrao_e_overrides(byom_home, monkeypatch):
+    monkeypatch.delenv("DEFAULT_MODELS", raising=False)
     monkeypatch.setenv("OPENAI_API_KEYS", "chave-do-usuario")
     planos: list[webui.WebUIPlan] = []
 
@@ -183,14 +184,21 @@ def test_run_abre_navegador_quando_health_responde(byom_home, monkeypatch):
     plan = webui.plan(port=8099, proxy_port=4000)
     proc = FakeProcess()
     opened: list[str] = []
+    ambientes: list[dict[str, str]] = []
 
-    monkeypatch.setattr(webui.subprocess, "Popen", lambda argv, env: proc)
+    def falso_popen(argv, env):
+        ambientes.append(env)
+        return proc
+
+    monkeypatch.setattr(webui.subprocess, "Popen", falso_popen)
     monkeypatch.setattr(webui, "port_available", lambda port: True)
     monkeypatch.setattr(webui, "_wait_for_health", lambda url, process, timeout: True)
     monkeypatch.setattr(webui.webbrowser, "open", opened.append)
 
     assert webui.run(plan, open_browser=True) == 0
     assert opened == ["http://127.0.0.1:8099"]
+    assert ambientes[0]["DEFAULT_MODELS"] == plan.env["DEFAULT_MODELS"]
+    assert ambientes[0]["ENABLE_PERSISTENT_CONFIG"] == "false"
 
 
 def test_run_sem_navegador_nao_abre_e_encerra_no_ctrl_c(byom_home, monkeypatch):

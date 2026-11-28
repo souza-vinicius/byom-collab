@@ -137,7 +137,7 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 
 ## Fase 6 — Revisão final
 
-- [x] R6.1 Dois revisores independentes read-only analisaram os dois primeiros commits; verifiquei cada achado com sonda: (1) `DATA_DIR`/`WEBUI_SECRET_KEY`/`WEBUI_URL` aceitavam override e quebravam o isolamento — corrigido com `ISOLATION_KEYS` e teste; (2) `DEFAULT_MODELS` é `ConfigVar` e o valor do banco vencia o ambiente — corrigido com `ENABLE_PERSISTENT_CONFIG=false` e documentado, incluindo o limite de escolha manual no chat.
+- [x] R6.1 Dois revisores independentes read-only analisaram os dois primeiros commits; verifiquei cada achado com sonda: (1) `DATA_DIR`/`WEBUI_SECRET_KEY`/`WEBUI_URL` aceitavam override e quebravam o isolamento — corrigido com `ISOLATION_KEYS` e teste; (2) `DEFAULT_MODELS` é `ConfigVar` e o valor do banco vencia o ambiente — corrigido com `ENABLE_PERSISTENT_CONFIG=false` e documentado, incluindo o limite de escolha manual no chat. (3) mocks fracos: teste do modelo padrão comparava com o próprio `config.load_config()`, a CLI não limpava `DEFAULT_MODELS` do ambiente e nada verificava o `env` passado ao `Popen` — corrigido com config explícita no teste, `delenv` e captura do `env` do `Popen`.
 - [x] R6.2 Quatro gates no estado final: 634 testes (sem `BYOM_COLAB_BIN`), ruff limpo, probe de VRAM exit 0 (27 perfis, 0 não cabem), OKF exit 0; `git diff --check` limpo; nenhum `TODO`/`breakpoint`/debug no diff de `src/`.
 - [x] R6.3 Resumo Executivo preenchido abaixo.
 
@@ -152,6 +152,7 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 | 4 | R3.3–R3.4, R4.3 | help rico com exemplos e `status` com mapa de estágios | 634 testes; tags Rich não vazam |
 | 5 | R6.1 | revisores independentes + 2 correções verificadas | isolamento forçado; persistência de config desligada |
 | 6 | R6.2–R6.3 | gates finais e resumo | 634 testes, ruff/probe/OKF verdes, diff limpo |
+| 7 | R6.1 (continuação) | mocks reforçados e 4 correções documentais | 13 testes de webui verdes |
 
 ## Resumo Executivo (missão de evolução contínua — Open WebUI)
 

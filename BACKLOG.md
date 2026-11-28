@@ -78,7 +78,7 @@ Formato: `Impacto` é Alto/Médio/Baixo para quem usa a CLI; `Esforço` é P (ho
 
 ## 13. Per-connection OpenAI via `OPENAI_API_CONFIGS`
 
-- **Problema:** `byom web` expõe uma única conexão OpenAI ao proxy; filtrar `model_ids`, definir `prefix_id` ou marcar a conexão como `local` exige abrir o painel admin do Open WebUI, mesmo com variáveis de ambiente.
+- **Problema:** `byom web` expõe uma única conexão OpenAI ao proxy; ajustes por conexão (`model_ids`, `prefix_id`, `connection_type`) exigem `OPENAI_API_CONFIGS` em JSON ou o painel admin, e o JSON não é validado antes do spawn.
 - **Impacto:** Médio. **Esforço:** P.
 - **Critérios de aceite:** opção de configurar `OPENAI_API_CONFIGS` como JSON por índice de conexão, preservando overrides do usuário e sem novo comando/flag na CLI; teste com JSON inválido recusado antes do spawn; documentar que `model_ids` explícitos param de autodetectar modelos de `/v1/models`.
 

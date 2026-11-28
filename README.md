@@ -149,15 +149,15 @@ nenhuma configuração global do Open WebUI.
   marcador `.byom-managed`, então `byom uninstall` remove tudo.
 * **Sem login**: `WEBUI_AUTH=false`, porque a interface escuta apenas em
   loopback. Para multiusuário, use outro diretório de dados.
-* **Autoconfiguração**: a URL do proxy e a chave são injetadas no ambiente, e
-  `DEFAULT_MODELS` pré-seleciona o modelo ativo (`config.served_model_name`, o
-  mesmo id de `/v1/models`). Variáveis já definidas no ambiente são
-  **preservadas** — por exemplo, `OPENAI_API_BASE_URLS` e `OPENAI_API_KEYS`
-  apontam para outro provedor se você as exportar antes de `byom web`. O comando
-  mostra o modelo padrão e a lista de variáveis preservadas. Com
-  `ENABLE_PERSISTENT_CONFIG=false`, um URL salvo antes no `webui.db` não volta a
-  valer na reinicialização — mudanças feitas no painel admin duram apenas até o
-  próximo `byom web`.
+* **Autoconfiguração**: a URL do proxy e a chave são fornecidas como padrões no
+  ambiente (variáveis já exportadas vencem), e `DEFAULT_MODELS` pré-seleciona o
+  modelo ativo (`config.served_model_name`, o mesmo id de `/v1/models`).
+  Variáveis já definidas no ambiente são **preservadas** — por exemplo,
+  `OPENAI_API_BASE_URLS` e `OPENAI_API_KEYS` apontam para outro provedor se você
+  as exportar antes de `byom web`. O comando mostra o modelo padrão e a lista de
+  variáveis preservadas. Com `ENABLE_PERSISTENT_CONFIG=false`, um URL salvo antes
+  no `webui.db` não volta a valer na reinicialização — mudanças feitas no painel
+  admin duram apenas até o próximo `byom web`.
 * **Primeira execução**: baixa o Open WebUI 0.13.5 e o Python 3.12 pelo `uv`
   (o pacote exige `<3.13`). As execuções seguintes reutilizam o cache.
 * **Opções**: `--port` / `-p` muda a porta (padrão 8080); `--no-browser` não abre
