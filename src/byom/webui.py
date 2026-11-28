@@ -128,6 +128,10 @@ def build_env(
         secret_key=secret_key,
         served_model_name=served_model_name,
     )
+    if "OPENAI_API_BASE_URL" in os.environ and "OPENAI_API_BASE_URLS" not in os.environ:
+        defaults["OPENAI_API_BASE_URLS"] = os.environ["OPENAI_API_BASE_URL"]
+    if "OPENAI_API_KEY" in os.environ and "OPENAI_API_KEYS" not in os.environ:
+        defaults["OPENAI_API_KEYS"] = os.environ["OPENAI_API_KEY"]
     for name, value in defaults.items():
         if name in ISOLATION_KEYS:
             env[name] = value
@@ -222,6 +226,18 @@ def _wait_for_health(url: str, proc: subprocess.Popen, timeout_s: float) -> bool
     return False
 
 
+def _terminate_process(proc: subprocess.Popen) -> None:
+    """Encerra o processo do Open WebUI com SIGTERM e fallback para SIGKILL."""
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=STOP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        proc.wait()
+
+
 def run(plan: WebUIPlan, *, open_browser: bool = True) -> int:
     """Start Open WebUI in the foreground and return its exit code."""
     if not port_available(plan.port):
@@ -237,12 +253,5 @@ def run(plan: WebUIPlan, *, open_browser: bool = True) -> int:
             webbrowser.open(plan.url)
         return proc.wait()
     except KeyboardInterrupt:
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            proc.wait(timeout=STOP_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            proc.wait()
+        _terminate_process(proc)
         return 130

@@ -250,3 +250,33 @@ def test_cli_help_exibe_web():
     res = runner.invoke(cli.app, ["--help"])
     assert res.exit_code == 0
     assert "web" in res.output
+
+
+def test_plan_propaga_override_singular_para_plural(byom_home, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_BASE_URLS", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEYS", raising=False)
+    monkeypatch.setenv("OPENAI_API_BASE_URL", "http://meu-proxy:9000/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "minha-chave")
+
+    plan = webui.plan(port=8099, proxy_port=4000)
+
+    assert plan.env["OPENAI_API_BASE_URL"] == "http://meu-proxy:9000/v1"
+    assert plan.env["OPENAI_API_BASE_URLS"] == "http://meu-proxy:9000/v1"
+    assert plan.env["OPENAI_API_KEY"] == "minha-chave"
+    assert plan.env["OPENAI_API_KEYS"] == "minha-chave"
+    assert "OPENAI_API_BASE_URL" in plan.overrides
+    assert "OPENAI_API_KEY" in plan.overrides
+
+
+def test_cli_web_exibe_vinculo_e_trata_ctrl_c_e_erro(byom_home, monkeypatch):
+    monkeypatch.setattr(webui, "run", lambda plan, *, open_browser=True: 130)
+    res_cancel = runner.invoke(cli.app, ["web", "--port", "8099", "--no-browser"])
+    assert res_cancel.exit_code == 130
+    assert "Vínculo:  conectado automaticamente à API local do byom" in res_cancel.output
+    assert "Open WebUI encerrado (Ctrl+C)." in res_cancel.output
+
+    monkeypatch.setattr(webui, "run", lambda plan, *, open_browser=True: 2)
+    res_err = runner.invoke(cli.app, ["web", "--port", "8099", "--no-browser"])
+    assert res_err.exit_code == 2
+    assert "Open WebUI encerrou com código 2" in res_err.output
+    assert "byom web --port" in res_err.output
