@@ -148,6 +148,67 @@ def test_new_warns_even_when_listing_fails(monkeypatch):
     assert "Check Colab" in str(excinfo.value)
 
 
+def test_new_classifica_503_como_indisponibilidade_do_backend(monkeypatch):
+    """O `colab new` imprime `Service Unavailable`, sem o código HTTP.
+
+    A TUI precisa distinguir indisponibilidade temporária do Colab de falta de
+    unidades de computação: a mensagem genérica mandava o usuário conferir a
+    cota mesmo com saldo sobrando.
+    """
+
+    def failing_run(args, **kwargs):
+        raise colab.ColabCliError(
+            "`colab new -s byom-test --gpu L4` failed (exit code 1): "
+            "ColabRequestError: Failed to issue request POST "
+            "https://colab.research.google.com/tun/m/assign?nbh=x: Service Unavailable"
+        )
+
+    monkeypatch.setattr(colab, "run", failing_run)
+    monkeypatch.setattr(colab, "sessions", list)
+
+    with pytest.raises(colab.ColabBackendUnavailable):
+        colab.new("byom-test", "L4")
+
+
+@pytest.mark.parametrize(
+    ("mensagem", "tipo"),
+    [
+        (
+            "[colab] Allocation refused (precondition failed). This can mean too many "
+            "active sessions, or a temporary usage or capacity limit.",
+            colab.ColabAllocationRefused,
+        ),
+        (
+            "[colab] Backend rejected accelerator 'A100'. You may not have quota or "
+            "entitlement for this accelerator on your account.",
+            colab.ColabAcceleratorRejected,
+        ),
+    ],
+)
+def test_new_classifica_recusas_da_cli(monkeypatch, mensagem, tipo):
+    def failing_run(args, **kwargs):
+        raise colab.ColabCliError(mensagem)
+
+    monkeypatch.setattr(colab, "run", failing_run)
+    monkeypatch.setattr(colab, "sessions", list)
+
+    with pytest.raises(tipo):
+        colab.new("byom-test", "L4")
+
+
+def test_new_mantem_erro_generico_quando_nao_reconhece_a_causa(monkeypatch):
+    def failing_run(args, **kwargs):
+        raise colab.ColabCliError("unexpected failure")
+
+    monkeypatch.setattr(colab, "run", failing_run)
+    monkeypatch.setattr(colab, "sessions", list)
+
+    with pytest.raises(colab.ColabCliError) as excinfo:
+        colab.new("byom-test", "L4")
+
+    assert type(excinfo.value) is colab.ColabCliError
+
+
 def test_new_adds_high_mem_flag(monkeypatch):
     captured = {}
 

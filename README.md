@@ -504,6 +504,7 @@ pronto, a mensagem de timeout inclui o último estado observado.
 | Mensagem | Causa provável | Ação |
 | :--- | :--- | :--- |
 | `Colab CLI could not list sessions` | CLI do Colab não autenticada, rede indisponível ou erro próprio da CLI | Leia `Last CLI output`; para login, rode `colab sessions`; para outros erros, corrija a CLI e rode `byom init` |
+| `colab new` falha com `Service Unavailable` em `/tun/m/assign` | Indisponibilidade temporária do serviço de alocação do Colab ou falta de capacidade da GPU; a CLI já repete 502/503/504 por cerca de três minutos | Não é falta de unidades de computação. Tente novamente em alguns minutos ou escolha outra GPU |
 | `a porta 4000 do proxy já está em uso` / `a porta 4001 do túnel já está em uso` | Outro processo ocupa uma porta local necessária | Encerre esse processo ou rode `byom down` antes de alocar a GPU |
 | `Worker did not become ready within ... (last state: ...)` | Modelo não carregou, túnel caiu ou cota acabou | Use o último estado como pista, rode `byom status` e leia os logs da VM (ver `docs/troubleshooting.md`) |
 | `Harness config restored` | Uma falha de `up`/`down` devolveu o modelo padrão ao OpenCode/dsh | Nenhuma ação: o cliente volta a apontar para o modelo anterior |

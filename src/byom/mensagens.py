@@ -290,6 +290,31 @@ ERROS_COMUNS = {
     ),
 }
 
+#: Falhas de alocação que o `colab new` já reconhece. A TUI escolhe a entrada
+#: pelo tipo da exceção (`byom.colab`), nunca pelo texto do traceback.
+FALHAS_UP = {
+    "colab_indisponivel": (
+        "O serviço do Colab recusou o pedido de GPU por indisponibilidade "
+        "temporária (HTTP 5xx), mesmo após as tentativas automáticas da CLI.",
+        "Isso não é falta de unidades de computação. Tente novamente em alguns "
+        "minutos; se persistir, tente outra GPU em 'Selecionar GPU'.",
+    ),
+    "alocacao_recusada": (
+        "O Colab recusou a alocação por limite de sessões ativas ou de uso "
+        "simultâneo do runtime pedido.",
+        "Encerre outras sessões no Colab ou aguarde alguns minutos e tente "
+        "novamente. Nenhuma VM foi alocada.",
+    ),
+    "acelerador_rejeitado": (
+        "A conta não tem cota ou permissão para a GPU selecionada.",
+        "Escolha outra GPU em 'Selecionar GPU' ou confira a assinatura do Colab. "
+        "Nenhuma VM foi alocada.",
+    ),
+}
+
+#: Ação para falhas de `up` sem classificação própria.
+FALHA_UP_GENERICA = "Confira os detalhes técnicos abaixo e tente novamente."
+
 TERMINAL_PEQUENO = (
     "Terminal compacto ({largura}×{altura}); usando visualização adaptada para caber na tela."
 )
