@@ -30,7 +30,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-from . import catalog, config, dsh, llm_chat, opencode
+from . import catalog, colab, config, dsh, llm_chat, opencode
 from . import mensagens as M
 
 # ---------------------------------------------------------------------------
@@ -2405,6 +2405,21 @@ def _executar_status(con: Console, cli: Any, estado: EstadoLocal) -> str:
     return _perguntar_proximo_passo("status", ler_estado_local())
 
 
+def _partes_falha_up(exc: Exception) -> tuple[str, str]:
+    """Causa e ação da falha de alocação, por tipo de erro do Colab.
+
+    Sem classificação, a causa era o traceback inteiro e a ação mandava
+    conferir a cota, mesmo quando o Colab devolvia 503 com saldo disponível.
+    """
+    if isinstance(exc, colab.ColabBackendUnavailable):
+        return M.FALHAS_UP["colab_indisponivel"]
+    if isinstance(exc, colab.ColabAllocationRefused):
+        return M.FALHAS_UP["alocacao_recusada"]
+    if isinstance(exc, colab.ColabAcceleratorRejected):
+        return M.FALHAS_UP["acelerador_rejeitado"]
+    return str(exc), M.FALHA_UP_GENERICA
+
+
 def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
     renderizar_cabecalho(con, estado, subtela=M.ACOES["up"][0])
     if not estado.ambiente_configurado:
@@ -2554,9 +2569,7 @@ def _executar_up(con: Console, cli: Any, estado: EstadoLocal) -> str:
                 config.clear_state()
             raise _ErroEtapa(
                 "Não foi possível iniciar a sessão no Colab.",
-                str(exc),
-                "Confira os detalhes técnicos abaixo, verifique suas unidades de computação "
-                "e tente novamente.",
+                *_partes_falha_up(exc),
                 detalhes_tecnicos=buf.getvalue() + f"\n{exc}",
             ) from exc
         except typer.Exit as exc:

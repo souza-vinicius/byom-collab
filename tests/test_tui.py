@@ -768,6 +768,50 @@ def test_chat_tui_com_falha_real_mostra_stderr_nos_detalhes_tecnicos(monkeypatch
     assert "Traceback: boom" in saida
 
 
+def test_up_tui_explica_indisponibilidade_do_colab_sem_culpar_a_cota(
+    monkeypatch, isolated_home
+):
+    """503 no assign não é falta de unidades de computação.
+
+    O `colab new` já repete o pedido por ~3 min e então imprime o traceback.
+    A TUI deve dizer que o serviço estava indisponível e mandar tentar de novo,
+    sem sugerir conferir a cota (que estava com saldo).
+    """
+    cfg = config.Config()
+    config.apply_profile(cfg, "gemma-4-12b-q4-gguf")
+    cfg.ssh_key_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.ssh_key_path.write_text("PRIVATE", encoding="utf-8")
+    config.save_config(cfg)
+
+    class FakeProc:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        if args and args[0] == "new":
+            raise colab.ColabCliError(
+                "`colab new -s byom-test --gpu L4` failed (exit code 1): "
+                "ColabRequestError: Failed to issue request POST "
+                "https://colab.research.google.com/tun/m/assign?nbh=x: Service Unavailable"
+            )
+        return FakeProc()
+
+    monkeypatch.setattr(colab, "run", fake_run)
+    monkeypatch.setattr(tui, "_confirmar", lambda *a, **kw: True)
+    rec = tui.criar_console(width=100, height=30, record=True)
+
+    with pytest.raises(tui._ErroEtapa) as exc:
+        tui._executar_up(rec, cli, tui.ler_estado_local())
+
+    erro = exc.value
+    assert "indispon" in erro.causa.lower()
+    assert "não é falta de unidades de computação" in erro.acao.lower()
+    assert "verifique suas unidades" not in erro.acao.lower()
+    assert "tente" in erro.acao.lower()
+    assert "Service Unavailable" in erro.detalhes_tecnicos
+
+
 def test_up_tui_recusa_quando_outro_up_esta_em_andamento(monkeypatch, isolated_home):
     """Dois `up` simultâneos não podem alocar duas GPUs."""
     cfg = config.Config()

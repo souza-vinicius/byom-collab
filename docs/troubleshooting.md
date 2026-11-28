@@ -1,10 +1,10 @@
 ---
 type: Runbook
 title: Troubleshooting the Worker Session
-description: Symptom to cause to action for the failures seen while bringing a session up: silent runtime exit, missing CUDA libraries, unsupported PTX, a worker stuck initializing and a tunnel that drops right after up.
-tags: [troubleshooting, runbook, bootstrap, cuda, gateway, tunnel]
+description: Symptom to cause to action for the failures seen while bringing a session up: silent runtime exit, missing CUDA libraries, unsupported PTX, a worker stuck initializing, a tunnel that drops right after up, and Colab allocation refusals.
+tags: [troubleshooting, runbook, bootstrap, cuda, gateway, tunnel, colab]
 status: stable
-generated: { by: hermes/hy4-flash-free, at: 2026-11-28T03:50:00Z }
+generated: { by: opencode/deepseek-v4.1-flash, at: 2026-11-28T13:14:06Z }
 sources:
   - id: bootstrap
     resource: /worker/bootstrap.sh
@@ -21,6 +21,12 @@ sources:
   - id: cli
     resource: /src/byom/cli.py
     title: byom up wait and failure messages
+  - id: colab
+    resource: /src/byom/colab.py
+    title: Allocation error classification (HTTP 5xx, 412 and 400)
+  - id: mensagens
+    resource: /src/byom/mensagens.py
+    title: TUI cause and action for each allocation failure
 ---
 
 # Troubleshooting the Worker Session
@@ -54,6 +60,7 @@ and check `gateway.log` in the same directory.
 | `Tunnel unavailable` or `SSH connection dropped` right after `Worker ready` | A previous master was stopped while the tunnel was using it | Current code gives the tunnel its own socket, so `byom status` should show `connected` with `reconnects: 0`. A persistent `failed` needs `byom down` and a new `byom up`. |
 | `Worker unavailable` and `Gateway is inaccessible through the tunnel` during `up` | Normal transient while the daemon opens the tunnel | Wait; `up` keeps polling. If it lasts, check the tunnel state in `byom status`. |
 | `Colab CLI could not list sessions` with `Last CLI output` | Authentication failure, network error, or a CLI error unrelated to login | For login text, run `colab sessions`; otherwise fix the reported CLI error and run `byom init` again |
+| `colab new` fails with `Service Unavailable` at `/tun/m/assign` | Temporary Colab allocation service unavailability or GPU capacity shortage. The CLI already retries 502/503/504 for about three minutes before giving up | This is not a compute-unit balance problem. Wait a few minutes and retry, or select another GPU. `byom status` confirms the account balance with `colab usage` |
 | `a porta 4000 do proxy já está em uso` or `a porta 4001 do túnel já está em uso` | A local process holds a port needed by the daemon | Stop that process or run `byom down` before allocating a GPU; `up` now checks both ports before allocation |
 | `Worker did not become ready within ... (last state: ...)` | Model load failed, tunnel dropped, or the GPU quota ran out | Use the reported last state as the lead, run `byom status`, then read the VM logs with the command above |
 
