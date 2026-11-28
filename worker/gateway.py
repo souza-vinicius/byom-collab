@@ -26,6 +26,7 @@ import contextlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -68,7 +69,8 @@ RUNTIME_IDS = frozenset({"vllm", "llama-cpp", "image", "strata", "tts"})
 THINKING_POLICY_FIELDS = frozenset(
     {"system_token", "thought_open", "thought_close", "strip_history_thought", "source"}
 )
-GENERATION_DEFAULT_FIELDS = frozenset({"steps", "guidance"})
+GENERATION_DEFAULT_FIELDS = frozenset({"steps", "guidance", "sample_method", "custom_sigmas"})
+GENERATION_REQUIRED_DEFAULT_FIELDS = frozenset({"steps", "guidance"})
 SD_EXTRA_TAG = "sd_cpp_extra_args"
 
 log = logging.getLogger("byom.gateway")
@@ -113,7 +115,7 @@ class GatewayConfig:
     #: Chave explícita do catálogo; None = sem transformação de prompt.
     thinking_policy: dict[str, Any] | None = None
     #: Padrões de geração do modelo de imagem, com nomes da documentação.
-    generation_defaults: dict[str, int | float] | None = None
+    generation_defaults: dict[str, int | float | str | list[float]] | None = None
     #: Papéis de imagem declarados no perfil (`repo::pattern`). Ausência de
     #: `vision` desabilita só a edição; a geração continua válida.
     image_roles: dict[str, str] | None = None
@@ -175,7 +177,7 @@ class GatewayConfig:
             defaults = self.generation_defaults
             if not isinstance(defaults, dict) or set(defaults) - GENERATION_DEFAULT_FIELDS:
                 raise ValueError(f"Invalid generation_defaults: {defaults!r}")
-            if set(defaults) != GENERATION_DEFAULT_FIELDS:
+            if not set(defaults) >= GENERATION_REQUIRED_DEFAULT_FIELDS:
                 raise ValueError("generation_defaults needs steps and guidance")
             steps = defaults["steps"]
             if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 1000:
@@ -187,6 +189,30 @@ class GatewayConfig:
                 or not 0 < guidance <= 1000
             ):
                 raise ValueError(f"Invalid generation_defaults.guidance: {guidance!r}")
+            if "sample_method" in defaults:
+                method = defaults["sample_method"]
+                if (
+                    not isinstance(method, str)
+                    or not method
+                    or method != method.strip()
+                    or any(char.isspace() for char in method)
+                ):
+                    raise ValueError(f"Invalid generation_defaults.sample_method: {method!r}")
+            if "custom_sigmas" in defaults:
+                sigmas = defaults["custom_sigmas"]
+                if (
+                    not isinstance(sigmas, list)
+                    or not 2 <= len(sigmas) <= 1001
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or (isinstance(value, float) and not math.isfinite(value))
+                        or value < 0
+                        for value in sigmas
+                    )
+                    or sigmas[-1] != 0.0
+                ):
+                    raise ValueError(f"Invalid generation_defaults.custom_sigmas: {sigmas!r}")
 
 
 @dataclass
@@ -593,13 +619,14 @@ def _apply_thinking_policy(body: bytes, policy: dict[str, Any] | None) -> bytes:
 
 
 def _inject_image_defaults(
-    body: bytes, defaults: dict[str, int | float] | None
+    body: bytes, defaults: dict[str, int | float | str | list[float]] | None
 ) -> bytes:
     """Map Unsloth's `steps`/`guidance` to sd-server's documented schema.
 
     sd-server documents `sd_cpp_extra_args` embedded in `prompt`; its native
     fields are `sample_params.sample_steps` and `sample_params.guidance.txt_cfg`.
-    Top-level `guidance` is NOT a documented sd-server field.
+    Top-level `guidance` is NOT a documented sd-server field. The Turbo
+    checkpoint adds `sample_params.sample_method` and `custom_sigmas`.
     """
     if not defaults:
         return body
@@ -621,13 +648,17 @@ def _inject_image_defaults(
     ):
         log.warning("Preserving image request with invalid client guidance=%r", guidance)
         return body
-    extra = {
-        "sample_params": {
-            "sample_steps": steps,
-            "guidance": {"txt_cfg": guidance},
-        }
+    sample_params: dict[str, Any] = {
+        "sample_steps": steps,
+        "guidance": {"txt_cfg": guidance},
     }
-    block = json.dumps(extra, separators=(",", ":"))
+    sample_method = defaults.get("sample_method")
+    if sample_method is not None:
+        sample_params["sample_method"] = sample_method
+    custom_sigmas = defaults.get("custom_sigmas")
+    if custom_sigmas is not None:
+        sample_params["custom_sigmas"] = list(custom_sigmas)
+    block = json.dumps({"sample_params": sample_params}, separators=(",", ":"))
     payload["prompt"] = f"{prompt} <{SD_EXTRA_TAG}>{block}</{SD_EXTRA_TAG}>"
     return json.dumps(payload).encode()
 

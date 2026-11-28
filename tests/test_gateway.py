@@ -640,6 +640,45 @@ def test_image_defaults_reach_backend(gateway_module):
     assert '"guidance":{"txt_cfg":1.0}' in sent["prompt"]
 
 
+def test_image_turbo_defaults_include_method_and_sigmas(gateway_module):
+    sigmas = [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0.0]
+    fake = FakeVLLM(image_response={"created": 1, "data": [{"b64_json": "QUJD"}]})
+    app, _ = build_app(
+        gateway_module,
+        fake,
+        [],
+        runtime="image",
+        reasoning_effort=None,
+        generation_defaults={
+            "steps": 8,
+            "guidance": 1.0,
+            "sample_method": "euler",
+            "custom_sigmas": sigmas,
+        },
+    )
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        for _ in range(100):
+            if client.get("/health", headers=NONCE_HEADERS).json()["model_ready"]:
+                break
+        response = client.post(
+            "/v1/images/generations",
+            json={"prompt": "um cachorro", "size": "1024x1024"},
+        )
+    assert response.status_code == 200
+    sent = fake.requests[0]
+    assert "sample_method" not in sent
+    assert '"sample_method":"euler"' in sent["prompt"]
+    bloco = sent["prompt"].split("<sd_cpp_extra_args>", 1)[1].split(
+        "</sd_cpp_extra_args>", 1
+    )[0]
+    params = json.loads(bloco)["sample_params"]
+    assert params["sample_steps"] == 8
+    assert params["guidance"] == {"txt_cfg": 1.0}
+    assert params["sample_method"] == "euler"
+    assert params["custom_sigmas"] == sigmas
+    assert len(params["custom_sigmas"]) == 9
+
+
 def test_image_client_values_override_defaults(gateway_module):
     fake = FakeVLLM(image_response={"created": 1, "data": [{"b64_json": "QUJD"}]})
     app, _ = build_app(
@@ -682,12 +721,72 @@ def test_gateway_config_validates_thinking_and_generation(tmp_path, gateway_modu
     assert cfg.thinking_policy["system_token"] == "<|think|>"
     assert cfg.generation_defaults["steps"] == 25
 
+    turbo = {
+        "nonce": "n",
+        "generation_defaults": {
+            "steps": 8,
+            "guidance": 1.0,
+            "sample_method": "euler",
+            "custom_sigmas": [
+                1.0,
+                0.978453,
+                0.95418,
+                0.926626,
+                0.89508,
+                0.845148,
+                0.704534,
+                0.414568,
+                0.0,
+            ],
+        },
+    }
+    path.write_text(json.dumps(turbo), encoding="utf-8")
+    cfg = gateway_module.GatewayConfig.load(path)
+    assert cfg.generation_defaults["sample_method"] == "euler"
+    assert len(cfg.generation_defaults["custom_sigmas"]) == 9
+
     for bad in (
         {"thinking_policy": {"system_token": 123}},
         {"thinking_policy": {"campo_extra": "x"}},
         {"generation_defaults": {"steps": 25}},
         {"generation_defaults": {"steps": "25", "guidance": 1}},
         {"generation_defaults": {"steps": 25, "guidance": "1"}},
+        {
+            "generation_defaults": {
+                "steps": 8,
+                "guidance": 1.0,
+                "custom_sigmas": [1.0, 0.5],
+            }
+        },
+        {"generation_defaults": {"steps": 8, "guidance": 1.0, "custom_sigmas": [0.0]}},
+        {
+            "generation_defaults": {
+                "steps": 8,
+                "guidance": 1.0,
+                "custom_sigmas": [-1.0, 0.0],
+            }
+        },
+        {
+            "generation_defaults": {
+                "steps": 8,
+                "guidance": 1.0,
+                "custom_sigmas": [True, 0.0],
+            }
+        },
+        {
+            "generation_defaults": {
+                "steps": 8,
+                "guidance": 1.0,
+                "custom_sigmas": "1,0",
+            }
+        },
+        {
+            "generation_defaults": {
+                "steps": 8,
+                "guidance": 1.0,
+                "sample_method": "euler ",
+            }
+        },
     ):
         payload = {"nonce": "n", **bad}
         path.write_text(json.dumps(payload), encoding="utf-8")
