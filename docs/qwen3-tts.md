@@ -48,9 +48,12 @@ correspondentes no gateway.
   precisam de áudio de referência.
 * A receita do vLLM-Omni foi validada pelo projeto em uma **RTX 4090 de 24 GiB**
   (0.6B, deploy config padrão) e em uma **A100 de 40 GiB** (0.6B, pico de
-  16.283 MiB com `gpu_memory_utilization: 0.3` por stage). Não há medição
-  publicada para a **T4** nem para o **1.7B em L4**; o orçamento abaixo é uma
-  estimativa de engenharia, marcada como tal.
+  16.283 MiB com `gpu_memory_utilization: 0.3` por stage).
+* O perfil **1.7B CustomVoice** foi validado no byom em uma **L4** em
+  2026-11-28: `byom up` chegou a `Worker ready` após a compilação inicial do
+  vLLM-Omni, `/v1/audio/voices` listou as 9 vozes e `/v1/audio/speech` respondeu
+  **HTTP 200 em 4,5 s** com um WAV PCM 16 bits, mono, 24 kHz. O orçamento do
+  **0.6B na T4** continua sendo uma estimativa de engenharia; não foi medido.
 * O pacote `vllm-omni` está no PyPI em **0.34.0**, exige Python `>=3.11,<3.14`
   e instala o vLLM correspondente. O worker usa Python 3.12, então o pin cabe.
 * O vLLM-Omni **não publica `/v1/models`**. O gateway anuncia o checkpoint
@@ -121,10 +124,10 @@ checkpoint por sessão: trocar de 0.6B para 1.7B exige `byom down` e `byom up`.
 * **CustomVoice apenas.** `VoiceDesign` (descrição em linguagem natural) e
   `Base` (clonagem com áudio de referência) usam o mesmo runtime e podem virar
   variantes depois; não estão no catálogo ainda.
-* **Não medido no Colab.** O orçamento de 0.6B/1.7B é uma estimativa a partir
-  da receita e dos bytes do HF. A primeira execução real deve ser tratada como
-  validação: se o servidor OOM, reduza os dois `gpu_memory_utilization` da
-  deploy config para 0.15.
+* **Cobertura de validação.** O 1.7B foi medido na L4 (Worker ready e áudio em
+  4,5 s). O 0.6B na T4 é uma estimativa a partir da receita e dos bytes do HF;
+  se o servidor OOM, reduza os dois `gpu_memory_utilization` da deploy config
+  para 0.15.
 * **Um runtime por sessão.** TTS não conversa; o frontend Open WebUI precisaria
   de uma conexão de áudio separada (`AUDIO_TTS_OPENAI_API_BASE_URL`), que o
   `byom web` ainda não configura.
