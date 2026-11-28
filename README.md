@@ -11,7 +11,7 @@ fica ociosa para evitar desperdício de unidades de computação.
 
 ## Requisitos
 
-* macOS ou Linux com `ssh` e [`uv`](https://docs.astral.sh/uv/).
+* Linux, macOS ou Windows com `ssh` disponível e [`uv`](https://docs.astral.sh/uv/).
 * A [Colab CLI](https://github.com/googlecolab/google-colab-cli), instalada e
   autenticada (o `byom` não possui fluxo próprio de login):
 
@@ -37,6 +37,7 @@ uv run byom configure --profile qwen3.8-27b-32k    # seleciona um perfil de mode
 uv run byom up                                     # aloca a GPU e inicia o endpoint local
 uv run byom setup                                  # configura o chat isolado (`llm`) apontando para o endpoint local
 uv run byom chat                                   # conversa no terminal com o modelo remoto (histórico isolado em logs.db)
+uv run byom chat -m meu-modelo --no-history         # usa outro ID do llm e não salva o histórico
 uv run byom web                                    # abre o frontend web (Open WebUI) em 127.0.0.1:8080
 uv run byom status                                 # mostra sessão, worker, túnel e uso da conta
 uv run byom down                                   # encerra a sessão
@@ -107,10 +108,11 @@ configuração global do `llm` no seu sistema:
   preferências (`llm-chat.json`) e o arquivo `extra-openai-models.yaml` (com
   permissão `0600`). Quando a URL mudar em uma nova sessão ou túnel do Colab,
   execute novamente apenas alterando `--url` (as demais preferências são
-  preservadas):
+  preservadas). `--model-id` define o ID local no `llm` (padrão `byom`) e
+  `--api-key` guarda a chave do endpoint em `keys.json` com permissão `0600`.
 
   ```bash
-  uv run byom setup --url http://127.0.0.1:4000/v1 --model qwen3.8-27b
+  uv run byom setup --url http://127.0.0.1:4000/v1 --model qwen3.8-27b --model-id meu-modelo
   # Em uma nova sessão/túnel com URL diferente:
   uv run byom setup --url https://novo-tunel.trycloudflare.com/v1
   ```
@@ -123,6 +125,11 @@ configuração global do `llm` no seu sistema:
   * `--no-history` / `--no-log` / `-n`: desliga a gravação em `logs.db` durante a
     sessão (controlado via arquivo temporário `logs-off` no diretório do `byom`).
   * `--continue` / `-c`: continua a conversa anterior salva em `logs.db`.
+  * `--model` / `-m`: escolhe o ID configurado no `llm` (padrão: o salvo pelo `setup`).
+
+Pressione **Ctrl+D** para encerrar a conversa. **Ctrl+C** cancela sem traceback e
+sem registrar erro. Defina `NO_COLOR=1` para desativar cores tanto no Rich quanto
+no menu questionary.
 * **Remover dados locais (`byom uninstall`)**: lista o conteúdo do diretório do
   `byom`, pede confirmação (use `--yes` para pular), valida o arquivo-marcador
   `.byom-managed` (recusando remover `HOME`, `/`, caminhos vazios ou symlinks),
@@ -196,6 +203,7 @@ orçamento de `byom up` para filtrar a listagem; ele não altera a GPU declarada
 | Gemma 4 | Google DeepMind | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
 | Muse Glimmer 30B | Meta Superintelligence Lab | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
 | Qwen-Image-2.1 | Qwen (Alibaba Cloud) | image | INT8-ConvRot (12,07 GiB) / GGUF Q4_K (9,22 GiB) | 12,1 / 9,2 GiB | n/a | n/a | L4 / **T4** |
+| Inkling 2 Mini | Thinking Machines Lab | Strata (engine nativo) | packs SQ-10 / SQ-15 / SQv2-20 | 9,75 / 13,36 / 18,04 GiB | 1.000.000 | 32.768 | T4 / L4 / L4 |
 | Qwen3-TTS | Qwen (Alibaba Cloud) | tts | 0.6B CustomVoice (2,32 GiB) / 1.7B CustomVoice (4,21 GiB) | 2,3 / 4,2 GiB + pipeline | n/a | n/a (fala) | **T4** / **L4** |
 
 **Fornecedor** é quem desenvolve o modelo; é dado do catálogo (`ModelEntry.provider`),
@@ -450,7 +458,7 @@ perfis definem os campos ligados ao modelo):
 | Chave | Padrão | Descrição |
 | :--- | :--- | :--- |
 | `profile` | vazio | Perfil ativo |
-| `runtime` | `vllm` | Runtime selecionado pelo perfil: `vllm`, `llama-cpp` ou `image` |
+| `runtime` | `vllm` | Runtime selecionado pelo perfil: `vllm`, `llama-cpp`, `image` ou `strata` |
 | `model` | `philbert440/Qwen3.8-27B-W4A16-AWQ` | Checkpoint servido pelo vLLM |
 | `served_model_name` | `qwen3.8-27b` | ID do modelo exposto pela API |
 | `max_model_len` | `16384` | Tamanho máximo de contexto |
@@ -478,6 +486,19 @@ sessões do `byom` usam um arquivo isolado
 Colab. `session.json` também carrega `thinking_policy` (chave explícita do
 Gemma 4 vinda do catálogo) e `generation_defaults` (`steps`/`guidance` para o
 Qwen-Image), ambos validados pelo gateway na inicialização.
+
+### Erros comuns e o que fazer
+
+`byom up` anuncia cinco etapas (`[1/5]` a `[5/5]`) e, se o worker não ficar
+pronto, a mensagem de timeout inclui o último estado observado.
+
+| Mensagem | Causa provável | Ação |
+| :--- | :--- | :--- |
+| `Colab CLI could not list sessions` | CLI do Colab não autenticada, rede indisponível ou erro próprio da CLI | Leia `Last CLI output`; para login, rode `colab sessions`; para outros erros, corrija a CLI e rode `byom init` |
+| `a porta 4000 do proxy já está em uso` / `a porta 4001 do túnel já está em uso` | Outro processo ocupa uma porta local necessária | Encerre esse processo ou rode `byom down` antes de alocar a GPU |
+| `Worker did not become ready within ... (last state: ...)` | Modelo não carregou, túnel caiu ou cota acabou | Use o último estado como pista, rode `byom status` e leia os logs da VM (ver `docs/troubleshooting.md`) |
+| `Harness config restored` | Uma falha de `up`/`down` devolveu o modelo padrão ao OpenCode/dsh | Nenhuma ação: o cliente volta a apontar para o modelo anterior |
+| `Unknown: could not confirm deallocation` | O Colab não confirmou o fim da VM | Confira no painel do Colab e rode `byom down` novamente; o estado local foi mantido |
 
 ## Problemas conhecidos
 
@@ -508,12 +529,11 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   gateway os recebe em `session.json`. Fontes e datas de cada valor estão
   registradas no catálogo e nas tabelas acima. Nenhum perfil repete `medium`,
   `25` ou um máximo de contexto documentado.
-* **O contexto é otimizado por GPU, não reduzido em silêncio.**
-  `PROFILE_CONTEXTS` lista os 27 perfis com contexto doc, contexto de referência,
-  GPU e motivo. `byom models` e a TUI calculam a maior janela que cabe na GPU
-  até o máximo documentado (`catalog.max_fitting_context`), e a seleção grava
-  esse valor em `max_model_len`; `check_fit` valida o par antes de qualquer
-  alocação.
+* **O contexto não é reduzido silenciosamente.** `PROFILE_CONTEXTS` lista todos
+  os 25 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
+  imprime ambos; `check_fit` continua usando o valor servido de `config.toml`.
+  Elevar um perfil ao máximo documentado sem uma GPU maior está explicitamente
+  fora de escopo.
 * **Thinking é guiado por comportamento, não pelo nome do modelo.** Apenas um
   modelo com `ModelEntry.thinking` recebe a transformação de prompt do Gemma 4.
   O token do próprio cliente, histórico já limpo ou `enable_thinking: false`

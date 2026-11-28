@@ -45,9 +45,9 @@ Regras de ouro: zero regressões; escopo controlado (ideias novas só no BACKLOG
 
 ## Fase 5 — Documentação e Backlog Estratégico
 
-- [ ] F5.1 README.md atualizado: pré-requisitos, instalação, guia rápido, referência de flags/comandos, troubleshooting.
-- [ ] F5.2 Docs `docs/` sincronizadas com o estado atual e validadas pelo validador OKF.
-- [ ] F5.3 BACKLOG.md criado com sugestões estruturadas (problema, impacto, esforço, critérios de aceite).
+- [x] F5.1 README atualizado: Windows como pré-requisito, exemplos de `setup --model-id/--api-key` e `chat -m/--no-history`, fluxo em 5 etapas, tabela de erros com ação, runtime `strata` e 25 perfis.
+- [x] F5.2 Docs sincronizadas (`llm-chat.md`, `tui.md`, `troubleshooting.md`, `connection-path.md`, `index.md`, `log.md`); validador OKF v0.2 passa com 8 conceitos.
+- [x] F5.3 BACKLOG.md criado com 12 ideias estruturadas (problema, impacto, esforço, critérios de aceite); nenhuma foi implementada nesta rodada.
 
 ## Fase 6 — Revisão Final (QA) e Entrega
 
@@ -64,6 +64,7 @@ Regras de ouro: zero regressões; escopo controlado (ideias novas só no BACKLOG
 | 2 | F2.1, F2.2 (CLI), F4 (parcial) | `cli.py` + 10 testes novos | ruff limpo; 593 testes passam |
 | 3 | F2.3, F3.1–F3.4 | `llm_chat.py`, `tui.py`, `mensagens.py`, `cli.py`, 6 testes novos | ruff limpo; 599 testes passam |
 | 4 | F4.1–F4.4 | 7 testes novos de flags/estados/formatação | ruff limpo; 606 testes passam |
+| 5 | F5.1–F5.3 | README, 6 docs OKF, BACKLOG, log | OKF/Ruff/Pytest verdes; 606 testes passam |
 
 ## Resumo Executivo
 

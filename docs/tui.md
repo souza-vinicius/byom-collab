@@ -4,7 +4,7 @@ title: Interactive TUI Architecture
 description: Structured Rich + questionary TUI layer for byom with a single-screen PT-BR menu, GPU + model selection, responsive layout, and live step checklists.
 tags: [tui, ui, rich, questionary, pt-br]
 status: stable
-generated: { by: hermes/deepseek-v4.1-flash, at: 2026-11-24T01:55:56Z }
+generated: { by: hermes/hy4-flash-free, at: 2026-11-28T03:50:00Z }
 sources:
   - id: tui-module
     resource: /src/byom/tui.py
@@ -62,6 +62,7 @@ sources:
   - `80–99` columns: compact single-line tables without mid-column wrapping.
   - `< 80` columns: vertical cards.
   - `<= 26` rows: pagination hint displayed above long listings.
+- **Color and EOF handling**: `NO_COLOR` disables Rich color and the questionary selection style; a console created before the variable was set is recreated when the menu opens. EOF at the `Pressione Enter para voltar` prompt ends the menu cleanly instead of raising a traceback.
 - **Live execution & error reporting**: Side-effect operations (`init`, `up`, `down`) show an objective pre-action summary, ask for confirmation (`default=False` for `up` and `down`), execute via `ExecutorEtapas` (animated spinner, per-step elapsed time, slow-step hints and SSH attempt counter; it pins `console.file` so the live refresh thread keeps writing to the real terminal while stdout is redirected to capture raw output), and display raw logs only inside a dimmed `Detalhes técnicos` panel on failure or inspection.
 
 [^tui-module]: TUI presentation and flow controller (`src/byom/tui.py`)
