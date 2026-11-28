@@ -81,3 +81,9 @@ Formato: `Impacto` é Alto/Médio/Baixo para quem usa a CLI; `Esforço` é P (ho
 - **Problema:** `byom web` expõe uma única conexão OpenAI ao proxy; filtrar `model_ids`, definir `prefix_id` ou marcar a conexão como `local` exige abrir o painel admin do Open WebUI, mesmo com variáveis de ambiente.
 - **Impacto:** Médio. **Esforço:** P.
 - **Critérios de aceite:** opção de configurar `OPENAI_API_CONFIGS` como JSON por índice de conexão, preservando overrides do usuário e sem novo comando/flag na CLI; teste com JSON inválido recusado antes do spawn; documentar que `model_ids` explícitos param de autodetectar modelos de `/v1/models`.
+
+## 14. Markdown renderizado nas respostas do LLM
+
+- **Problema:** `byom chat` delega ao `llm chat`, que transmite a resposta direto para o TTY. A CLI não controla o stream, então não aplica Markdown (tabelas, blocos de código) nem estilos semânticos consistentes.
+- **Impacto:** Médio. **Esforço:** G.
+- **Critérios de aceite:** capturar o stream sem perder interatividade (stdin/TTY, Ctrl+C, histórico), aplicar `rich.markdown.Markdown` respeitando `NO_COLOR` e largura, preservar saída em pipe byte a byte, e cobrir com testes de snapshot sem sessão real.

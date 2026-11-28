@@ -114,21 +114,26 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 - [x] R2.2 Preservar overrides do usuário: variáveis presentes no ambiente não devem ser sobrescritas; byom preenche só o que falta. `DATA_DIR`, segredo e variáveis de isolamento seguem gerenciadas pelo byom quando ausentes.
 - [x] R2.3 Tornar a autoconfiguração observável: CLI informa o modelo padrão e lista variáveis preservadas do ambiente, sem alterar a saída existente.
 - [x] R2.4 Testes unitários mockados para R2.1–R2.3; Zero regressões nos testes atuais.
+- [x] R2.5 `ENABLE_PERSISTENT_CONFIG=false` impede que URL salva no `webui.db` vença as variáveis injetadas; override do usuário preservado.
 
 ## Fase 3 — Clareza de informações no terminal
 
 - [x] R3.1 Textos do `byom web` descrevem o que foi autoconfigurado e como fazer override, sem novo comando ou flag.
 - [x] R3.2 Ajuda e mensagens de erro existentes permanecem intactas (snapshots da CLI continuam verdes).
+- [x] R3.3 `rich_markup_mode="rich"` e exemplos em 9 textos de `help=`; tags não vazam na saída.
+- [x] R3.4 `byom status` mostra Colab → GPU → Byom → Chat/WebUI → encerramento, modelo, URL do Byom e URL padrão do WebUI, sem cor e legível em pipe.
+- [ ] R3.5 Markdown formatado nas respostas do LLM: não implementado — `llm chat` transmite direto ao TTY; capturar quebraria interatividade. Registrado no BACKLOG #14.
 
 ## Fase 4 — Testes unitários
 
 - [x] R4.1 Casos novos em `tests/test_webui.py`: override preservado, `DEFAULT_MODELS`, saída da CLI, consistência com `/v1/models`.
 - [x] R4.2 Suíte completa verde com `BYOM_COLAB_BIN` removido; nenhum teste fala com Colab/Open WebUI reais.
+- [x] R4.3 Novos casos para `ENABLE_PERSISTENT_CONFIG`, mapa de estágios no `status` e renderização do help.
 
 ## Fase 5 — Documentação e backlog
 
 - [x] R5.1 `docs/webui.md` com as variáveis injetadas, `DEFAULT_MODELS`, override e fonte oficial datada; `docs/index.md` e `docs/log.md` sincronizados.
-- [x] R5.2 README atualizado onde descreve o frontend; ideias não implementadas registradas em `BACKLOG.md`.
+- [x] R5.2 README atualizado onde descreve o frontend; ideias não implementadas registradas em `BACKLOG.md` (#13 `OPENAI_API_CONFIGS`, #14 Markdown no chat).
 
 ## Fase 6 — Revisão final
 
@@ -143,3 +148,5 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 | 0 | R1.1–R1.3 | Baseline e plano | 631 testes, ruff/probe/OKF verdes |
 | 1 | R2.1–R2.4, R3.1–R3.2, R4.1–R4.2 | autoconfig com `DEFAULT_MODELS`, overrides preservados, CLI observável e 3 testes novos | 634 testes, ruff/probe/OKF verdes |
 | 2 | R5.1–R5.2 | README, docs/webui.md, index, log e BACKLOG #13 | OKF válido; 634 testes |
+| 3 | R2.5 | `ENABLE_PERSISTENT_CONFIG=false` + teste/docs | 634 testes, ruff/OKF verdes |
+| 4 | R3.3–R3.4, R4.3 | help rico com exemplos e `status` com mapa de estágios | 634 testes; tags Rich não vazam |

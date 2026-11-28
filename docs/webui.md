@@ -90,18 +90,21 @@ multi-user setup needs a fresh `byom_home()`/`webui` directory.
   running session but are lost on restart; byom's environment becomes the
   source of truth.[^persist]
 
-`build_env` **fills only what is missing**: any variable already exported by
-the user wins. `WebUIPlan.overrides` records which of the byom defaults were
-supplied by the environment, and `byom web` prints them as `Ambiente: ...`.
-That makes the documented override path real — export `OPENAI_API_BASE_URLS`
-and `OPENAI_API_KEYS` before `byom web` to point the frontend at another
-provider, without editing any file. Variables owned by the isolation
-(`DATA_DIR`, `WEBUI_SECRET_KEY`, `WEBUI_URL`) are also preserved if exported;
-the default secret remains generated once with mode `0600`.
+`build_env` **fills only what is missing** for connection and behaviour
+variables: any value already exported by the user wins. `DATA_DIR`,
+`WEBUI_SECRET_KEY` and `WEBUI_URL` are byom-owned and are **always set** — an
+exported value there would move the SQLite database or the session secret
+outside `byom_home()`. `WebUIPlan.overrides` records the user-supplied names
+(excluding those three), and `byom web` prints them as `Ambiente: ...`.
+Export `OPENAI_API_BASE_URLS` and `OPENAI_API_KEYS` before `byom web` to point
+the frontend at another provider, without editing any file.
 
 [^env]: `DEFAULT_MODELS` accepts comma-separated model ids that are
 pre-selected in a new chat; if a stored model no longer exists it is replaced
-by these defaults — Open WebUI environment reference, 2026-11-28.
+by these defaults. It is a `ConfigVar`: without `ENABLE_PERSISTENT_CONFIG=false`
+the value stored in `webui.db` wins after the first start. Even with the
+environment authoritative, a model chosen in the UI still applies to that
+conversation — Open WebUI environment reference and issue #29819, 2026-11-28.
 
 [^persist]: `ENABLE_PERSISTENT_CONFIG` defaults to `true`, which makes values
 stored in `webui.db` take precedence over environment variables. With `false`,

@@ -125,6 +125,10 @@ def test_plan_preserva_overrides_do_usuario(byom_home, monkeypatch):
         "WEBUI_AUTH": "true",
         "DEFAULT_MODELS": "outro-modelo",
         "ENABLE_PERSISTENT_CONFIG": "true",
+        # Estes três pertencem ao isolamento e NÃO são overrideáveis.
+        "DATA_DIR": "/tmp/fora-do-byom",
+        "WEBUI_SECRET_KEY": "chave-externa",
+        "WEBUI_URL": "http://example.com",
     }
     for nome, valor in valores.items():
         monkeypatch.setenv(nome, valor)
@@ -132,11 +136,15 @@ def test_plan_preserva_overrides_do_usuario(byom_home, monkeypatch):
     plan = webui.plan(port=8099, proxy_port=4000)
 
     for nome, valor in valores.items():
+        if nome in webui.ISOLATION_KEYS:
+            continue
         assert plan.env[nome] == valor
-    assert set(valores) <= set(plan.overrides)
-    assert "DATA_DIR" not in plan.overrides
+    assert set(valores) - webui.ISOLATION_KEYS <= set(plan.overrides)
+    assert not set(plan.overrides) & webui.ISOLATION_KEYS
     # O que é do byom continua presente quando o usuário não escolheu outro valor.
     assert plan.env["DATA_DIR"] == str(byom_home / webui.DATA_DIRNAME)
+    assert plan.env["WEBUI_SECRET_KEY"] != "chave-externa"
+    assert plan.env["WEBUI_URL"] == "http://127.0.0.1:8099"
     assert plan.env["OPENAI_API_BASE_URL"] == "http://127.0.0.1:4000/v1"
 
 

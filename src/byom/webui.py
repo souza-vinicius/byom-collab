@@ -68,6 +68,11 @@ def build_command(*, port: int) -> list[str]:
     ]
 
 
+#: Variáveis que pertencem ao isolamento do byom: nunca aceitam override,
+#: senão o frontend passa a ler/escrever fora de `byom_home()`.
+ISOLATION_KEYS = frozenset({"DATA_DIR", "WEBUI_SECRET_KEY", "WEBUI_URL"})
+
+
 def _env_defaults(
     *,
     proxy_port: int,
@@ -116,14 +121,18 @@ def build_env(
     env = {**os.environ}
     for name in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
         env.pop(name, None)
-    for name, value in _env_defaults(
+    defaults = _env_defaults(
         proxy_port=proxy_port,
         port=port,
         data_dir=data_dir,
         secret_key=secret_key,
         served_model_name=served_model_name,
-    ).items():
-        env.setdefault(name, value)
+    )
+    for name, value in defaults.items():
+        if name in ISOLATION_KEYS:
+            env[name] = value
+        else:
+            env.setdefault(name, value)
     return env
 
 
@@ -164,7 +173,11 @@ def plan(*, port: int = DEFAULT_PORT, proxy_port: int | None = None) -> WebUIPla
         secret_key=secret_key,
         served_model_name=cfg.served_model_name,
     )
-    overrides = tuple(name for name in defaults if name in os.environ)
+    overrides = tuple(
+        name
+        for name in defaults
+        if name in os.environ and name not in ISOLATION_KEYS
+    )
     return WebUIPlan(
         argv=tuple(build_command(port=port)),
         env=build_env(
