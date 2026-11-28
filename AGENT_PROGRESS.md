@@ -167,3 +167,77 @@ Condição de parada: todos os itens `[x]`, quatro gates verdes, Resumo Executiv
 **Fase 5.** README, `docs/webui.md` (com fontes oficiais datadas de 2026-11-28), `docs/index.md`, `docs/log.md` e `BACKLOG.md` (#13 `OPENAI_API_CONFIGS`, #14 Markdown no chat) atualizados; OKF válido.
 
 **Fase 6.** Dois revisores independentes; dois achados verificados por sonda e corrigidos (isolamento e persistência de `DEFAULT_MODELS`). Estado final: 634 testes, ruff limpo, 27 perfis com `fits`, probe e OKF exit 0, `git diff --check` limpo. Commits locais na branch do PR #19; push/merge dependem de pedido explícito.
+
+---
+
+# Rodada 3 — Auditoria Ponta a Ponta, Autoconfiguração Open WebUI, CLI/TUI e Isolamento de Testes (2026-11-28)
+
+Objetivo: auditar o projeto de ponta a ponta preservando 100% dos comandos existentes, automatizar e fortalecer a integração Open WebUI (`byom web`), elevar a clareza da CLI/TUI (Typer + Rich), isolar e ampliar a suíte de testes unitários offline/mocked (`pytest`) e atualizar documentação e `BACKLOG.md`.
+
+Condição de parada: todos os itens `[x]`, linter (`ruff`) e `pytest` verdes sem chamadas de rede reais, validador OKF verde e Resumo Executivo entregue. Limite: 25 ciclos.
+
+## Baseline e Diagnóstico (Fase 1)
+
+- Branch: `fix/colab-503-diagnostico` (HEAD `3f2b399`).
+- `uv run ruff check .`: All checks passed.
+- `uv run pytest -q`: 621 passed, 18 failed quando portas locais 4000/4001 estão ocupadas por sessão ativa no host (lacuna de isolamento em `tests/conftest.py` e `tests/test_up_daemon.py`).
+- `bash .agents/skills/okf-open-knowledge-format/scripts/validate.sh docs/`: exit 0 (10 conceitos OKF v0.2).
+- `uv run python scripts/probe_revisao.py match dsh colab ownership up pid tabela`: todas as sondas passaram.
+- Mapeamento:
+  - Open WebUI (`src/byom/webui.py`): iniciado via `uv tool run --python 3.12 --from open-webui==0.13.5 open-webui serve --host 127.0.0.1 --port <port>` em subprocesso foreground; já injeta `DATA_DIR` (`$BYOM_HOME/webui`), `WEBUI_SECRET_KEY`, `WEBUI_URL`, `WEBUI_AUTH=false`, `OPENAI_API_BASE_URL(S)`, `OPENAI_API_KEY(S)`, `DEFAULT_MODELS`, `ENABLE_PERSISTENT_CONFIG=false`.
+  - Lacunas identificadas:
+    1. Testes de `up` vazam verificação de porta real (`cli._port_free`) e `BYOM_COLAB_BIN`.
+    2. Em `webui.build_env`, exportar apenas `OPENAI_API_BASE_URL` ou `OPENAI_API_KEY` (singular) sem a versão plural deixa a variável plural apontando para o default do byom.
+    3. `byom web` não exibe confirmação explícita do vínculo automático nem mensagem acionável quando o subprocesso falha (ou saída limpa no código 130).
+    4. `byom up` na CLI não exibe `What to do:` para `ColabBackendUnavailable` / `ColabAllocationRefused` / `ColabAcceleratorRejected` / `TimeoutError` / `RemoteError`, nem aviso de limpeza em `KeyboardInterrupt`, nem URL do WebUI no resumo final para runtimes de chat.
+    5. Comandos Typer ainda sem `rich_help_panel` agrupando catálogo/sessão/clientes e sem exemplos consistentes em todos os subcomandos; resumo da TUI (`_executar_status` e `_executar_up`) pode exibir explicitamente modelo ativo, API Byom e URL do Open WebUI.
+
+## Checklist das 6 Fases (Rodada 3)
+
+### Fase 1 — Diagnóstico e Baseline
+- [x] R3.F1.1 Mapear arquitetura (Typer, Colab, Byom proxy/gateway, Open WebUI, configs, testes e docs) e executar baseline (`ruff`, `pytest`, `probe_revisao.py`, validador OKF).
+- [x] R3.F1.2 Registrar gargalos de UX, lacunas de autoconfiguração, erros obscuros e falhas de isolamento de testes neste documento.
+
+### Fase 2 — Fluxos, Resiliência e Autoconfiguração do Open WebUI
+- [x] R3.F2.1 `webui.build_env` propaga overrides singulares (`OPENAI_API_BASE_URL` / `OPENAI_API_KEY`) para as variáveis plurais quando ausentes; encerramento do subprocesso extraído em `_terminate_process`.
+- [x] R3.F2.2 `byom web` imprime confirmação explícita do vínculo (`Vínculo:`), trata `Ctrl+C` (código 130) de forma limpa e exibe orientação acionável em códigos de falha.
+- [x] R3.F2.3 `byom up` imprime `What to do:` via `_up_failure_action` para falhas classificadas do Colab (5xx/412/400), `TimeoutError` e `RemoteError`, anuncia limpeza em `KeyboardInterrupt` e inclui `WebUI:` no resumo `Worker ready` para chat.
+
+### Fase 3 — Interface de Terminal (Typer + Rich)
+- [x] R3.F3.1 Comandos do Typer organizados em três `rich_help_panel` (`Configuração e Catálogo`, `Sessão Colab e Ciclo de Vida`, `Chat e Frontend Web`) com exemplos `Ex.:` em todos os subcomandos visíveis.
+- [x] R3.F3.2 Resumo da sessão na TUI (`_executar_status` e `_executar_up`) enriquecido com modelo ativo, API Byom e URL do Open WebUI, compatível com 60 colunas e `NO_COLOR`.
+
+### Fase 4 — Testes Unitários (`pytest`)
+- [x] R3.F4.1 `tests/conftest.py` isola `cli._port_free` e `BYOM_COLAB_BIN`; `tests/test_up_daemon.py` usa portas efêmeras com `_real_port_free`.
+- [x] R3.F4.2 Adicionados 8 novos testes offline/mocked em `tests/test_webui.py` e `tests/test_ux_resiliencia.py` (647 passed em 0 falhas).
+
+### Fase 5 — Documentação e Backlog
+- [x] R3.F5.1 `README.md`, `docs/webui.md`, `docs/troubleshooting.md` e `docs/log.md` atualizados e validados no formato OKF v0.2 (`validate.sh docs/` exit 0).
+- [x] R3.F5.2 `BACKLOG.md` atualizado com o item #15 estruturado (Problema, Impacto, Esforço, Critérios de aceite).
+
+### Fase 6 — QA Final e Entrega
+- [x] R3.F6.1 Diff review (`git diff 3f2b399..HEAD`, `git diff --check`) sem código morto, imports não usados, debug prints ou vazamento de credenciais; `ruff`, `pytest` (647 passed), `probe_revisao.py` e validador OKF verdes.
+- [x] R3.F6.2 Resumo Executivo preenchido abaixo.
+
+## Registro de ciclos (Rodada 3)
+
+| Ciclo | Item | Resultado | Verificação |
+| --- | --- | --- | --- |
+| 0 | R3.F1.1–R3.F1.2 | Baseline medido e gargalos mapeados | ruff limpo; 621 passed / 18 failed por porta 4000/4001 no host; OKF exit 0 |
+| 1 | R3.F4.1 | Isolamento de portas e `BYOM_COLAB_BIN` em `conftest.py` e `test_up_daemon.py` | ruff limpo; 639 passed |
+| 2 | R3.F2.1–R3.F2.3, R3.F3.1–R3.F3.2 | `webui.py`, `cli.py` e `tui.py` atualizados | ruff limpo; `byom --help` limpo; 639 passed |
+| 3 | R3.F4.2 | 8 novos testes offline/mocked + commit atômico `97338be` | ruff limpo; 647 passed |
+| 4 | R3.F5.1–R3.F5.2 | README, docs OKF e BACKLOG #15 + commit atômico `c0e1542` | OKF exit 0; ruff limpo |
+| 5 | R3.F6.1–R3.F6.2 | QA final e Resumo Executivo | `git diff --check`, ruff, 647 passed, probe e OKF verdes |
+
+## Resumo Executivo (Rodada 3)
+
+Auditoria concluída em 5 ciclos (limite 25), com 100% dos comandos e fluxos existentes preservados e 2 commits atômicos na branch `fix/colab-503-diagnostico` (`97338be` e `c0e1542`).
+
+- **Mecanismo final de autoconfiguração do Open WebUI:** `byom web` executa `open-webui==0.13.5` em ambiente isolado (`DATA_DIR=$BYOM_HOME/webui`, `WEBUI_SECRET_KEY` 0600 em `$BYOM_HOME/webui-secret`, `WEBUI_URL=http://127.0.0.1:<port>` — chaves `ISOLATION_KEYS` não aceitam override). Injeta `OPENAI_API_BASE_URL`/`OPENAI_API_BASE_URLS=http://127.0.0.1:<proxy_port>/v1`, `OPENAI_API_KEY`/`OPENAI_API_KEYS=byom`, `ENABLE_OPENAI_API=true`, `ENABLE_OLLAMA_API=false`, `WEBUI_AUTH=false`, `ENABLE_VERSION_UPDATE_CHECK=false`, `ENABLE_PERSISTENT_CONFIG=false` (evita que URL/modelo salvos em `webui.db` sobrescrevam as env vars na reinicialização) e `DEFAULT_MODELS=<cfg.served_model_name>`. Overrides do usuário são preservados via `setdefault`, e overrides apenas singulares (`OPENAI_API_BASE_URL` / `OPENAI_API_KEY`) agora são propagados às respectivas variáveis plurais quando as plurais não estão exportadas.
+- **Fase 1:** Baseline medido e 5 lacunas registradas em `AGENT_PROGRESS.md`.
+- **Fase 2:** Propagação singular->plural e `_terminate_process` em `webui.py`; confirmação de vínculo (`Vínculo:`), encerramento limpo em `Ctrl+C` (130) e mensagem acionável de erro em `byom web`; `What to do:` via `_up_failure_action`, aviso de limpeza em `KeyboardInterrupt` e link `WebUI:` no resumo `Worker ready` de `byom up`.
+- **Fase 3:** Três `rich_help_panel` e exemplos `Ex.:` em todos os comandos visíveis do Typer; TUI `_executar_status` e `_executar_up` exibindo modelo ativo, API Byom e Open WebUI (compatível com 60 colunas e `NO_COLOR`).
+- **Fase 4:** Isolamento de `cli._port_free` e `BYOM_COLAB_BIN` em `tests/conftest.py` (eliminando 18 falsas falhas quando há sessão ativa no host) + 8 novos testes offline/mocked (`647 passed`).
+- **Fase 5:** `README.md`, `docs/webui.md`, `docs/troubleshooting.md`, `docs/log.md` e `BACKLOG.md` (#15) atualizados; OKF v0.2 válido.
+- **Fase 6:** Diff review e todas as verificações finais aprovadas sem chamadas de rede reais.
