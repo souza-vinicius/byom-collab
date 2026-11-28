@@ -264,9 +264,65 @@ def test_padroes_de_imagem_e_equivalencia_documentada():
     assert "qwen-image-2.1.md" in image.generation_source
     assert "sample_params.sample_steps" in image.generation_source
     assert "sample_params.guidance.txt_cfg" in image.generation_source
+    turbo = catalog.model_by_id("qwen-image-2.1-turbo-uncensored")
+    assert turbo.generation_defaults["steps"] == 8
+    assert "qwen_image_2.1.md" in turbo.generation_source
+    assert "sample_params.custom_sigmas" in turbo.generation_source
+    com_padroes = {"qwen-image-2.1", "qwen-image-2.1-turbo-uncensored"}
     for model in catalog.MODELS:
-        if model.id != "qwen-image-2.1":
+        if model.id not in com_padroes:
             assert not model.generation_defaults
+
+
+def test_modelo_turbo_uncensored_tem_dois_pipelines_completos():
+    model = catalog.model_by_id("qwen-image-2.1-turbo-uncensored")
+    assert model.name == "Qwen-Image-2.1 Turbo Uncensored"
+    assert model.runtime == "image"
+    assert model.provider == "Qwen (Alibaba Cloud)"
+    assert model.source == (
+        "https://huggingface.co/AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF"
+    )
+    variants = {variant.id: variant for variant in model.variants}
+    assert set(variants) == {"q4k", "q8"}
+    assert variants["q4k"].memory_gib == 9.47
+    assert variants["q8"].memory_gib == 15.81
+    assert variants["q4k"].min_gpu == "T4"
+    assert variants["q8"].min_gpu == "L4"
+    assert variants["q4k"].vision_gib == catalog.IMAGE_VISION_GIB
+    assert variants["q8"].vision_gib == catalog.IMAGE_VISION_GIB
+    assert variants["q4k"].context == 0
+    assert variants["q8"].context == 0
+    assert catalog.profile_context("qwen-image-2.1-turbo-uncensored-q4k").context_served == 1
+    assert catalog.profile_context("qwen-image-2.1-turbo-uncensored-q8").context_served == 1
+
+    assert model.generation_defaults == {
+        "steps": 8,
+        "guidance": 1.0,
+        "sample_method": "euler",
+        "custom_sigmas": [
+            1.0,
+            0.978453,
+            0.95418,
+            0.926626,
+            0.89508,
+            0.845148,
+            0.704534,
+            0.414568,
+            0.0,
+        ],
+    }
+    for url in (
+        "https://huggingface.co/AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF",
+        "docs/qwen_image_2.1.md",
+        "examples/server/api.md",
+        "c150a6b",
+    ):
+        assert url in model.generation_source
+
+    notas_q4k = " ".join(variants["q4k"].notes)
+    assert "4.201.694.944" in notas_q4k and "5.287.517.120" in notas_q4k
+    notas_q8 = " ".join(variants["q8"].notes)
+    assert "7.591.577.312" in notas_q8 and "8.709.520.096" in notas_q8
 
 
 def test_contexto_documentado_servido_e_motivo():
@@ -299,7 +355,7 @@ def test_contexto_documentado_servido_e_motivo():
     assert served["inkling-2-mini-strata-sq15"] == 32_768
     assert served["inkling-2-mini-strata-sq20"] == 32_768
     assert all(item.reason for item in catalog.PROFILE_CONTEXTS)
-    assert len(served) == 27
+    assert len(served) == 29
 
 
 def test_compatibilidade_continua_usando_contexto_servido():

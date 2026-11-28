@@ -32,6 +32,8 @@ PROFILE_IDS = {
     "muse-glimmer-30b-q4-gguf",
     "qwen-image-2.1-q4km",
     "qwen-image-2.1-fp8",
+    "qwen-image-2.1-turbo-uncensored-q4k",
+    "qwen-image-2.1-turbo-uncensored-q8",
     "ternary-bonsai-25-27b-q2",
     "ternary-bonsai-25-27b-ptq1",
     "ternary-bonsai-25-27b-ptq1-mtp",
@@ -46,6 +48,8 @@ PROFILE_IDS = {
 NON_CHAT_PROFILE_IDS = {
     "qwen-image-2.1-q4km",
     "qwen-image-2.1-fp8",
+    "qwen-image-2.1-turbo-uncensored-q4k",
+    "qwen-image-2.1-turbo-uncensored-q8",
     "qwen3-tts-0.6b-customvoice",
     "qwen3-tts-1.7b-customvoice",
 }
@@ -160,6 +164,7 @@ def test_perfis_nao_repetem_reasoning_nem_steps():
         ("gemma-4-12b-q4-gguf", None, True, False),
         ("muse-glimmer-30b-q4-gguf", "high", False, False),
         ("qwen-image-2.1-q4km", None, False, True),
+        ("qwen-image-2.1-turbo-uncensored-q4k", None, False, True),
     ],
 )
 def test_payload_da_sessao_propagas_propriedades_do_modelo(
@@ -181,9 +186,8 @@ def test_payload_da_sessao_propagas_propriedades_do_modelo(
         assert payload["thinking_policy"]["system_token"] == "<|think|>"
         assert payload["thinking_policy"]["strip_history_thought"] is True
     if has_generation:
-        assert payload["generation_defaults"] == catalog.model_by_id(
-            "qwen-image-2.1"
-        ).generation_defaults
+        model_id, _variant_id = config.active_catalog_ref(cfg)
+        assert payload["generation_defaults"] == catalog.model_by_id(model_id).generation_defaults
         assert "steps" not in (payload["worker"] or {})
 
 

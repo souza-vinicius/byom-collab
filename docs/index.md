@@ -12,4 +12,5 @@ Open Knowledge Format (OKF v0.2) knowledge base for `byom-collab`.
 - [Isolated llm chat Integration](./llm-chat.md) - Isolated `llm` setup under `byom_home()`, `setup`/`chat`/`uninstall` flags, and clean Ctrl+C/Ctrl+D cancellation
 - [Open WebUI Frontend](./webui.md) - `byom web` starts an isolated Open WebUI on 127.0.0.1:8080 with the byom proxy auto-configured, `DEFAULT_MODELS` preselected and user environment overrides preserved; the one-runtime limit still blocks image generation
 - [Qwen3-TTS Runtime](./qwen3-tts.md) - Qwen3-TTS CustomVoice through vLLM-Omni, the two-stage VRAM budget, the `/v1/audio/speech` and `/v1/audio/voices` routes, and what is still unmeasured
+- [Qwen-Image-2.1 Turbo Uncensored](./qwen-image-turbo-uncensored.md) - The Turbo image pipeline with an abliterated Qwen3-VL encoder, its two quantization pairs, the fixed 8-step sigma schedule, and why it is a separate catalog model
 - [Update Log](./log.md) - Chronological history of knowledge base updates

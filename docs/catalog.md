@@ -30,6 +30,12 @@ sources:
   - id: log-2026-11-24
     resource: /log.md
     title: Update log with the revalidated per-profile table
+  - id: turbo-uncensored
+    resource: /qwen-image-turbo-uncensored.md
+    title: Turbo Uncensored pipeline, fixed sigma schedule and its two profiles
+  - id: turbo-card
+    resource: https://huggingface.co/AtomicChat/Qwen-Image-2.1-Turbo-GGUF
+    title: AtomicChat Turbo GGUFs, the 8-step schedule and the pinned sd.cpp build requirements
 ---
 
 # VRAM Budget and GPU Eligibility
@@ -107,6 +113,22 @@ O perfil embarcado é `inkling-2-mini-ad-q6k-dspark` (AD-Q6_K, 128K, A100-40,
 2026-11-24 e entrou na **v1.1.0**: o fork do PR e o workflow de build que o
 byom mantinha deixaram de existir. O drafter vem do mesmo `model_repo` dos
 pesos (a resolução é por padrão dentro de `model_repo`), com 503.857.696 B.
+
+## Agenda de geração (`generation_defaults`)
+
+`ModelEntry.generation_defaults` guarda os valores documentados do checkpoint,
+nunca um `steps` solto no perfil. `steps` e `guidance` são obrigatórios;
+`sample_method` e `custom_sigmas` são opcionais e existem porque o
+Qwen-Image-2.1 Turbo é destilado para **8 passos, CFG 1, euler e uma lista fixa
+de 9 sigmas**.[^turbo-card] O gateway mapeia os quatro para
+`sample_params.sample_steps`, `guidance.txt_cfg`, `sample_method` e
+`custom_sigmas` dentro de `sd_cpp_extra_args` em
+`POST /v1/images/generations`; com uma lista de sigmas, o
+número de passos reais é a contagem de sigmas menos um. Sem a lista, o
+stable-diffusion.cpp usa a agenda do Qwen-Image-2.1 (25 passos) e a imagem sai
+diferente. O Qwen-Image-2.1 original continua em 25/1; o Turbo tem entrada
+própria e dois perfis, um por par encoder + denoiser (AD-Q4_K na T4, Q8_0 na
+L4).[^turbo-uncensored]
 
 ## Runtime `strata` (packs `.strata`)
 
@@ -217,7 +239,7 @@ janela calculada.
 ## Onde os números aparecem
 
 A mesma conta alimenta `byom models`, a tela `Selecionar GPU` da TUI, o
-`check_compatibility` do `config.toml` e o log de atualização. A tabela dos 27
+`check_compatibility` do `config.toml` e o log de atualização. A tabela dos 29
 perfis (GPU, contexto, KV, required, folga, margem, `fits`, origem do KV,
 pipeline e drafter) é regerada com `scripts/vram_table.py` e registrada em
 [Update Log](/log.md); sondas de comportamento ficam em
@@ -231,3 +253,5 @@ para o pipeline talker + code2wav; ver [Qwen3-TTS Runtime](/qwen3-tts.md).
 [^strata-card]: https://huggingface.co/strata-engine/Inkling-2-Mini-Strata (revisão `5623ceb`, consultado em 2026-11-27)
 [^strata-release]: https://github.com/Niko1221/Strata/releases/tag/v0.2.23 (consultado em 2026-11-27)
 [^log-2026-11-24]: `/log.md` — entrada "KV por arquitetura (2026-11-24)"
+[^turbo-card]: https://huggingface.co/AtomicChat/Qwen-Image-2.1-Turbo-GGUF (consultado em 2026-11-28)
+[^turbo-uncensored]: [Qwen-Image-2.1 Turbo Uncensored](/qwen-image-turbo-uncensored.md)

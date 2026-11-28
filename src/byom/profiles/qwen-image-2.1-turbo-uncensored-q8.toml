@@ -1,0 +1,35 @@
+name = "Qwen-Image-2.1 Turbo Uncensored (Q8_0)"
+description = "Geração de imagens Turbo em L4 (24 GiB); Q8_0 do encoder abliterado e do denoiser."
+opencode_output_limit = 8192
+runtime = "image"
+catalog_model = "qwen-image-2.1-turbo-uncensored"
+catalog_variant = "q8"
+
+[config]
+model = "qwen-image-2.1-turbo-uncensored"
+served_model_name = "qwen-image-2.1-turbo-uncensored"
+max_model_len = 1
+gpu = "L4"
+gpu_high_mem = false
+vllm_spec = "vllm"
+vllm_enforce_eager = false
+vllm_language_model_only = true
+gpu_memory_utilization = 0.92
+enable_auto_tool_choice = false
+tool_call_parser = ""
+reasoning_parser = ""
+
+[worker]
+# Build Unsloth cuda13 (Ubuntu 22.04, sm_75/80/86/89/90/100/120) com o
+# sha256 do manifesto do release. O asset upstream 26.04/CPU exigia glibc
+# 2.43 e morria no loader do Colab (glibc 2.39).
+binary_url = "https://github.com/unslothai/stable-diffusion.cpp/releases/download/master-982-0518b34-u27b9ddc/sd-master-982-0518b34-u27b9ddc-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip"
+binary_sha256 = "5129f05af93cac94f6e6182007ff9b18284fbea71f930f4b93360bc5a35d50a1"
+binary_dir = "sdcpp"
+model_patterns = ["AtomicChat/Qwen-Image-2.1-Turbo-GGUF::Qwen-Image-2.1-Turbo-Q8_0.gguf", "Comfy-Org/Qwen-Image-2.1::vae/qwen_image_2.1_vae_bf16.safetensors", "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF::Qwen-Image-2.1-Turbo-Uncensored-Q8_0.gguf", "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF::mmproj-Qwen-Image-2.1-Turbo-Uncensored-F16.gguf"]
+
+[worker.image_roles]
+diffusion = "AtomicChat/Qwen-Image-2.1-Turbo-GGUF::Qwen-Image-2.1-Turbo-Q8_0.gguf"
+vae = "Comfy-Org/Qwen-Image-2.1::vae/qwen_image_2.1_vae_bf16.safetensors"
+text_encoder = "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF::Qwen-Image-2.1-Turbo-Uncensored-Q8_0.gguf"
+vision = "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF::mmproj-Qwen-Image-2.1-Turbo-Uncensored-F16.gguf"

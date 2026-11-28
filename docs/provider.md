@@ -33,7 +33,10 @@ Um modelo tem dois nomes próprios diferentes, e o byom mostra os dois:
 
 Exemplo real: `Inkling 2 Mini` → fornecedor *Thinking Machines Lab*; pacote
 *Unsloth* nos perfis `inkling-2-mini-{iq2,q4,q8}-gguf` e *AtomicChat* nos perfis
-`inkling-2-mini-ad-*`. Mesmo modelo, receitas de quantização diferentes.
+`inkling-2-mini-ad-*`. Mesmo modelo, receitas de quantização diferentes. Outro
+caso: `qwen-image-2.1-turbo-uncensored` → fornecedor *Qwen (Alibaba Cloud)*;
+pacote *AtomicChat* nos dois perfis, porque o denoiser Turbo e o encoder
+abliterado vêm dos repositórios da AtomicChat.
 
 ## De onde vem o pacote
 
@@ -42,7 +45,7 @@ Exemplo real: `Inkling 2 Mini` → fornecedor *Thinking Machines Lab*; pacote
 | runtime | campo lido | exemplo |
 | :--- | :--- | :--- |
 | `llama-cpp` | `[worker].model_repo` | `unsloth/Inkling-2-Mini-GGUF` |
-| `image` | `[worker.image_roles].diffusion` | `leejet/Qwen-Image-2.1-GGUF` |
+| `image` | `[worker.image_roles].diffusion` | `leejet/Qwen-Image-2.1-GGUF`, `AtomicChat/Qwen-Image-2.1-Turbo-GGUF` |
 | `vllm` | `[config].model` | `philbert440/Qwen3.8-27B-W4A16-AWQ` |
 
 `package_owner(spec)` fica só com a org (`org/repo::pattern` → `org`) e traduz via
