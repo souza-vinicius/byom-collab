@@ -164,6 +164,24 @@ def test_q4km_de_imagem_cabe_na_t4_com_folga():
     }
 
 
+def test_turbo_uncensored_q4k_na_t4_e_q8_na_l4():
+    q4k_t4 = catalog.check_fit("qwen-image-2.1-turbo-uncensored", "q4k", "T4", 1)
+    q8_t4 = catalog.check_fit("qwen-image-2.1-turbo-uncensored", "q8", "T4", 1)
+    q8_l4 = catalog.check_fit("qwen-image-2.1-turbo-uncensored", "q8", "L4", 1)
+
+    assert q4k_t4.fits is True
+    assert q4k_t4.required_gib == 12.55
+    assert q8_t4.fits is False
+    assert q8_l4.fits is True
+    assert q8_l4.required_gib == 18.89
+
+    t4 = {(row.model_id, row.variant_id) for row in catalog.compatible_variants("T4").rows}
+    l4 = {(row.model_id, row.variant_id) for row in catalog.compatible_variants("L4").rows}
+    assert ("qwen-image-2.1-turbo-uncensored", "q4k") in t4
+    assert ("qwen-image-2.1-turbo-uncensored", "q8") not in t4
+    assert ("qwen-image-2.1-turbo-uncensored", "q8") in l4
+
+
 
 def test_modelos_indisponiveis_nunca_aparecem():
     for gpu in catalog.GPUS:

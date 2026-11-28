@@ -75,6 +75,37 @@ GENERATION_SOURCE_IMAGE = (
     "defaults documentados da API Unsloth (25/1) conforme o briefing"
 )
 
+#: Sigmas fixas do schedule Turbo (8 passos). O último 0.0 encerra a amostragem;
+#: o sd-server deriva o número de passos da CONTAGEM de `custom_sigmas`.
+QWEN_IMAGE_TURBO_SIGMAS = [
+    1.0,
+    0.978453,
+    0.95418,
+    0.926626,
+    0.89508,
+    0.845148,
+    0.704534,
+    0.414568,
+    0.0,
+]
+
+GENERATION_SOURCE_IMAGE_TURBO = (
+    "https://huggingface.co/AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF "
+    "(2026-11-28): o card fixa 8 passos, CFG 1 e a lista exata de sigmas do "
+    "schedule Turbo, e pede build c150a6b ou mais nova. Equivalência com "
+    "sd-server na build fixada `master-982-0518b34-u27b9ddc` (2026-11-15, "
+    "depois da correção c150a6b de 2026-10-06): "
+    "https://github.com/leejet/stable-diffusion.cpp/blob/0518b34/docs/"
+    "qwen_image_2.1.md documenta o preset `qwen-image-2.1-turbo` com "
+    "`--sampling-method euler`, e "
+    "https://github.com/leejet/stable-diffusion.cpp/blob/0518b34/examples/"
+    "server/api.md documenta `sample_params.custom_sigmas` (o número de "
+    "sigmas determina os passos) dentro de `sd_cpp_extra_args`"
+)
+
+GENERATION_DEFAULT_FIELDS = frozenset({"steps", "guidance", "sample_method", "custom_sigmas"})
+GENERATION_REQUIRED_DEFAULT_FIELDS = frozenset({"steps", "guidance"})
+
 # Margens determinísticas (heurística de engenharia, não valor de documentação):
 # 2 GiB para runtime/processo e 2 GiB por 32K de contexto em f16 (mínimo 1 GiB).
 # O heurístico é o padrão de quem NÃO declarou `ModelEntry.kv_shape`: ele é
@@ -133,7 +164,9 @@ VISION_PROJECTOR_GIB_BY_MODEL = {
 
 #: Projetor do Qwen3-VL usado na edição de imagem (papel `vision`):
 #: `mmproj-Qwen3VL-8B-Instruct-F16.gguf`, 1.159.029.824 B = 1,08 GiB (API do HF,
-#: 2026-11-24).
+#: 2026-11-24). O `mmproj-Qwen-Image-2.1-Turbo-Uncensored-F16.gguf` do repo
+#: AtomicChat tem 1.159.029.984 B = 1,08 GiB (2026-11-28): 160 B a mais, mesmo
+#: valor arredondado, então a mesma constante cobre os dois.
 IMAGE_VISION_GIB = 1.08
 
 #: Projetor de visão do Bonsai 2.5: `Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf`,
@@ -291,7 +324,7 @@ class ModelEntry:
     reasoning_effort: str | None = None
     reasoning_source: str = ""
     thinking: ThinkingPolicy | None = None
-    generation_defaults: dict[str, int | float] = field(default_factory=dict)
+    generation_defaults: dict[str, int | float | str | list[float]] = field(default_factory=dict)
     generation_source: str = ""
     #: None = KV pelo heurístico `KV_CACHE_GIB_PER_32K` (não medido).
     #: Preenchido só com o `config.json` oficial em mãos.
@@ -433,6 +466,11 @@ PROVIDER_SOURCES: dict[str, str] = {
     "qwen-image-2.1": (
         "https://huggingface.co/Qwen/Qwen-Image-2.1 (2026-11-24) é o repo oficial da "
         "família Qwen, 'built by Alibaba Cloud' (card da org, mesma data)"
+    ),
+    "qwen-image-2.1-turbo-uncensored": (
+        "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo (2026-11-28): checkpoint "
+        "oficial da família Qwen, 'built by Alibaba Cloud'; o encoder abliterado e as "
+        "quantizações são da AtomicChat"
     ),
     "qwen3-tts": (
         "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (2026-11-27) é "
@@ -885,6 +923,50 @@ MODELS: tuple[ModelEntry, ...] = (
         generation_source=GENERATION_SOURCE_IMAGE,
     ),
     ModelEntry(
+        "qwen-image-2.1-turbo-uncensored", "Qwen-Image-2.1 Turbo Uncensored", "image",
+        (
+            Variant("q4k", "AD-Q4_K • encoder + denoiser", 9.47, 0, "T4",
+                    notes=("AtomicChat (consultado em 2026-11-28): "
+                           "`Qwen-Image-2.1-Turbo-AD-Q4_K.gguf` tem 4.201.694.944 B = "
+                           "3,91 GiB; `Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf` "
+                           "tem 5.287.517.120 B = 4,92 GiB; o VAE compartilhado tem "
+                           "675.509.688 B = 0,63 GiB.",
+                           "Soma dos três: 10.164.721.752 B = 9,47 GiB; + 1,08 de "
+                           "visão + 2 de runtime + 1,0 de folga = 13,55 <= 15 GiB "
+                           "utilizáveis da T4."),
+                    vision_gib=IMAGE_VISION_GIB),
+            Variant("q8", "Q8_0 • encoder + denoiser", 15.81, 0, "L4",
+                    notes=("AtomicChat (consultado em 2026-11-28): "
+                           "`Qwen-Image-2.1-Turbo-Q8_0.gguf` tem 7.591.577.312 B = "
+                           "7,07 GiB; `Qwen-Image-2.1-Turbo-Uncensored-Q8_0.gguf` tem "
+                           "8.709.520.096 B = 8,11 GiB; o VAE compartilhado tem "
+                           "675.509.688 B = 0,63 GiB.",
+                           "Soma dos três: 16.976.607.096 B = 15,81 GiB; + 1,08 de "
+                           "visão + 2 de runtime + 1,2 de folga = 20,09 <= 24 GiB da "
+                           "L4; a T4 (15 GiB utilizáveis) não comporta."),
+                    vision_gib=IMAGE_VISION_GIB),
+        ),
+        "https://huggingface.co/AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF",
+        provider="Qwen (Alibaba Cloud)",
+        notes=(
+            "Encoder abliterado: a direção de recusa é projetada fora (Apache-2.0) e "
+            "o denoiser Turbo fica inalterado; o checkpoint oficial é da Qwen e as "
+            "quantizações AD são da AtomicChat.",
+            "Schedule Turbo fixo: 8 passos, CFG 1,0, `euler` e as 9 sigmas do card; o "
+            "gateway injeta os quatro em `sample_params` (sample_steps, "
+            "guidance.txt_cfg, sample_method e custom_sigmas).",
+            "O encoder de texto é um Qwen3-VL GGUF comum; o mmproj F16 do repo "
+            "uncensored é o projetor de visão usado só em /v1/images/edits.",
+        ),
+        generation_defaults={
+            "steps": 8,
+            "guidance": 1.0,
+            "sample_method": "euler",
+            "custom_sigmas": list(QWEN_IMAGE_TURBO_SIGMAS),
+        },
+        generation_source=GENERATION_SOURCE_IMAGE_TURBO,
+    ),
+    ModelEntry(
         "qwen3-tts", "Qwen3-TTS", "tts",
         (
             Variant(
@@ -1048,6 +1130,16 @@ PROFILE_CONTEXTS: tuple[ProfileContext, ...] = (
                    "L4", "Modelo de difusão não tem janela autoregressiva; 1 é sentinela. "
                          "12,07 GiB de pesos + 2 de runtime + 1,0 de folga = 15,07 > 15 GiB "
                          "da T4; a L4 (24 GiB) comporta."),
+    ProfileContext("qwen-image-2.1-turbo-uncensored-q4k", "qwen-image-2.1-turbo-uncensored",
+                   "q4k", 0, 1, "T4",
+                   "9,47 GiB de pesos (AD-Q4_K do encoder 4,92 + AD-Q4_K do denoiser "
+                   "3,91 + VAE 0,63) + 1,08 de visão + 2 de runtime = 12,55, mais 1,0 de "
+                   "folga = 13,55 <= 15 GiB utilizáveis da T4."),
+    ProfileContext("qwen-image-2.1-turbo-uncensored-q8", "qwen-image-2.1-turbo-uncensored",
+                   "q8", 0, 1, "L4",
+                   "15,81 GiB de pesos (Q8_0 do encoder 8,11 + Q8_0 do denoiser 7,07 + "
+                   "VAE 0,63) + 1,08 de visão + 2 de runtime = 18,89, mais 1,2 de folga = "
+                   "20,09 <= 24 GiB da L4; a T4 (15 GiB utilizáveis) não comporta."),
     ProfileContext("qwen3-tts-0.6b-customvoice", "qwen3-tts", "0.6b-customvoice", 0, 1,
                    "T4", "TTS não tem janela de chat; 1 é sentinela. 2,32 GiB de pesos + "
                          "2 de runtime + 6 de pipeline = 10,32, mais 1,0 de folga = 11,32 "
@@ -1776,16 +1868,53 @@ def validate_catalog() -> None:
             raise ValueError(f"reasoning_effort sem fonte: {model.id}")
         if model.thinking is not None and not model.thinking.source:
             raise ValueError(f"Política de thinking sem fonte: {model.id}")
-        for key, value in model.generation_defaults.items():
-            if key not in {"steps", "guidance"} or isinstance(value, bool) or not isinstance(
-                value, (int, float)
-            ):
+        for key in model.generation_defaults:
+            if key not in GENERATION_DEFAULT_FIELDS:
                 raise ValueError(f"Padrão de geração inválido: {model.id}:{key}")
         if model.generation_defaults and not model.generation_source:
             raise ValueError(f"Padrões de geração sem fonte: {model.id}")
-        expected_defaults = {"steps", "guidance"}
-        if model.generation_defaults and set(model.generation_defaults) != expected_defaults:
-            raise ValueError(f"Padrões de geração incompletos: {model.id}")
+        if model.generation_defaults:
+            defaults = model.generation_defaults
+            if not set(defaults) >= GENERATION_REQUIRED_DEFAULT_FIELDS:
+                raise ValueError(f"Padrões de geração incompletos: {model.id}")
+            steps = defaults["steps"]
+            if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 1000:
+                raise ValueError(f"Padrão de geração inválido: {model.id}:steps")
+            guidance = defaults["guidance"]
+            if (
+                isinstance(guidance, bool)
+                or not isinstance(guidance, (int, float))
+                or not 0 < guidance <= 1000
+            ):
+                raise ValueError(f"Padrão de geração inválido: {model.id}:guidance")
+            if "sample_method" in defaults:
+                method = defaults["sample_method"]
+                if (
+                    not isinstance(method, str)
+                    or not method
+                    or method != method.strip()
+                    or any(char.isspace() for char in method)
+                ):
+                    raise ValueError(
+                        f"Padrão de geração inválido: {model.id}:sample_method"
+                    )
+            if "custom_sigmas" in defaults:
+                sigmas = defaults["custom_sigmas"]
+                if (
+                    not isinstance(sigmas, list)
+                    or not 2 <= len(sigmas) <= 1001
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or (isinstance(value, float) and not math.isfinite(value))
+                        or value < 0
+                        for value in sigmas
+                    )
+                    or sigmas[-1] != 0.0
+                ):
+                    raise ValueError(
+                        f"Padrão de geração inválido: {model.id}:custom_sigmas"
+                    )
         seen_variants: set[str] = set()
         for variant in model.variants:
             if variant.id in seen_variants or variant.memory_gib <= 0 or variant.context < 0:

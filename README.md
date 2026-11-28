@@ -216,6 +216,7 @@ orçamento de `byom up` para filtrar a listagem; ele não altera a GPU declarada
 | Gemma 4 | Google DeepMind | llama.cpp | E4B / 12B / 26B-A4B / 31B, 4 bit | 6 / 8 / 18 / 20 GiB | 131.072 (E2B/E4B), 262.144 (demais) | 65.536 / 32.768 / 32.768 / 131.072 | T4 / T4 / **A100 40** / A100 40 |
 | Muse Glimmer 30B | Meta Superintelligence Lab | llama.cpp | 2 bit / 4 bit / 6 bit | 12 / 17 / 22 GiB | 131.072 (até 262.144) | 32.768 / 65.536 / 131.072 | L4 / A100 40 / A100 40 |
 | Qwen-Image-2.1 | Qwen (Alibaba Cloud) | image | INT8-ConvRot (12,07 GiB) / GGUF Q4_K (9,22 GiB) | 12,1 / 9,2 GiB | n/a | n/a | L4 / **T4** |
+| Qwen-Image-2.1 Turbo Uncensored | Qwen (Alibaba Cloud) | image | AD-Q4_K / Q8_0 (encoder abliterado + denoiser Turbo, AtomicChat) | 9,47 / 15,81 GiB | n/a | n/a | **T4** / L4 |
 | Inkling 2 Mini | Thinking Machines Lab | Strata (engine nativo) | packs SQ-10 / SQ-15 / SQv2-20 | 9,75 / 13,36 / 18,04 GiB | 1.000.000 | 32.768 | T4 / L4 / L4 |
 | Qwen3-TTS | Qwen (Alibaba Cloud) | tts | 0.6B CustomVoice (2,32 GiB) / 1.7B CustomVoice (4,21 GiB) | 2,3 / 4,2 GiB + pipeline | n/a | n/a (fala) | **T4** / **L4** |
 
@@ -228,7 +229,10 @@ Mini aparece com pesos Unsloth e com pesos AtomicChat: muda o publicador e a
 receita de quantização, não o modelo. `byom profiles` imprime as duas linhas
 (`Fornecedor:` e, quando divergem, `Pacote:`), `byom models --gpu <ID>` traz as
 duas colunas, e a TUI mostra o fornecedor na própria linha do perfil. Detalhes em
-[Model Provider and Weight Package](docs/provider.md).
+[Model Provider and Weight Package](docs/provider.md). No
+**Qwen-Image-2.1 Turbo Uncensored**, o pacote é a AtomicChat nos dois perfis (o
+denoiser Turbo e o encoder abliterado vêm dos repositórios dela), embora o modelo
+continue sendo da Qwen (Alibaba Cloud).
 
 Os perfis AD da AtomicChat usam o **mesmo** binário `b12611` dos perfis
 Unsloth: esses arquivos já estão no layout merged do PR #32694. Ficaram de fora
@@ -244,9 +248,12 @@ arquitetura (0,58 GiB em 32K, e não os 2 GiB do heurístico) — o motivo está
 `Variant.context_reason`.
 
 Memória e GPU são conta, não estimativa de página: cada número vem dos bytes
-publicados no Hugging Face (conferidos em 2026-11-24) e o perfil declara a GPU
+publicados no Hugging Face (conferidos em 2026-11-24, e em 2026-11-28 para o
+Turbo Uncensored) e o perfil declara a GPU
 onde `required + folga` cabe de verdade. A tabela com `required`, folga e margem
-de cada perfil está em [docs/log.md](docs/log.md#2026-11-24).
+de cada perfil está em [docs/log.md](docs/log.md#2026-11-24). A conta do Turbo
+Uncensored, com os quatro papéis e a agenda de 8 passos, está em
+[Qwen-Image-2.1 Turbo Uncensored](docs/qwen-image-turbo-uncensored.md).
 
 A redução é dado estruturado, não texto solto: `src/byom/catalog.py` mantém
 `Variant.context_doc`, `Variant.context` e `PROFILE_CONTEXTS`, uma entrada por
@@ -345,14 +352,21 @@ deles cabe em uma única GPU do Colab.
   modelo de chat: `POST /v1/chat/completions` retorna HTTP 501 neste runtime. As
   requisições recebem `prompt` e opções de imagem, não `messages`; as respostas
   contêm dados de imagem (`data[].b64_json`), não tokens ou motivos de parada.
-  A página da Unsloth documenta padrões de **25 steps e guidance 1** (conferido
-  em 2026-11-23); ambos vivem apenas em `ModelEntry.generation_defaults`. O
-  sd-server **não** aceita um campo `guidance` no nível raiz: o gateway mapeia o
-  par para a extensão nativa documentada dentro de `prompt` —
+  A página da Unsloth documenta padrões de **25 steps e guidance 1** para o
+  Qwen-Image-2.1 (conferido em 2026-11-23); o **Turbo Uncensored** usa a agenda
+  própria do checkpoint: **8 passos, CFG 1, euler e 9 sigmas**. Os dois vivem em
+  `ModelEntry.generation_defaults`; o Turbo acrescenta `sample_method` e
+  `custom_sigmas`. O sd-server **não** aceita um campo `guidance` no nível raiz: o
+  gateway mapeia o par para a extensão nativa documentada dentro de `prompt` —
   `<sd_cpp_extra_args>{"sample_params":{"sample_steps":25,"guidance":{"txt_cfg":1.0}}}</sd_cpp_extra_args>`
-  (`examples/server/api.md`, conferido em 2026-11-23). O cliente pode
-  sobrescrever `steps`/`guidance` no corpo da requisição ou enviar seu próprio
-  bloco `sd_cpp_extra_args`. Divergência registrada: a mesma página da Unsloth
+  no Qwen-Image-2.1 e, no Turbo, o mesmo bloco com `"sample_method":"euler"` e
+  `"custom_sigmas":[1.0,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568,0.0]`
+  (`examples/server/api.md`, conferido em 2026-11-23 e 2026-11-28). A lista de
+  sigmas exige o fix `c150a6b` do sd.cpp (2026-10-06); o build fixado é de
+  2026-11-15. O cliente pode sobrescrever `steps`/`guidance` no corpo da
+  requisição ou enviar seu próprio bloco `sd_cpp_extra_args`; quando a lista de
+  sigmas está presente, o servidor usa a contagem de sigmas menos um como número
+  de passos. Divergência registrada: a mesma página da Unsloth
   sugere `--steps 20 --cfg-scale 6.0` para o fluxo via sd-cli; este projeto
   adota os padrões documentados da API (25/1) conforme o briefing, não um valor
   inventado para o sd.cpp. `POST /v1/images/edits` usa multipart e mantém os
@@ -360,7 +374,9 @@ deles cabe em uma única GPU do Colab.
   em 25 passos numa Colab T4 de 15 GB; o perfil GGUF Q4_K usa **T4** (9,22 GiB
   de pesos + 1,08 do projetor de visão + 2 de runtime + 1 de folga = 13,30, que
   cabe nos 15 GiB utilizáveis) e o perfil INT8-ConvRot fica em L4 (12,07 + 1,08
-  + 2 + 1 = 16,15 > 15). A T4 não possui bf16, portanto o treino é recusado
+  + 2 + 1 = 16,15 > 15). No Turbo Uncensored, o par AD-Q4_K fica em **T4**
+  (9,47 + 1,08 + 2 + 1,0 = 13,55) e o Q8_0 em L4 (15,81 + 1,08 + 2 + 1,2 =
+  20,09). A T4 não possui bf16, portanto o treino é recusado
   pela Unsloth; treino em bf16 exige arquitetura Ampere ou superior.
   O binário fixado é o build **Unsloth `cuda13`** do
   `stable-diffusion.cpp` `master-982-0518b34-u27b9ddc`, asset
@@ -390,6 +406,13 @@ GPU do Google Cloud e FAQ do Colab, `unsloth/Inkling-2-Mini-GGUF` no Hugging
 Face (`Mainline_Support/README.md`, `HOW_TO_RUN.md` e discussão #8), listas de
 assets de release de `ggml-org/llama.cpp` `b12611` e `b12649`, PRs #32694 e
 #32704 do llama.cpp e `leejet/stable-diffusion.cpp` `master-1106-532d2c1`.
+
+Fontes consultadas em 2026-11-28 para o **Turbo Uncensored**: os cards
+`Qwen/Qwen-Image-2.1-Turbo`, `AtomicChat/Qwen-Image-2.1-Turbo-GGUF` e
+`AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF` no Hugging Face, e
+`examples/server/api.md` e `docs/qwen_image_2.1.md` de
+`leejet/stable-diffusion.cpp` no commit `0518b34` (preset
+`qwen-image-2.1-turbo`, `custom_sigmas` e `sample_method`).
 
 ## Uso com agentes de codificação
 
@@ -497,8 +520,9 @@ worker: não é uma credencial do usuário, mas não deve ser compartilhado). As
 sessões do `byom` usam um arquivo isolado
 (`~/.config/byom/colab-sessions.json`), separado das suas outras sessões do
 Colab. `session.json` também carrega `thinking_policy` (chave explícita do
-Gemma 4 vinda do catálogo) e `generation_defaults` (`steps`/`guidance` para o
-Qwen-Image), ambos validados pelo gateway na inicialização.
+Gemma 4 vinda do catálogo) e `generation_defaults` (`steps`/`guidance` e, nos
+modelos que exigem, `sample_method`/`custom_sigmas`), ambos validados pelo
+gateway na inicialização.
 
 ### Erros comuns e o que fazer
 
@@ -541,13 +565,15 @@ onde `<endpoint>` é o segundo campo na saída de `colab sessions`.
 Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
 
 * **Valores documentados são dados do catálogo.** `reasoning_effort`,
-  `thinking_policy` do Gemma 4, `generation_defaults` do Qwen-Image e ambos os
+  `thinking_policy` do Gemma 4, `generation_defaults` do Qwen-Image e do Turbo
+  (`steps`, `guidance` e, quando o checkpoint exige, `sample_method` e
+  `custom_sigmas`) e ambos os
   números de contexto ficam em `src/byom/catalog.py`; os perfis os herdam e o
   gateway os recebe em `session.json`. Fontes e datas de cada valor estão
   registradas no catálogo e nas tabelas acima. Nenhum perfil repete `medium`,
-  `25` ou um máximo de contexto documentado.
+  `25`, `8` ou um máximo de contexto documentado.
 * **O contexto não é reduzido silenciosamente.** `PROFILE_CONTEXTS` lista todos
-  os 25 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
+  os 29 perfis com contexto doc, contexto servido, GPU e motivo. `byom models`
   imprime ambos; `check_fit` continua usando o valor servido de `config.toml`.
   Elevar um perfil ao máximo documentado sem uma GPU maior está explicitamente
   fora de escopo.
@@ -556,10 +582,17 @@ Registrado em 2026-11-23 sobre o clone local no commit `cba79b8`.
   O token do próprio cliente, histórico já limpo ou `enable_thinking: false`
   prevalecem.
 * **Padrões de imagem usam os nomes do servidor.** A Unsloth fala em
-  "steps/guidance"; o sd-server documenta `sample_params.sample_steps` e
-  `sample_params.guidance.txt_cfg` via `sd_cpp_extra_args`. A equivalência está
+  "steps/guidance"; o sd-server documenta `sample_params.sample_steps`,
+  `sample_params.guidance.txt_cfg`, `sample_params.sample_method` e
+  `sample_params.custom_sigmas` via `sd_cpp_extra_args`. A equivalência está
   registrada em `ModelEntry.generation_source`; nenhum `guidance` no nível raiz
   é enviado.
+* **O Turbo é uma entrada própria, não uma variante de quantização.** O
+  Qwen-Image-2.1 Turbo é um checkpoint destilado de 8 passos com agenda fixa;
+  tratá-lo como variante do modelo de 25 passos faria o padrão do catálogo
+  servir a agenda errada. `qwen-image-2.1-turbo-uncensored` tem
+  `generation_defaults` próprios, e cada variante é o par encoder + denoiser
+  (AD-Q4_K na T4, Q8_0 na L4).
 * **`state.json` corrompido bloqueia `up`.** Arquivo ausente significa "sem
   sessão"; arquivo ilegível ou inválido é erro. `up` também verifica
   `orphan_assignments()` tanto no caminho normal quanto com `--force` e

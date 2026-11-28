@@ -2739,6 +2739,13 @@ def _erro_da_resposta(response: httpx.Response) -> str:
     return str(payload)[:500]
 
 
+def _padroes_de_imagem(cfg: config.Config) -> tuple[int, float]:
+    """Sem defaults no catálogo, mantém os 25 passos/1,0 que a tela já mostrava."""
+    model_id, _variant_id = config.active_catalog_ref(cfg)
+    defaults = catalog.model_by_id(model_id).generation_defaults
+    return int(defaults.get("steps", 25)), float(defaults.get("guidance", 1.0))
+
+
 def _executar_imagem(con: Console, cli: Any, estado: EstadoLocal) -> str:
     import questionary
 
@@ -2792,16 +2799,17 @@ def _executar_imagem(con: Console, cli: Any, estado: EstadoLocal) -> str:
     ).ask()
     if tamanho is None:
         return "menu"
-    passos_raw = questionary.text(M.PASSOS_IMAGEM, default="25").ask()
-    guidance_raw = questionary.text(M.GUIDANCE_IMAGEM, default="1.0").ask()
+    passos_padrao, guidance_padrao = _padroes_de_imagem(cfg)
+    passos_raw = questionary.text(M.PASSOS_IMAGEM, default=str(passos_padrao)).ask()
+    guidance_raw = questionary.text(M.GUIDANCE_IMAGEM, default=str(guidance_padrao)).ask()
     try:
-        passos = max(1, int(passos_raw or "25"))
+        passos = max(1, int(passos_raw or str(passos_padrao)))
     except ValueError:
-        passos = 25
+        passos = passos_padrao
     try:
-        guidance = float(guidance_raw or "1.0")
+        guidance = float(guidance_raw or str(guidance_padrao))
     except ValueError:
-        guidance = 1.0
+        guidance = guidance_padrao
 
     url = f"http://127.0.0.1:{cfg.proxy_port}/v1/images/generations"
     body = {
