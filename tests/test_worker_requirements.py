@@ -75,6 +75,14 @@ def test_bootstrap_instala_o_lock_com_require_hashes():
     assert "WARNING" in texto and "requirements.txt" in texto
 
 
+def test_bootstrap_falha_quando_o_runtime_morre_no_startup():
+    """O gateway mantém a sessão tmux viva; o PID do runtime também precisa ser checado."""
+    texto = (WORKER / "bootstrap.sh").read_text(encoding="utf-8")
+
+    assert texto.count('kill -0 "$(cat "$BYOM_DIR/vllm.pid")"') >= 2
+    assert texto.count("runtime $RUNTIME exited during startup") >= 2
+
+
 def test_lock_vai_no_bundle_do_worker():
     assert "requirements.lock" in cli.WORKER_FILES
     assert "requirements.txt" in cli.WORKER_FILES
